@@ -1,0 +1,30 @@
+[project]
+name = "mt5-claude-adapter"
+version = "0.1.0"
+description = "FastAPI adapter for MT5 Trading Bot (Phase 1: dummy decider; Phase 2: Claude Opus 4.7)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.5",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+claude = ["anthropic>=0.40"]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
