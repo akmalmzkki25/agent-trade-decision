@@ -5,8 +5,11 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+from pathlib import Path
+
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from datetime import datetime as _dt, timezone as _tz
@@ -31,10 +34,22 @@ from .models import (
     TradeDecision,
     TradeTransactionEvent,
 )
+from . import dashboard_db
 from .news import get_blackout
 from .scenarios import select_best
 from .security import hmac_ok
 from .settings import settings
+
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+def _template_globals() -> dict:
+    return {
+        "adapter_version": __version__,
+        "decider_name": getattr(decider, "name", "?"),
+        "db_path": settings.db_path,
+    }
 
 logger = logging.getLogger("adapter")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -286,6 +301,69 @@ async def plan(request: Request, x_internal_sig: str | None = Header(default=Non
     )
     ledger.write_plan(req, resp)
     return resp
+
+
+# ============================================================================
+# Dashboard (HTML) + read-only JSON helpers
+# ============================================================================
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    return RedirectResponse(url="/dashboard")
+
+
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+async def dashboard_view(request: Request):
+    ctx = {
+        "request": request,
+        "active_page": "dashboard",
+        "stats": dashboard_db.get_stats(),
+        "decisions": dashboard_db.recent_decisions(limit=25),
+        "plans": dashboard_db.recent_plans(limit=15),
+        "trade_events": dashboard_db.recent_trade_events(limit=10),
+        "action_distribution": dashboard_db.action_distribution(),
+        **_template_globals(),
+    }
+    return templates.TemplateResponse(request, "dashboard.html", ctx)
+
+
+@app.get("/chatbot", response_class=HTMLResponse, include_in_schema=False)
+async def chatbot_view(request: Request):
+    ctx = {
+        "request": request,
+        "active_page": "chatbot",
+        **_template_globals(),
+    }
+    return templates.TemplateResponse(request, "chatbot.html", ctx)
+
+
+@app.get("/api/dashboard/stats")
+async def api_stats():
+    return dashboard_db.get_stats()
+
+
+@app.get("/api/dashboard/decisions")
+async def api_decisions(limit: int = 25):
+    limit = max(1, min(limit, 200))
+    return dashboard_db.recent_decisions(limit=limit)
+
+
+@app.get("/api/dashboard/plans")
+async def api_plans(limit: int = 25):
+    limit = max(1, min(limit, 200))
+    return dashboard_db.recent_plans(limit=limit)
+
+
+@app.get("/api/dashboard/trade-events")
+async def api_trade_events(limit: int = 25):
+    limit = max(1, min(limit, 200))
+    return dashboard_db.recent_trade_events(limit=limit)
+
+
+@app.get("/api/dashboard/action-distribution")
+async def api_action_distribution():
+    return dashboard_db.action_distribution()
 
 
 @app.exception_handler(HTTPException)

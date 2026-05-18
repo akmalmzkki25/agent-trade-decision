@@ -7,7 +7,7 @@
 //| WebRequest URL allowlist required: http://127.0.0.1:8765         |
 //+------------------------------------------------------------------+
 #property copyright "Qlip"
-#property version   "0.10"
+#property version   "1.00"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -217,7 +217,7 @@ string BuildDecisionRequestJson(const string request_id,
    long   login    = AccountInfoInteger(ACCOUNT_LOGIN);
    double balance  = AccountInfoDouble(ACCOUNT_BALANCE);
    double equity   = AccountInfoDouble(ACCOUNT_EQUITY);
-   double freem    = AccountInfoDouble(ACCOUNT_FREEMARGIN);
+   double freem    = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    double mlevel   = AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
    string curr     = AccountInfoString(ACCOUNT_CURRENCY);
    long   lev      = AccountInfoInteger(ACCOUNT_LEVERAGE);

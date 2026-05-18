@@ -7,7 +7,7 @@
 //| WebRequest URL allowlist required: http://127.0.0.1:8765         |
 //+------------------------------------------------------------------+
 #property copyright "Qlip"
-#property version   "0.20"
+#property version   "1.00"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -245,7 +245,7 @@ string BuildPlanRequestJson(const string request_id)
    long   login    = AccountInfoInteger(ACCOUNT_LOGIN);
    double balance  = AccountInfoDouble(ACCOUNT_BALANCE);
    double equity   = AccountInfoDouble(ACCOUNT_EQUITY);
-   double freem    = AccountInfoDouble(ACCOUNT_FREEMARGIN);
+   double freem    = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    double mlevel   = AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
    string curr     = AccountInfoString(ACCOUNT_CURRENCY);
    long   lev      = AccountInfoInteger(ACCOUNT_LEVERAGE);
@@ -426,8 +426,8 @@ ENUM_ORDER_TYPE MapOrderType(const string &t)
 bool PlaceLayer(const string &otype, double price, double lots, double sl, double tp,
                 long magic, datetime expiration)
 {
-   MqlTradeRequest req; MqlTradeResult res;
-   ZeroMemory(req); ZeroMemory(res);
+   MqlTradeRequest req; MqlTradeResult res; MqlTradeCheckResult chk;
+   ZeroMemory(req); ZeroMemory(res); ZeroMemory(chk);
    req.action       = TRADE_ACTION_PENDING;
    req.symbol       = _Symbol;
    req.volume       = lots;
@@ -442,9 +442,9 @@ bool PlaceLayer(const string &otype, double price, double lots, double sl, doubl
    req.expiration   = expiration;
    req.type_filling = ORDER_FILLING_RETURN;  // recommended for pending orders
 
-   if(!OrderCheck(req, res))
+   if(!OrderCheck(req, chk))
    {
-      PrintFormat("OrderCheck fail layer magic=%d retcode=%u (%s)", magic, res.retcode, res.comment);
+      PrintFormat("OrderCheck fail layer magic=%d retcode=%u (%s)", magic, chk.retcode, chk.comment);
       return false;
    }
    if(!OrderSend(req, res))

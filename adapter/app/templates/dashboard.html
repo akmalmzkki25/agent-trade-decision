@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Qlip Adapter{% endblock %}
+
+{% block content %}
+<section class="space-y-8">
+  <div class="flex items-end justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Trading Analytics</h1>
+      <p class="mt-1 text-sm text-slate-400">Live read-only view of the SQLite ledger. Auto-refreshes every 15s.</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <button id="refreshBtn" class="inline-flex items-center gap-2 rounded-md border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white transition">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-3.5 w-3.5"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-7.5-4"/><path d="M21 3v6h-6"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 7.5 4"/><path d="M3 21v-6h6"/></svg>
+        <span>Refresh</span>
+      </button>
+      <span class="text-[11px] text-slate-500">Last update: <span id="lastUpdate" class="tabular text-slate-300">—</span></span>
+    </div>
+  </div>
+
+  {% if not stats.ledger_available %}
+  <div class="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+    <strong class="font-semibold">Ledger not found.</strong>
+    No decisions logged yet — start the EA and the SQLite DB will populate after the first request.
+  </div>
+  {% endif %}
+
+  <!-- Stat cards -->
+  <div class="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5" id="statCards">
+    {% set cards = [
+      ('Decisions',     stats.decisions_total,   'all-time',                                 'emerald'),
+      ('Open Signals',  stats.decisions_open,    'action=open',                              'emerald'),
+      ('Hold Rate',     stats.hold_rate_pct ~ '%', 'action=hold',                            'slate'),
+      ('Avg Latency',   stats.avg_latency_ms ~ ' ms', 'decision pipeline',                   'amber'),
+      ('Active Plans',  stats.plans_with_layers, stats.plans_total ~ ' total plans',         'emerald'),
+    ] %}
+    {% for label, value, sub, tone in cards %}
+    <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 shadow-sm transition hover:border-slate-700">
+      <p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">{{ label }}</p>
+      <p class="mt-2 tabular text-2xl font-semibold
+                {% if tone == 'emerald' %}text-emerald-300
+                {% elif tone == 'amber' %}text-amber-300
+                {% else %}text-slate-100{% endif %}">
+        {{ value }}
+      </p>
+      <p class="mt-1 text-xs text-slate-500">{{ sub }}</p>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Chart + recent plans side by side -->
+  <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+    <div class="lg:col-span-2 rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-100">Action distribution</h2>
+          <p class="text-xs text-slate-500">All decisions grouped by action.</p>
+        </div>
+      </div>
+      <div class="mt-4 h-64">
+        <canvas id="actionChart"></canvas>
+      </div>
+    </div>
+
+    <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+      <div class="flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-slate-100">Recent layer plans</h2>
+        <span class="text-[11px] text-slate-500">Phase 2 · /v2/plan</span>
+      </div>
+      <ul class="mt-4 space-y-2" id="plansList">
+        {% if not plans %}
+        <li class="rounded-md border border-dashed border-slate-800 px-3 py-6 text-center text-xs text-slate-500">No plans yet.</li>
+        {% endif %}
+        {% for p in plans[:8] %}
+        <li class="rounded-md border border-slate-800 bg-slate-900/60 p-3">
+          <div class="flex items-center justify-between gap-2">
+            <span class="rounded-md bg-slate-800 px-1.5 py-0.5 text-[11px] font-mono text-slate-300">{{ p.scenario }}</span>
+            <span class="rounded-md px-1.5 py-0.5 text-[11px] font-medium
+                       {% if p.side == 'buy' %}bg-emerald-500/15 text-emerald-300
+                       {% elif p.side == 'sell' %}bg-rose-500/15 text-rose-300
+                       {% else %}bg-slate-800 text-slate-400{% endif %}">{{ p.side|upper }}</span>
+          </div>
+          <div class="mt-1.5 flex items-center justify-between text-xs text-slate-400">
+            <span>{{ p.layers_count }} layers · conf <span class="tabular text-slate-300">{{ '%.2f' % p.confidence }}</span></span>
+            <span class="tabular text-slate-500">{{ p.created_at[:19] if p.created_at else '' }}</span>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+
+  <!-- Recent decisions table -->
+  <div class="rounded-xl border border-slate-800 bg-slate-900/40">
+    <div class="flex items-center justify-between border-b border-slate-800 px-5 py-3">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-100">Recent decisions</h2>
+        <p class="text-xs text-slate-500">Latest 25 decisions from <span class="font-mono">/v1/decision</span>.</p>
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="min-w-full text-sm">
+        <thead>
+          <tr class="text-left text-[11px] uppercase tracking-wider text-slate-500">
+            <th class="px-5 py-2 font-medium">Time UTC</th>
+            <th class="px-3 py-2 font-medium">Symbol</th>
+            <th class="px-3 py-2 font-medium">TF</th>
+            <th class="px-3 py-2 font-medium">Status</th>
+            <th class="px-3 py-2 font-medium">Action</th>
+            <th class="px-3 py-2 font-medium">Side</th>
+            <th class="px-3 py-2 text-right font-medium">Lots</th>
+            <th class="px-3 py-2 text-right font-medium">Conf</th>
+            <th class="px-3 py-2 text-right font-medium">Latency</th>
+            <th class="px-3 py-2 font-medium">Reason</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800/60" id="decisionsTbody">
+          {% if not decisions %}
+          <tr><td colspan="10" class="px-5 py-8 text-center text-xs text-slate-500">No decisions logged yet.</td></tr>
+          {% endif %}
+          {% for d in decisions %}
+          <tr class="text-slate-300 transition hover:bg-slate-800/40">
+            <td class="px-5 py-2.5 tabular text-xs text-slate-400">{{ d.ts_utc[:19] if d.ts_utc else '' }}</td>
+            <td class="px-3 py-2.5 font-medium">{{ d.symbol }}</td>
+            <td class="px-3 py-2.5 text-slate-400">{{ d.timeframe }}</td>
+            <td class="px-3 py-2.5">
+              <span class="rounded-md px-1.5 py-0.5 text-[11px] font-medium
+                         {% if d.status == 'ok' %}bg-emerald-500/15 text-emerald-300
+                         {% elif d.status == 'degraded' %}bg-amber-500/15 text-amber-300
+                         {% else %}bg-rose-500/15 text-rose-300{% endif %}">{{ d.status }}</span>
+            </td>
+            <td class="px-3 py-2.5">
+              <span class="rounded-md px-1.5 py-0.5 text-[11px] font-medium
+                         {% if d.action == 'open' %}bg-emerald-500/15 text-emerald-300
+                         {% elif d.action == 'hold' %}bg-slate-800 text-slate-400
+                         {% else %}bg-slate-800 text-slate-300{% endif %}">{{ d.action }}</span>
+            </td>
+            <td class="px-3 py-2.5">
+              <span class="
+                         {% if d.side == 'buy' %}text-emerald-400
+                         {% elif d.side == 'sell' %}text-rose-400
+                         {% else %}text-slate-500{% endif %}">{{ d.side or '—' }}</span>
+            </td>
+            <td class="px-3 py-2.5 tabular text-right text-slate-200">{{ '%.2f' % (d.lots or 0) }}</td>
+            <td class="px-3 py-2.5 tabular text-right
+                       {% if d.confidence and d.confidence >= 0.7 %}text-emerald-300
+                       {% elif d.confidence and d.confidence >= 0.5 %}text-amber-300
+                       {% else %}text-slate-500{% endif %}">{{ '%.2f' % (d.confidence or 0) }}</td>
+            <td class="px-3 py-2.5 tabular text-right text-slate-400">{{ d.latency_ms or 0 }} ms</td>
+            <td class="px-3 py-2.5 text-xs text-slate-400">
+              {% if d.reason_codes %}
+                <span class="font-mono text-[11px] text-slate-300">{{ d.reason_codes|join(', ') }}</span>
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Recent trade events -->
+  <div class="rounded-xl border border-slate-800 bg-slate-900/40">
+    <div class="flex items-center justify-between border-b border-slate-800 px-5 py-3">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-100">Recent trade events</h2>
+        <p class="text-xs text-slate-500">OnTradeTransaction events from MT5.</p>
+      </div>
+      <span class="text-[11px] text-slate-500">{{ stats.trade_events_total }} total</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="min-w-full text-sm">
+        <thead>
+          <tr class="text-left text-[11px] uppercase tracking-wider text-slate-500">
+            <th class="px-5 py-2 font-medium">Time UTC</th>
+            <th class="px-3 py-2 font-medium">Symbol</th>
+            <th class="px-3 py-2 font-medium">Trans Type</th>
+            <th class="px-3 py-2 text-right font-medium">Order</th>
+            <th class="px-3 py-2 text-right font-medium">Deal</th>
+            <th class="px-3 py-2 text-right font-medium">Position</th>
+            <th class="px-3 py-2 text-right font-medium">Retcode</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800/60">
+          {% if not trade_events %}
+          <tr><td colspan="7" class="px-5 py-8 text-center text-xs text-slate-500">No trade events yet.</td></tr>
+          {% endif %}
+          {% for e in trade_events %}
+          <tr class="text-slate-300 transition hover:bg-slate-800/40">
+            <td class="px-5 py-2.5 tabular text-xs text-slate-400">{{ e.created_at[:19] if e.created_at else '' }}</td>
+            <td class="px-3 py-2.5 font-medium">{{ e.symbol }}</td>
+            <td class="px-3 py-2.5 font-mono text-[11px] text-slate-400">{{ e.trans_type }}</td>
+            <td class="px-3 py-2.5 tabular text-right text-slate-400">{{ e.order_ticket or '—' }}</td>
+            <td class="px-3 py-2.5 tabular text-right text-slate-400">{{ e.deal_ticket or '—' }}</td>
+            <td class="px-3 py-2.5 tabular text-right text-slate-400">{{ e.position_ticket or '—' }}</td>
+            <td class="px-3 py-2.5 tabular text-right
+                       {% if e.retcode == 10009 %}text-emerald-300
+                       {% elif e.retcode and e.retcode != 10009 %}text-rose-300
+                       {% else %}text-slate-500{% endif %}">{{ e.retcode or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+  const actionData = {{ action_distribution | tojson }};
+  const ctx = document.getElementById('actionChart').getContext('2d');
+  const colorFor = (a) => ({
+    open:  '#34d399',
+    hold:  '#64748b',
+    close: '#f59e0b',
+    reduce:'#f59e0b',
+    reverse:'#a78bfa',
+    modify:'#60a5fa',
+  })[a] || '#475569';
+
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: actionData.map(d => d.action),
+      datasets: [{
+        label: 'Decisions',
+        data: actionData.map(d => d.count),
+        backgroundColor: actionData.map(d => colorFor(d.action)),
+        borderRadius: 6,
+        barThickness: 28,
+      }],
+    },
+    options: {
+      maintainAspectRatio: false,
+      animation: { duration: 200 },
+      plugins: { legend: { display: false }, tooltip: { backgroundColor: '#0f172a', borderColor: '#1e293b', borderWidth: 1 } },
+      scales: {
+        x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', font: { size: 11 } } },
+        y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', font: { size: 11 } }, beginAtZero: true },
+      },
+    },
+  });
+
+  function formatTime(d) {
+    return d.toISOString().slice(11, 19) + ' UTC';
+  }
+  document.getElementById('lastUpdate').textContent = formatTime(new Date());
+
+  document.getElementById('refreshBtn').addEventListener('click', () => location.reload());
+  setTimeout(() => location.reload(), 15000);
+</script>
+{% endblock %}
