@@ -60,6 +60,8 @@ class FeatureBundle(BaseModel):
     context_tf: dict[str, float]
     decision_tf: dict[str, float]
     execution_tf: dict[str, float]
+    # Optional confirm timeframe used by /v2/plan (M5 features).
+    confirm_tf: dict[str, float] = Field(default_factory=dict)
 
 
 class OpenClawContext(BaseModel):
@@ -148,3 +150,96 @@ class TradeTransactionEvent(BaseModel):
     retcode: int = 0
     comment: str = ""
     time_utc: str
+
+
+# ============================================================================
+# v2 — Bulk Layering plan models
+# ============================================================================
+
+
+OrderType = Literal[
+    "buy_limit",
+    "sell_limit",
+    "buy_stop",
+    "sell_stop",
+    "buy_market",
+    "sell_market",
+]
+
+
+ScenarioName = Literal[
+    "RANGE_REVERT",
+    "TREND_BREAKOUT",
+    "CONTINUATION_PULLBACK",
+    "NONE",
+]
+
+
+class LayerEntry(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    layer_id: int = Field(ge=1, le=10)
+    order_type: OrderType
+    price: float
+    lots: float
+    sl: float
+    tp: Optional[float] = None
+    expiration_utc: str
+    magic: int
+
+
+class NewsContext(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    blackout: bool = False
+    severity: float = Field(ge=0.0, le=1.0, default=0.0)
+    event: str = ""
+
+
+class LayerPlan(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    scenario: ScenarioName
+    side_bias: Literal["buy", "sell", "both", "none"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    basket_tp_pct_equity: float
+    scenario_invalidation_price: Optional[float] = None
+    valid_until_utc: str
+    layers: list[LayerEntry]
+    reason_codes: list[str]
+    rationale_short: str = Field(max_length=240)
+
+
+class LayerPlanRequest(BaseModel):
+    """Same shape as DecisionRequest. Kept as separate class so the v2 endpoint
+    can evolve independently (extra optional features etc.)."""
+
+    model_config = ConfigDict(strict=True)
+
+    schema_version: Literal["layer-plan-request.v1"]
+    request_id: str
+    mode: Literal["live", "paper", "replay"]
+    timestamp_utc: str
+    symbol: str
+    timeframe: str
+    bar_index: int
+    market: MarketSnapshot
+    account: AccountSnapshot
+    position: PositionSnapshot
+    risk_state: RiskState
+    features: FeatureBundle
+    openclaw_context: OpenClawContext = Field(default_factory=OpenClawContext)
+    # Bulk layering knobs (optional; defaults applied server-side).
+    total_risk_pct_override: Optional[float] = None
+
+
+class LayerPlanResponse(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    schema_version: Literal["layer-plan-response.v1"]
+    request_id: str
+    status: Literal["ok", "degraded", "veto"]
+    plan: LayerPlan
+    news_context: NewsContext = Field(default_factory=NewsContext)
+    meta: ResponseMeta
+    error: Optional[AdapterError] = None

@@ -5,7 +5,13 @@ import uuid
 from datetime import datetime, timezone
 from threading import Lock
 
-from .models import DecisionRequest, DecisionResponse, TradeTransactionEvent
+from .models import (
+    DecisionRequest,
+    DecisionResponse,
+    LayerPlanRequest,
+    LayerPlanResponse,
+    TradeTransactionEvent,
+)
 
 
 def now_utc() -> str:
@@ -34,6 +40,41 @@ class Ledger:
                 lots REAL,
                 anthropic_request_id TEXT,
                 latency_ms INTEGER,
+                created_at TEXT
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS plans (
+                request_id TEXT PRIMARY KEY,
+                symbol TEXT,
+                scenario TEXT,
+                side TEXT,
+                confidence REAL,
+                basket_tp_pct REAL,
+                invalidation_price REAL,
+                layers_count INTEGER,
+                status TEXT,
+                request_json TEXT,
+                response_json TEXT,
+                created_at TEXT
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS plan_layers (
+                id TEXT PRIMARY KEY,
+                request_id TEXT,
+                layer_id INTEGER,
+                order_type TEXT,
+                price REAL,
+                lots REAL,
+                sl REAL,
+                tp REAL,
+                expiration_utc TEXT,
+                magic INTEGER,
                 created_at TEXT
             )
             """
@@ -81,6 +122,53 @@ class Ledger:
                     now_utc(),
                 ),
             )
+
+    def write_plan(self, req: LayerPlanRequest, resp: LayerPlanResponse) -> None:
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO plans
+                (request_id, symbol, scenario, side, confidence, basket_tp_pct,
+                 invalidation_price, layers_count, status, request_json, response_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    req.request_id,
+                    req.symbol,
+                    resp.plan.scenario,
+                    resp.plan.side_bias,
+                    resp.plan.confidence,
+                    resp.plan.basket_tp_pct_equity,
+                    resp.plan.scenario_invalidation_price,
+                    len(resp.plan.layers),
+                    resp.status,
+                    req.model_dump_json(),
+                    resp.model_dump_json(),
+                    now_utc(),
+                ),
+            )
+            for layer in resp.plan.layers:
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO plan_layers
+                    (id, request_id, layer_id, order_type, price, lots, sl, tp,
+                     expiration_utc, magic, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"{req.request_id}-L{layer.layer_id}",
+                        req.request_id,
+                        layer.layer_id,
+                        layer.order_type,
+                        layer.price,
+                        layer.lots,
+                        layer.sl,
+                        layer.tp,
+                        layer.expiration_utc,
+                        layer.magic,
+                        now_utc(),
+                    ),
+                )
 
     def write_trade_event(self, event: TradeTransactionEvent) -> None:
         with self._lock:

@@ -10,15 +10,18 @@ Dokumen rancangan asli ada di [`knowledge/`](knowledge/).
 
 ## Status
 
-**Phase 1 MVP** — dummy trend-breakout decider, XAUUSD (H1 context + M15 decision), Exness demo.
+**Phase 1 MVP** — `QlipTrendBreakout_XAUUSD.mq5` + endpoint `/v1/decision` (dummy decider, single order).
+**Phase 2** — `QlipBulkLayer_XAUUSD.mq5` + endpoint `/v2/plan` (3 scenario TA → 3–5 layer pending orders, basket TP, invalidation).
 
-In-scope sekarang: jalur end-to-end EA → Adapter → Decision JSON → OrderCheck/OrderSend → OnTradeTransaction → SQLite ledger.
+Adapter melayani kedua endpoint dari proses yang sama. Phase 1 dan Phase 2 EA bisa attach bersamaan di simbol sama (magic terpisah: 250518 vs 250519+).
 
-Out-of-scope (sampai Phase 2+): Claude integration, mean-reversion stack, replay tape backtest, OpenClaw control plane.
+Out-of-scope (Phase 3+): integrasi Claude, news fetcher real, TradingView scraper, replay tape backtest, OpenClaw control plane.
 
 ## Quickstart
 
-Lihat panduan lengkap di [`docs/setup-mt5-exness.md`](docs/setup-mt5-exness.md).
+- Setup awal MT5 + adapter: [`docs/setup-mt5-exness.md`](docs/setup-mt5-exness.md)
+- Phase 2 bulk layering EA: [`docs/bulk-layering-quickstart.md`](docs/bulk-layering-quickstart.md)
+- Design spec Phase 2: [`docs/superpowers/specs/2026-05-18-bulk-layering-design.md`](docs/superpowers/specs/2026-05-18-bulk-layering-design.md)
 
 Singkat:
 
@@ -43,9 +46,10 @@ pytest
 
 ## Roadmap
 
-| Phase | Konten |
-|---|---|
-| 1 (sekarang) | Dummy decider, XAUUSD, baseline EA end-to-end demo |
-| 2 | `deciders/claude.py` (Claude Opus 4.7, structured outputs, prompt caching) |
-| 3 | Replay tape harness (Python `MetaTrader5` lib → batch decisions → tester replay) |
-| 4 | Strategi mean-reversion + swing continuation, walk-forward, calibration confidence |
+| Phase | Konten | Status |
+|---|---|---|
+| 1 | Dummy decider, XAUUSD, baseline EA end-to-end demo | ✅ done |
+| 2 | Bulk layering EA (M1+M5+M15+H1), 3 scenario TA, basket TP, news stub | ✅ done |
+| 3 | News fetcher real (Investing.com/FXStreet); LLM reasoning di `/v2/plan` (Claude verifier) | next |
+| 4 | Replay tape harness untuk backtest di Strategy Tester | later |
+| 5 | TradingView ideas scraper, calibration confidence, walk-forward | later |
