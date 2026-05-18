@@ -386,8 +386,19 @@ void TryExecute(const string &json_response)
    double conf   = FindNumberField(json_response, "confidence", 0.0);
    int    dev    = (int)FindNumberField(json_response, "max_deviation_points", 20);
 
-   PrintFormat("[Decision] status=%s action=%s side=%s lots=%.2f sl=%.2f tp=%.2f conf=%.2f",
-               status, action, side, lots, sl, tp, conf);
+   // Extract first reason_code + rationale for log diagnostics.
+   string rationale = FindStringField(json_response, "rationale_short");
+   string reasons = "";
+   int rc_start = StringFind(json_response, "\"reason_codes\":[");
+   if(rc_start >= 0)
+   {
+      int rc_end = StringFind(json_response, "]", rc_start);
+      if(rc_end > rc_start)
+         reasons = StringSubstr(json_response, rc_start + 16, rc_end - rc_start - 16);
+   }
+
+   PrintFormat("[Decision] status=%s action=%s side=%s lots=%.2f sl=%.2f tp=%.2f conf=%.2f | %s | %s",
+               status, action, side, lots, sl, tp, conf, reasons, rationale);
 
    if(status != "ok") return;
    if(action != "open") return;
