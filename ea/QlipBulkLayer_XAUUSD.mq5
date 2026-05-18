@@ -22,6 +22,7 @@ input long    InpBaseMagic           = 250519;
 input int     InpCooldownMinutes     = 5;
 input int     InpBreakoutLookbackM15 = 20;
 input int     InpSwingLookbackH1     = 20;
+input int     InpMaxPendingMinutes   = 30;   // cancel stale pendings older than this
 
 //--- Globals
 CTrade        Trade;
@@ -388,25 +389,32 @@ double FindNumberField(const string &j, const string &key, double defv=0.0, int 
 //+------------------------------------------------------------------+
 //| HTTP                                                             |
 //+------------------------------------------------------------------+
-bool CallAdapter(const string &url, const string &body, string &out)
+bool CallAdapterOnce(const string &url, const string &body, string &out, int &http_code)
 {
-   string headers = "Content-Type: application/json\r\n";
+   string headers = "Content-Type: application/json\r\nConnection: close\r\n";
    char post[]; char result[]; string rh;
    StringToCharArray(body, post, 0, StringLen(body), CP_UTF8);
    ResetLastError();
-   int code = WebRequest("POST", url, headers, InpHttpTimeoutMs, post, result, rh);
-   if(code == -1)
+   http_code = WebRequest("POST", url, headers, InpHttpTimeoutMs, post, result, rh);
+   if(http_code == -1)
    {
       PrintFormat("WebRequest failed err=%d url=%s", GetLastError(), url);
       return false;
    }
    out = CharArrayToString(result, 0, -1, CP_UTF8);
-   if(code != 200)
-   {
-      PrintFormat("Adapter HTTP %d: %s", code, out);
-      return false;
-   }
-   return true;
+   return http_code == 200;
+}
+
+bool CallAdapter(const string &url, const string &body, string &out)
+{
+   int code = 0;
+   if(CallAdapterOnce(url, body, out, code)) return true;
+   // Retry once for intermittent failures (HTTP 1003, transient -1, etc).
+   PrintFormat("Adapter call retry (first try code=%d body=%s)", code, out);
+   Sleep(150);
+   if(CallAdapterOnce(url, body, out, code)) return true;
+   PrintFormat("Adapter call failed after retry (code=%d body=%s)", code, out);
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -438,8 +446,8 @@ bool PlaceLayer(const string &otype, double price, double lots, double sl, doubl
    req.deviation    = 20;
    req.magic        = magic;
    req.comment      = "qlip-layer";
-   req.type_time    = ORDER_TIME_SPECIFIED;
-   req.expiration   = expiration;
+   // Use GTC; EA enforces max-age cleanup via CleanupStalePendings().
+   req.type_time    = ORDER_TIME_GTC;
    req.type_filling = ORDER_FILLING_RETURN;  // recommended for pending orders
 
    if(!OrderCheck(req, chk))
@@ -628,6 +636,80 @@ void CloseBasket(const string &reason)
    g_cooldown_until = TimeCurrent() + InpCooldownMinutes * 60;
 }
 
+bool HasOpenPositionsWithMagic()
+{
+   for(int i=0; i<PositionsTotal(); i++)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionSelectByTicket(tk))
+      {
+         long m = PositionGetInteger(POSITION_MAGIC);
+         if(m >= InpBaseMagic && m <= InpBaseMagic + 5 &&
+            PositionGetString(POSITION_SYMBOL) == _Symbol)
+            return true;
+      }
+   }
+   return false;
+}
+
+void CleanupStalePendings()
+{
+   datetime cutoff = TimeCurrent() - InpMaxPendingMinutes * 60;
+   int removed = 0;
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+   {
+      ulong tk = OrderGetTicket(i);
+      if(tk == 0) continue;
+      if(OrderSelect(tk))
+      {
+         long m = OrderGetInteger(ORDER_MAGIC);
+         datetime setup = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
+         if(m >= InpBaseMagic && m <= InpBaseMagic + 5 &&
+            OrderGetString(ORDER_SYMBOL) == _Symbol &&
+            setup > 0 && setup < cutoff)
+         {
+            if(Trade.OrderDelete(tk))
+            {
+               removed++;
+               PrintFormat("Stale pending deleted ticket=%I64u magic=%d age>%dmin",
+                           tk, m, InpMaxPendingMinutes);
+            }
+         }
+      }
+   }
+   // If after cleanup no positions AND no pendings remain, reset basket state.
+   if(removed > 0 && g_basket_active && !HasOpenPositionsWithMagic())
+   {
+      bool any_pending_left = false;
+      for(int i=0; i<OrdersTotal(); i++)
+      {
+         ulong tk = OrderGetTicket(i);
+         if(tk == 0) continue;
+         if(OrderSelect(tk))
+         {
+            long m = OrderGetInteger(ORDER_MAGIC);
+            if(m >= InpBaseMagic && m <= InpBaseMagic + 5 &&
+               OrderGetString(ORDER_SYMBOL) == _Symbol)
+            { any_pending_left = true; break; }
+         }
+      }
+      if(!any_pending_left)
+      {
+         Print("All layers expired without fill; resetting basket state.");
+         g_basket_active = false;
+         g_basket_inv_price = 0.0;
+         g_basket_tp_pct = 0.0;
+         g_basket_side = "";
+         GlobalVariableDel(GV_INVPRICE);
+         GlobalVariableDel(GV_TPPCT);
+         GlobalVariableDel(GV_STARTEQ);
+         GlobalVariableDel(GV_SIDE);
+         g_cooldown_until = TimeCurrent() + InpCooldownMinutes * 60;
+      }
+   }
+}
+
 void EvaluateBasket()
 {
    if(!HasActiveBasket()) return;
@@ -669,6 +751,9 @@ void OnTimer()
    if(!MQLInfoInteger(MQL_TRADE_ALLOWED)) return;
 
    if(TimeCurrent() < g_cooldown_until) return;
+
+   // Periodically prune stale pendings — runs on every timer tick (cheap).
+   CleanupStalePendings();
 
    if(!IsNewM1Bar()) return;
 

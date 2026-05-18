@@ -173,6 +173,13 @@ def build_plan(
             volume_min=volume_min,
             volume_max=volume_max,
         )
+        # Hard safety cap: per-layer lots must not exceed max_symbol_exposure / N.
+        # Defends against bad broker tick_value reporting that would otherwise
+        # inflate sizing 100x for symbols like XAUUSD on certain demos.
+        if req.risk_state.max_symbol_exposure_lots > 0:
+            cap_per_layer = req.risk_state.max_symbol_exposure_lots / n
+            if lots > cap_per_layer:
+                lots = max(volume_min, round(cap_per_layer - (cap_per_layer % volume_step), 2))
 
         layers.append(
             LayerEntry(
