@@ -1,6 +1,6 @@
 # Bulk Layering EA — Quickstart
 
-Phase 2 EA (`QlipBulkLayer_XAUUSD.mq5`) menggunakan endpoint baru `/v2/plan` di adapter yang sama. Tidak ada perubahan setup adapter — instal-nya sama seperti Phase 1.
+Phase 2 EA (`QlipV2_XAUUSD.mq5`) menggunakan endpoint baru `/v2/plan` di adapter yang sama. Tidak ada perubahan setup adapter — instal-nya sama seperti Phase 1.
 
 ## 1. Adapter
 
@@ -20,10 +20,10 @@ curl http://127.0.0.1:8765/v1/healthz
 
 ## 2. Deploy EA Bulk Layering
 
-1. Copy `ea\QlipBulkLayer_XAUUSD.mq5` ke folder data MT5 → `MQL5\Experts\`.
+1. Copy `ea\QlipV2_XAUUSD.mq5` ke folder data MT5 → `MQL5\Experts\`.
 2. MetaEditor (F4) → buka file → Compile (F7). Harus 0 error.
 3. Di MT5, buka chart **XAUUSD M1**.
-4. Drag `QlipBulkLayer_XAUUSD` dari Navigator → chart M1.
+4. Drag `QlipV2_XAUUSD` dari Navigator → chart M1.
 5. Tab **Common** → centang Allow Algo Trading.
 6. Tab **Inputs**: biarkan default; opsi yang relevan:
    - `InpEnableTrading = true` (false untuk dry-run tanpa kirim order)
@@ -57,7 +57,7 @@ Setiap **M1 bar tertutup**:
 **Tab Experts MT5**, contoh log normal:
 
 ```
-QlipBulkLayer initialized. ACCOUNT_MARGIN_MODE=2
+QlipV2_XAUUSD initialized. ACCOUNT_MARGIN_MODE=2
 [Plan] status=ok scenario=RANGE_REVERT side=buy conf=0.72 basket_tp_pct=1.500 inv=2388.45
 Layer placed magic=250520 type=buy_limit @2389.30 lots=0.04 sl=2386.80 exp=2026.05.18 17:05
 Layer placed magic=250521 type=buy_limit @2388.20 lots=0.04 sl=2385.70 exp=2026.05.18 17:05

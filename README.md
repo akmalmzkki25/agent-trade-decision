@@ -2,7 +2,7 @@
 
 Bot trading otomatis untuk **MetaTrader 5** dengan arsitektur tiga lapis:
 
-- **Execution plane** — Expert Advisor MQL5 (`ea/QlipTrendBreakout_XAUUSD.mq5`).
+- **Execution plane** — Expert Advisor MQL5 (`ea/QlipV1_XAUUSD.mq5`).
 - **Decision plane** — Adapter FastAPI Python (`adapter/`). Phase 1: rule-based dummy. Phase 2: Claude Opus 4.7.
 - **Research/replay plane** — menyusul di Phase 3.
 
@@ -10,8 +10,8 @@ Dokumen rancangan asli ada di [`knowledge/`](knowledge/).
 
 ## Status
 
-**Phase 1** — `QlipTrendBreakout_XAUUSD.mq5` + `/v1/decision` (dummy, single order, M15).
-**Phase 2** — `QlipBulkLayer_XAUUSD.mq5` + `/v2/plan` (M1, 3 scenario, 3–5 pending layers, basket TP).
+**Phase 1** — `QlipV1_XAUUSD.mq5` + `/v1/decision` (dummy, single order, M15).
+**Phase 2** — `QlipV2_XAUUSD.mq5` + `/v2/plan` (M1, 3 scenario, 3–5 pending layers, basket TP).
 **Phase 3 (V3 Aggressive)** — `QlipV3_XAUUSD.mq5` + `/v3/plan` (M1, 5 scenario incl. AGGRESSIVE_BIAS, mixed market+limit+stop ladder, 2 parallel baskets, DXY/VIX bias).
 **Phase 4 (V4 Liquidity Zone)** — `QlipV4_XAUUSD.mq5` + `/v4/plan` (M1, single quality scenario, 2 in-zone limits, partial TP @+30pip → SL ke BE, runner cap +100pip).
 **Phase 5 (V5 Scalping Burst)** — `QlipV5_XAUUSD.mq5` + `/v5/burst` (tick-driven, 3 market orders per burst, up to 3 averaging bursts per basket, basket TP $5/0.05%, basket SL $30/0.30%, max 2-min lifetime).
@@ -45,7 +45,7 @@ copy .env.example .env
 uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
-Compile `ea/QlipTrendBreakout_XAUUSD.mq5` di MetaEditor → drag ke chart XAUUSD M15. Allowlist `http://127.0.0.1:8765` di Tools → Options → Expert Advisors.
+Compile `ea/QlipV1_XAUUSD.mq5` di MetaEditor → drag ke chart XAUUSD M15. Allowlist `http://127.0.0.1:8765` di Tools → Options → Expert Advisors.
 
 ## Tests
 

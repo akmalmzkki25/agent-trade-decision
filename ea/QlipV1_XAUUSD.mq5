@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| QlipTrendBreakout_XAUUSD.mq5                                     |
+//| QlipV1_XAUUSD.mq5                                     |
 //| Phase 1 MVP EA: XAUUSD H1 context + M15 decision                 |
 //|                                                                  |
 //| Architecture: EA owns execution; FastAPI adapter (localhost)     |
@@ -58,7 +58,7 @@ int OnInit()
    }
 
    EventSetTimer(15);
-   Print("QlipTrendBreakout_XAUUSD initialized.");
+   Print("QlipV1_XAUUSD initialized.");
    return(INIT_SUCCEEDED);
 }
 

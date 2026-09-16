@@ -1,6 +1,6 @@
 # Setup MT5 + Exness Demo untuk Qlip MVP
 
-Panduan ringkas untuk menjalankan **Phase 1 MVP** (EA `QlipTrendBreakout_XAUUSD.mq5` + adapter FastAPI dummy decider) di MetaTrader 5 dengan akun **demo Exness**.
+Panduan ringkas untuk menjalankan **Phase 1 MVP** (EA `QlipV1_XAUUSD.mq5` + adapter FastAPI dummy decider) di MetaTrader 5 dengan akun **demo Exness**.
 
 ## 1. Install MetaTrader 5
 
@@ -49,7 +49,7 @@ Harus return `{"ok":true,"version":"0.1.0","decider":"dummy_trend_breakout",...}
 
 ## 4. Compile & deploy EA
 
-1. Copy `ea\QlipTrendBreakout_XAUUSD.mq5` ke folder data MT5:
+1. Copy `ea\QlipV1_XAUUSD.mq5` ke folder data MT5:
    - Buka MT5 → **File → Open Data Folder** → masuk ke `MQL5\Experts\`.
    - Paste file `.mq5` di sana.
 2. Buka **MetaEditor** (F4 di MT5) → buka file → **Compile** (F7). Harus 0 error.

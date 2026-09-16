@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| QlipBulkLayer_XAUUSD.mq5                                         |
+//| QlipV2_XAUUSD.mq5                                         |
 //| Phase 2 EA: M1 trigger, multi-timeframe (M1+M5+M15+H1),          |
 //| bulk layering pending orders, basket TP + invalidation.          |
 //|                                                                  |
@@ -40,10 +40,10 @@ double        g_basket_start_eq  = 0.0;
 bool          g_basket_active    = false;
 string        g_basket_side      = "";
 
-#define GV_INVPRICE "QlipBulkLayer_InvPrice"
-#define GV_TPPCT    "QlipBulkLayer_TpPct"
-#define GV_STARTEQ  "QlipBulkLayer_StartEq"
-#define GV_SIDE     "QlipBulkLayer_Side"
+#define GV_INVPRICE "QlipV2_InvPrice"
+#define GV_TPPCT    "QlipV2_TpPct"
+#define GV_STARTEQ  "QlipV2_StartEq"
+#define GV_SIDE     "QlipV2_Side"
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -95,7 +95,7 @@ int OnInit()
    }
 
    long mode = AccountInfoInteger(ACCOUNT_MARGIN_MODE);
-   PrintFormat("QlipBulkLayer initialized. ACCOUNT_MARGIN_MODE=%d", (int)mode);
+   PrintFormat("QlipV2_XAUUSD initialized. ACCOUNT_MARGIN_MODE=%d", (int)mode);
 
    EventSetTimer(2);
    return(INIT_SUCCEEDED);
