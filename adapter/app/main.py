@@ -9,6 +9,7 @@ Each API surface lives in its own router under `app/routes/`:
     /v3/plan                    aggressive mixed ladder  routes/plans_v3.py
     /v4/plan                    liquidity-zone entry     routes/plans_v4.py
     /v5/burst                   scalping burst           routes/burst_v5.py
+    /v6/*                       V6 EA data plane         routes/v6_ea.py
     /dashboard, /api/dashboard  analytics UI + JSON      routes/dashboard.py
 
 Shared singletons (ledger, decider, templates) live in `app/deps.py` so routers
@@ -25,8 +26,11 @@ from fastapi.responses import JSONResponse
 
 from . import __version__
 from .deps import decider_name, ledger, logger
-from .routes import burst_v5, dashboard, decision, events, plans_v2, plans_v3, plans_v4
+from .routes import burst_v5, dashboard, decision, events, plans_v2, plans_v3, plans_v4, v6_ea
 from .settings import settings
+from .v6.clock import Clock
+from .v6.config import V6Settings
+from .v6.container import APP_STATE_KEY, container_for_app, v6_lifespan
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +43,8 @@ async def lifespan(app: FastAPI):
     logger.info("adapter starting (version=%s, decider=%s)", __version__, decider_name())
     if not settings.hmac_required:
         logger.warning("HMAC check DISABLED (dev mode). Set HMAC_REQUIRED=true for production.")
-    yield
+    async with v6_lifespan(app):
+        yield
     logger.info("adapter shutting down")
 
 
@@ -63,8 +68,16 @@ SECURITY_HEADERS = {
 }
 
 
-def create_app() -> FastAPI:
-    """Build the FastAPI application and mount every router."""
+def create_app(
+    v6_settings: V6Settings | None = None,
+    clock: Clock | None = None,
+    v6_db_path: str | None = None,
+) -> FastAPI:
+    """Build the FastAPI application and mount every router.
+
+    The V6 arguments exist for isolated test apps; `None` means V6 settings
+    from the environment, the system clock and the adapter database.
+    """
     application = FastAPI(
         title="mt5-claude-adapter",
         version=__version__,
@@ -73,6 +86,8 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if settings.enable_docs else None,
         openapi_url="/openapi.json" if settings.enable_docs else None,
     )
+    setattr(application.state, APP_STATE_KEY,
+            container_for_app(v6_settings, v6_db_path or settings.db_path, clock))
 
     @application.middleware("http")
     async def add_security_headers(request, call_next):
@@ -88,6 +103,7 @@ def create_app() -> FastAPI:
         plans_v3.router,
         plans_v4.router,
         burst_v5.router,
+        v6_ea.router,
         dashboard.router,
     ):
         application.include_router(router)

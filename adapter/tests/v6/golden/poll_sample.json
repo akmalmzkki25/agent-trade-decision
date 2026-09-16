@@ -1,0 +1,18 @@
+{
+  "schema_version": "v6.poll.1",
+  "login": "10000001",
+  "trade_mode": "DEMO",
+  "server": "MetaQuotes-Demo",
+  "sent_at_epoch": 1789565407,
+  "balance": 92429.34,
+  "equity": 92429.34,
+  "free_margin": 92429.34,
+  "bid": 4535.18,
+  "ask": 4535.35,
+  "spread_points": 17,
+  "open_v6_positions": 0,
+  "pending_v6_orders": 0,
+  "floating_pnl_v6": 0.00,
+  "last_intent_id": "",
+  "local_halt": false
+}

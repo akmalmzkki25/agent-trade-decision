@@ -41,7 +41,7 @@ def hmac_ok(raw_body: bytes, signature: str | None) -> bool:
     if not signature:
         return False
     expected = hmac.new(
-        settings.internal_hmac_key.encode("utf-8"),
+        settings.internal_hmac_key.get_secret_value().encode("utf-8"),
         raw_body,
         hashlib.sha256,
     ).hexdigest()
@@ -81,27 +81,54 @@ def reject_cross_site(request: Request) -> None:
             raise HTTPException(status_code=403, detail="cross-site request rejected")
 
 
+def _too_large() -> HTTPException:
+    return HTTPException(status_code=413, detail="request body too large")
+
+
+def reject_declared_oversize(request: Request, limit: int) -> None:
+    """Refuse a body whose declared Content-Length already exceeds `limit`."""
+    content_length = request.headers.get("content-length")
+    if content_length is None:
+        return
+    try:
+        declared = int(content_length)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid Content-Length") from None
+    if declared > limit:
+        raise _too_large()
+
+
+async def read_capped_body(request: Request, limit: int) -> bytes:
+    """
+    Buffer the body, refusing it the moment it grows past `limit`.
+
+    A chunked request carries no Content-Length, so the header check alone
+    would let a local process stream an unbounded body into the single adapter
+    worker before any size check ran. Counting while reading bounds the buffer
+    to one server-sized chunk past the limit.
+    """
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > limit:
+            raise _too_large()
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 async def read_verified_body(request: Request, signature: str | None) -> bytes:
     """
     Run every inbound-request guard, then return the raw body.
 
-    Order matters: cheap header checks run before the body is buffered so a
-    forged or oversized request is dropped before it costs memory.
+    Order matters: cheap header checks run before any body byte is read, so a
+    forged or declared-oversized request is dropped before it costs memory.
     """
     require_json_content_type(request)
     reject_cross_site(request)
+    reject_declared_oversize(request, settings.max_request_bytes)
 
-    content_length = request.headers.get("content-length")
-    if content_length is not None:
-        try:
-            if int(content_length) > settings.max_request_bytes:
-                raise HTTPException(status_code=413, detail="request body too large")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="invalid Content-Length")
-
-    raw = await request.body()
-    if len(raw) > settings.max_request_bytes:
-        raise HTTPException(status_code=413, detail="request body too large")
+    raw = await read_capped_body(request, settings.max_request_bytes)
 
     if not hmac_ok(raw, signature):
         raise HTTPException(status_code=401, detail="invalid signature")

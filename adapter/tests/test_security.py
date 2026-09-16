@@ -59,6 +59,80 @@ def test_write_endpoints_reject_foreign_origin(path):
     assert r.status_code == 403, f"{path} accepted a foreign Origin"
 
 
+# V6 routes answer 404 while V6 is disabled (as it is for the shared `app`), so
+# their guards are checked on an isolated app with V6 enabled.
+V6_WRITE_ENDPOINTS = [
+    "/v6/bars/backfill",
+    "/v6/snapshot",
+    "/v6/intent/poll",
+    "/v6/execution",
+]
+
+
+@pytest.fixture(scope="module")
+def v6_client(tmp_path_factory):
+    from app.main import create_app
+    from app.v6.clock import FakeClock
+    from app.v6.config import V6Settings
+
+    tmp = tmp_path_factory.mktemp("v6-security")
+    v6_app = create_app(
+        v6_settings=V6Settings(_env_file=None, enabled=True, halt_file=str(tmp / "V6_HALT")),
+        clock=FakeClock(),
+        v6_db_path=str(tmp / "v6.db"),
+    )
+    with TestClient(v6_app) as v6:
+        yield v6
+
+
+@pytest.mark.parametrize("path", V6_WRITE_ENDPOINTS)
+def test_v6_write_endpoints_are_hidden_while_v6_is_disabled(path):
+    r = client.post(path, content=b"{}", headers={"Content-Type": "application/json"})
+    assert r.status_code == 404, f"{path} is reachable with V6 disabled"
+
+
+@pytest.mark.parametrize("path", V6_WRITE_ENDPOINTS)
+def test_v6_write_endpoints_reject_non_json_content_type(v6_client, path):
+    r = v6_client.post(path, content=b'{"hello": "world"}',
+                       headers={"Content-Type": "text/plain"})
+    assert r.status_code == 415, f"{path} accepted a text/plain body"
+
+
+@pytest.mark.parametrize("path", V6_WRITE_ENDPOINTS)
+def test_v6_write_endpoints_reject_cross_site_fetch(v6_client, path):
+    r = v6_client.post(
+        path,
+        content=b"{}",
+        headers={"Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"},
+    )
+    assert r.status_code == 403, f"{path} accepted a cross-site request"
+
+
+@pytest.mark.parametrize("path", V6_WRITE_ENDPOINTS)
+def test_v6_write_endpoints_reject_foreign_origin(v6_client, path):
+    r = v6_client.post(
+        path,
+        content=b"{}",
+        headers={"Content-Type": "application/json", "Origin": "https://evil.example"},
+    )
+    assert r.status_code == 403, f"{path} accepted a foreign Origin"
+
+
+@pytest.mark.parametrize("path", V6_WRITE_ENDPOINTS)
+def test_v6_write_endpoints_reject_oversized_bodies(v6_client, path):
+    from app.settings import settings
+
+    r = v6_client.post(
+        path,
+        content=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(settings.max_request_bytes + 1),
+        },
+    )
+    assert r.status_code == 413, f"{path} accepted an oversized body"
+
+
 def test_same_origin_request_is_allowed_through_to_validation():
     """Same-origin requests pass the CSRF guard and reach schema validation."""
     r = client.post(

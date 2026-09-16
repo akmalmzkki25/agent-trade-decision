@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 from typing import Final
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PLACEHOLDER_HMAC_KEY: Final[str] = "change-me-dev-only"
@@ -30,7 +30,9 @@ class Settings(BaseSettings):
     db_path: str = "./trade_ledger.db"
     replay_dir: str = "./replay_tapes"
 
-    internal_hmac_key: str = PLACEHOLDER_HMAC_KEY
+    # Secrets are SecretStr so a repr, a dump or a logged Settings never shows
+    # them; read the value only where it is used, via get_secret_value().
+    internal_hmac_key: SecretStr = SecretStr(PLACEHOLDER_HMAC_KEY)
     hmac_required: bool = False
 
     # Largest request body accepted before parsing (payloads are ~2-4 KB).
@@ -42,7 +44,7 @@ class Settings(BaseSettings):
     decider: str = "dummy_trend_breakout"
     adapter_default_max_deviation_points: int = 20
 
-    anthropic_api_key: str = ""
+    anthropic_api_key: SecretStr = SecretStr("")
     anthropic_model: str = "claude-opus-4-7"
     anthropic_timeout_seconds: float = 1.6
 
@@ -62,7 +64,8 @@ class Settings(BaseSettings):
                 "must be true. Either bind to 127.0.0.1 or set HMAC_REQUIRED=true "
                 "together with a strong INTERNAL_HMAC_KEY."
             )
-        if self.hmac_required and self.internal_hmac_key.strip() in ("", PLACEHOLDER_HMAC_KEY):
+        hmac_key = self.internal_hmac_key.get_secret_value().strip()
+        if self.hmac_required and hmac_key in ("", PLACEHOLDER_HMAC_KEY):
             raise ValueError(
                 "HMAC_REQUIRED=true but INTERNAL_HMAC_KEY is unset or still the "
                 "published placeholder. Set a strong random secret."

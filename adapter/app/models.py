@@ -561,7 +561,7 @@ class BasketResultEvent(BaseModel):
 
     schema_version: Literal["basket-result-event.v1"]
     basket_id: str
-    version: Literal["v2", "v3", "v4", "v5"]
+    version: Literal["v2", "v3", "v4", "v5", "v6"]
     symbol: str
     side: Literal["buy", "sell", "none"]
     opened_at_utc: str

@@ -14,6 +14,10 @@ replay_tapes/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+V6_HALT
 dist/
 build/
 *.log
