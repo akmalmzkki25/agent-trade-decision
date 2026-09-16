@@ -1,0 +1,81 @@
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+from .fixtures_v5 import make_v5_request
+
+client = TestClient(app)
+
+
+def test_v5_burst_ok():
+    req = make_v5_request()
+    r = client.post(
+        "/v5/burst",
+        content=req.model_dump_json(),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["burst"]["scenario"] == "SCALP_MICRO"
+    assert len(body["burst"]["layers"]) == 3
+    assert body["burst"]["layers"][0]["order_type"] in ("buy_market", "sell_market")
+
+
+def test_v5_vetoed_when_halted():
+    req = make_v5_request(halted=True)
+    r = client.post(
+        "/v5/burst",
+        content=req.model_dump_json(),
+        headers={"Content-Type": "application/json"},
+    )
+    body = r.json()
+    assert body["status"] == "veto"
+    assert body["error"]["code"] == "APP-SAFE-409"
+
+
+def test_v5_vetoed_when_margin_low():
+    req = make_v5_request(margin_level_pct=200.0)
+    r = client.post("/v5/burst", content=req.model_dump_json(), headers={"Content-Type": "application/json"})
+    body = r.json()
+    assert body["status"] == "veto"
+    assert body["error"]["code"] == "APP-MARGIN-409"
+
+
+def test_v5_vetoed_when_rate_limit():
+    req = make_v5_request(last_burst_ms_ago=100)
+    r = client.post("/v5/burst", content=req.model_dump_json(), headers={"Content-Type": "application/json"})
+    body = r.json()
+    assert body["status"] == "veto"
+    assert body["error"]["code"] == "APP-RATE-429"
+
+
+def test_v5_vetoed_when_basket_full():
+    req = make_v5_request(active_basket_bursts=3)
+    r = client.post("/v5/burst", content=req.model_dump_json(), headers={"Content-Type": "application/json"})
+    body = r.json()
+    assert body["status"] == "veto"
+    assert body["error"]["code"] == "APP-CAPACITY-409"
+
+
+def test_v5_ok_empty_when_no_scalp():
+    req = make_v5_request(tick_momentum_signed=0.0)
+    r = client.post("/v5/burst", content=req.model_dump_json(), headers={"Content-Type": "application/json"})
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["burst"]["scenario"] == "NONE"
+
+
+def test_v5_invalid_400():
+    r = client.post("/v5/burst", json={"foo": "bar"})
+    assert r.status_code == 400
+
+
+def test_v5_response_includes_exit_rules():
+    req = make_v5_request()
+    r = client.post("/v5/burst", content=req.model_dump_json(), headers={"Content-Type": "application/json"})
+    body = r.json()
+    rules = body["burst"]["exit_rules"]
+    assert rules["basket_tp_usd"] == 5.0
+    assert rules["basket_sl_usd"] == 30.0
+    assert rules["max_bursts_per_basket"] == 3
