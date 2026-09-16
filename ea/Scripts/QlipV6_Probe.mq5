@@ -37,6 +37,11 @@ input int InpCalendarCodesShown   = 10;   // Calendar events listed
 #define BOOK_EPSILON       1e-9
 #define SMALL_LOT          0.01
 #define FULL_LOT           1.0
+#define PRICE_MOVE         1.0     // $1 move used to ask MT5 for profit per lot
+#define DEAL_LOOKBACK_DAYS 3
+#define DEALS_EXAMINED     200     // closing deals inspected, newest first
+#define DEALS_SHOWN        5
+#define MIN_DEAL_MOVE      0.05    // smaller moves make the implied size too noisy
 
 //--- minimal JSON writer -------------------------------------------
 
@@ -359,6 +364,89 @@ string MarginSection(void)
    return Obj(s);
 }
 
+//--- profit per lot: which of tick_value and contract_size is right --
+
+string ProfitSection(void)
+{
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double profit = 0.0;
+   ResetLastError();
+   bool ok = OrderCalcProfit(ORDER_TYPE_BUY, _Symbol, FULL_LOT, ask, ask + PRICE_MOVE, profit);
+   int error = ok ? 0 : GetLastError();
+   string s = "";
+   Put(s, "profit", "ok", B(ok));
+   Put(s, "profit", "error", I(error));
+   Put(s, "profit", "buy_1_lot_plus_1_usd", N(profit, MONEY_DIGITS));
+   Put(s, "profit", "implied_contract_size", N(profit / PRICE_MOVE, RATIO_DIGITS));
+   return Obj(s);
+}
+
+double EntryPriceOf(const long position_id, const int count)
+{
+   for(int i = 0; i < count; i++)
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(HistoryDealGetInteger(ticket, DEAL_POSITION_ID) == position_id
+         && HistoryDealGetInteger(ticket, DEAL_ENTRY) == DEAL_ENTRY_IN)
+         return HistoryDealGetDouble(ticket, DEAL_PRICE);
+   }
+   return 0.0;
+}
+
+// Realised profit / (price move x volume) for one closing deal; 0 when unusable.
+double ImpliedFromDeal(const ulong ticket, const int count)
+{
+   double entry = EntryPriceOf(HistoryDealGetInteger(ticket, DEAL_POSITION_ID), count);
+   double exit_price = HistoryDealGetDouble(ticket, DEAL_PRICE);
+   double volume = HistoryDealGetDouble(ticket, DEAL_VOLUME);
+   // A closing SELL ends a long position, which gains when price rises.
+   double direction = (HistoryDealGetInteger(ticket, DEAL_TYPE) == DEAL_TYPE_SELL) ? 1.0 : -1.0;
+   double move = (exit_price - entry) * direction;
+   if(entry <= 0.0 || volume <= 0.0 || MathAbs(move) < MIN_DEAL_MOVE)
+      return 0.0;
+   return HistoryDealGetDouble(ticket, DEAL_PROFIT) / (move * volume);
+}
+
+bool IsSymbolExit(const ulong ticket)
+{
+   return HistoryDealGetString(ticket, DEAL_SYMBOL) == _Symbol
+          && HistoryDealGetInteger(ticket, DEAL_ENTRY) == DEAL_ENTRY_OUT;
+}
+
+string DealsSection(void)
+{
+   datetime now = TimeCurrent();
+   bool ok = HistorySelect(now - DEAL_LOOKBACK_DAYS * SECONDS_PER_DAY, now);
+   int count = ok ? HistoryDealsTotal() : 0;
+   double implied[];
+   string samples = "";
+   int examined = 0;
+   for(int i = count - 1; i >= 0 && examined < DEALS_EXAMINED; i--)
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(!IsSymbolExit(ticket))
+         continue;
+      examined++;
+      double value = ImpliedFromDeal(ticket, count);
+      if(value == 0.0)
+         continue;
+      int n = ArraySize(implied);
+      ArrayResize(implied, n + 1);
+      implied[n] = value;
+      if(n < DEALS_SHOWN)
+         StringAdd(samples, (n > 0 ? "," : "") + N(value, RATIO_DIGITS));
+   }
+   int used = ArraySize(implied);
+   ArraySort(implied);
+   string s = "";
+   Put(s, "deals", "history_ok", B(ok));
+   Put(s, "deals", "exits_examined", I(examined));
+   Put(s, "deals", "exits_used", I(used));
+   Put(s, "deals", "implied_contract_size_median", used > 0 ? N(implied[used / 2], RATIO_DIGITS) : "null");
+   Put(s, "deals", "implied_samples", "[" + samples + "]");
+   return Obj(s);
+}
+
 //--- output --------------------------------------------------------
 
 bool WriteProbeFile(const string json)
@@ -392,6 +480,8 @@ void OnStart(void)
    Put(body, "probe", "clock", ClockSection());
    Put(body, "probe", "calendar", CalendarSection(offset));
    Put(body, "probe", "margin", MarginSection());
+   Put(body, "probe", "profit", ProfitSection());
+   Put(body, "probe", "deals", DealsSection());
    if(WriteProbeFile(Obj(body)))
       PrintFormat("probe: written to MQL5/Files/%s", PROBE_FILE);
 }
