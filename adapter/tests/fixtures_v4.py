@@ -1,0 +1,112 @@
+from __future__ import annotations
+
+from app.models import (
+    AccountSnapshot,
+    FeatureBundle,
+    MarketSnapshot,
+    OpenClawContext,
+    PositionSnapshot,
+    RiskState,
+    V4PlanRequest,
+)
+
+
+def make_v4_request(
+    *,
+    halted: bool = False,
+    has_active_basket: bool = False,
+    spread_points: float = 8.0,
+    last_close: float = 4170.00,
+    pip_size: float = 0.10,
+    atr_m5: float = 1.20,
+    atr_m1: float = 0.50,
+    atr_m15: float = 2.50,
+    atr_h1: float = 4.00,
+    # Zone inputs (H1)
+    swing_high_h1: float = 4200.00,
+    swing_low_h1: float = 4155.00,
+    # M15 / M5 confirm
+    close_m15: float = 4170.00,
+    close_m5: float = 4168.00,
+    m5_direction: float = -1.0,
+    m5_body_atr: float = 0.20,
+    request_id: str = "TEST-XAUUSD-V4M1-2026-05-21T09:00:00Z",
+) -> V4PlanRequest:
+    return V4PlanRequest(
+        schema_version="v4-plan-request.v1",
+        request_id=request_id,
+        mode="paper",
+        timestamp_utc="2026-05-21T09:00:00+00:00",
+        symbol="XAUUSD",
+        timeframe="M1",
+        bar_index=1,
+        market=MarketSnapshot(
+            bid=last_close - 0.05,
+            ask=last_close + 0.05,
+            last_close=last_close,
+            spread_points=spread_points,
+            digits=2,
+            stops_level_points=50,
+            freeze_level_points=10,
+            tick_size=0.01,
+            tick_value=1.0,
+        ),
+        account=AccountSnapshot(
+            login="demo-1",
+            balance=10000.0,
+            equity=10000.0,
+            free_margin=9500.0,
+            margin_level=900.0,
+            currency="USD",
+            leverage=200,
+        ),
+        position=PositionSnapshot(
+            net_position=0.0,
+            avg_price=0.0,
+            floating_pnl=0.0,
+            open_positions_count=0,
+            pending_orders_count=0,
+            side="flat",
+        ),
+        risk_state=RiskState(
+            max_risk_per_trade_pct=1.0,
+            max_symbol_exposure_lots=0.50,
+            daily_drawdown_pct=0.0,
+            consecutive_losses=0,
+            cooldown_until_utc=None,
+            trading_halted=halted,
+            blackout_reason=None,
+        ),
+        features=FeatureBundle(
+            context_tf={
+                "adx_strength": 0.0,
+                "di_balance": 0.0,
+                "atr_pct": 0.001,
+                "atr_abs_h1": atr_h1,
+                "swing_high_h1": swing_high_h1,
+                "swing_low_h1": swing_low_h1,
+            },
+            decision_tf={
+                "close_m1": last_close,
+            },
+            execution_tf={
+                "spread_to_atr_ratio": 0.05,
+                "atr_abs": atr_m1,
+                "atr_abs_m15": atr_m15,
+                "atr_abs_m5": atr_m5,
+                "atr_abs_m1": atr_m1,
+                "pip_size": pip_size,
+                "volume_step": 0.01,
+                "volume_min": 0.01,
+                "volume_max": 50.0,
+            },
+            confirm_tf={
+                "close_m15": close_m15,
+                "close_m5": close_m5,
+                "m5_direction": m5_direction,
+                "m5_body_atr": m5_body_atr,
+            },
+        ),
+        openclaw_context=OpenClawContext(mode="normal"),
+        has_active_basket=has_active_basket,
+    )
