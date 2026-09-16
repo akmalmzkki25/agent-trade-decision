@@ -10,18 +10,29 @@ Dokumen rancangan asli ada di [`knowledge/`](knowledge/).
 
 ## Status
 
-**Phase 1 MVP** — `QlipTrendBreakout_XAUUSD.mq5` + endpoint `/v1/decision` (dummy decider, single order).
-**Phase 2** — `QlipBulkLayer_XAUUSD.mq5` + endpoint `/v2/plan` (3 scenario TA → 3–5 layer pending orders, basket TP, invalidation).
+**Phase 1** — `QlipTrendBreakout_XAUUSD.mq5` + `/v1/decision` (dummy, single order, M15).
+**Phase 2** — `QlipBulkLayer_XAUUSD.mq5` + `/v2/plan` (M1, 3 scenario, 3–5 pending layers, basket TP).
+**Phase 3 (V3 Aggressive)** — `QlipV3_XAUUSD.mq5` + `/v3/plan` (M1, 5 scenario incl. AGGRESSIVE_BIAS, mixed market+limit+stop ladder, 2 parallel baskets, DXY/VIX bias).
+**Phase 4 (V4 Liquidity Zone)** — `QlipV4_XAUUSD.mq5` + `/v4/plan` (M1, single quality scenario, 2 in-zone limits, partial TP @+30pip → SL ke BE, runner cap +100pip).
+**Phase 5 (V5 Scalping Burst)** — `QlipV5_XAUUSD.mq5` + `/v5/burst` (tick-driven, 3 market orders per burst, up to 3 averaging bursts per basket, basket TP $5/0.05%, basket SL $30/0.30%, max 2-min lifetime).
 
-Adapter melayani kedua endpoint dari proses yang sama. Phase 1 dan Phase 2 EA bisa attach bersamaan di simbol sama (magic terpisah: 250518 vs 250519+).
+Semua EA bisa attach paralel. Magic terpisah:
+- V1: 250518 · V2: 250519..250524 · V3: 250530..250544 · V4: 250551..250552 · V5: 250560..250569
 
-Out-of-scope (Phase 3+): integrasi Claude, news fetcher real, TradingView scraper, replay tape backtest, OpenClaw control plane.
+**Performance metrics** — setiap basket yang close di-POST ke `/v1/events/basket-result` dan diagregasi jadi profit factor, win rate, expected value, max floating drawdown, p95 latency, dan rata-rata slippage/spread. Lihat card "Strategy performance" di `/dashboard`, atau `GET /api/dashboard/metrics?version=v5`. Dashboard menandai sample < 1000 basket sebagai *"too early to trust"*.
+
+Out-of-scope: Claude integration, news fetcher real, TradingView scraper, replay tape backtest, OpenClaw control plane.
 
 ## Quickstart
 
 - Setup awal MT5 + adapter: [`docs/setup-mt5-exness.md`](docs/setup-mt5-exness.md)
 - Phase 2 bulk layering EA: [`docs/bulk-layering-quickstart.md`](docs/bulk-layering-quickstart.md)
-- Design spec Phase 2: [`docs/superpowers/specs/2026-05-18-bulk-layering-design.md`](docs/superpowers/specs/2026-05-18-bulk-layering-design.md)
+- Phase 3 V3 aggressive EA: [`docs/v3-aggressive-quickstart.md`](docs/v3-aggressive-quickstart.md)
+- Phase 4 V4 liquidity zone EA: [`docs/v4-liquidity-zone-quickstart.md`](docs/v4-liquidity-zone-quickstart.md)
+- Phase 5 V5 scalping burst EA: [`docs/v5-scalping-quickstart.md`](docs/v5-scalping-quickstart.md)
+- Design specs:
+  - Phase 2: [`docs/superpowers/specs/2026-05-18-bulk-layering-design.md`](docs/superpowers/specs/2026-05-18-bulk-layering-design.md)
+  - Phase 3: [`docs/superpowers/specs/2026-05-18-v3-aggressive-design.md`](docs/superpowers/specs/2026-05-18-v3-aggressive-design.md)
 
 Singkat:
 
