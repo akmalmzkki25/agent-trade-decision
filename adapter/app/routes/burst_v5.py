@@ -144,9 +144,38 @@ async def v5_burst(request: Request, x_internal_sig: str | None = Header(default
         ledger.write_v5_burst(req, resp)
         return resp
 
+    # 7) Direction must match the basket already in progress.
+    #
+    # Extra bursts are meant to average into an existing position. A burst in
+    # the opposite direction hedges the basket instead: the offsetting legs sit
+    # frozen, spread is paid on both, and the collective TP becomes much harder
+    # to reach. Live data showed a basket opened sell, then buy, then sell.
+    # An EA that restarted mid-basket can report bursts with no side. That is
+    # unknown direction, not free direction, so it is refused rather than
+    # allowed through the truthiness check below.
+    if req.active_basket_bursts > 0 and not req.active_basket_side:
+        resp = _v5_veto(
+            req,
+            "Basket has bursts but no known side; refusing to add to it.",
+            "APP-SIDE-409",
+            news=news,
+        )
+        ledger.write_v5_burst(req, resp)
+        return resp
+
+    if req.active_basket_side and req.active_basket_side != assessment.side:
+        resp = _v5_veto(
+            req,
+            f"Basket is {req.active_basket_side}; refusing to add {assessment.side}.",
+            "APP-SIDE-409",
+            news=news,
+        )
+        ledger.write_v5_burst(req, resp)
+        return resp
+
     winner = assessment
 
-    # 7) Build burst.
+    # 8) Build burst.
     try:
         burst = build_burst_v5(scenario=winner, req=req)
     except Exception as e:

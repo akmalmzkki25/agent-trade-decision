@@ -529,6 +529,9 @@ class V5BurstRequest(BaseModel):
     openclaw_context: OpenClawContext = Field(default_factory=OpenClawContext)
     # V5-specific state from EA
     active_basket_bursts: int = 0           # how many bursts already in active basket
+    # Direction of the basket already in progress: "buy", "sell", or "" when flat.
+    # Later bursts must match it, otherwise the basket hedges itself.
+    active_basket_side: Literal["buy", "sell", ""] = ""
     last_burst_ms_ago: int = 999999         # ms since last burst (rate-limit gate)
     margin_level_pct: float = 0.0           # current margin level
 

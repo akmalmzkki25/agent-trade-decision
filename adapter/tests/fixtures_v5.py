@@ -27,6 +27,7 @@ def make_v5_request(
     dom_imbalance: float = 0.0,
     di_balance: float = 0.15,
     active_basket_bursts: int = 0,
+    active_basket_side: str = "",
     last_burst_ms_ago: int = 999999,
     margin_level_pct: float = 900.0,
     request_id: str = "TEST-V5-2026-05-21T09:00:00Z",
@@ -92,6 +93,7 @@ def make_v5_request(
         ),
         openclaw_context=OpenClawContext(mode="normal"),
         active_basket_bursts=active_basket_bursts,
+        active_basket_side=active_basket_side,
         last_burst_ms_ago=last_burst_ms_ago,
         margin_level_pct=margin_level_pct,
     )

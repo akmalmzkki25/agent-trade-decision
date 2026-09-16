@@ -74,6 +74,11 @@ int           g_basket_last_latency_ms = 0;
 #define GV_BASKET_BURSTS     GV_PREFIX "BURSTS"
 #define GV_BASKET_STARTEQ    GV_PREFIX "STARTEQ"
 #define GV_COOLDOWN          GV_PREFIX "COOLDOWN"
+// Global variables hold doubles only, so the basket direction is stored as a
+// sign: +1 buy, -1 sell, 0 flat.
+#define GV_BASKET_SIDE       GV_PREFIX "BSIDE"
+#define SIDE_CODE_BUY        1.0
+#define SIDE_CODE_SELL       (-1.0)
 #define GV_LAST_BURST_MS     GV_PREFIX "LASTMS"
 
 //+------------------------------------------------------------------+
@@ -105,6 +110,14 @@ int OnInit()
    if(GlobalVariableCheck(GV_BASKET_BURSTS)) g_basket_bursts    = (int)GlobalVariableGet(GV_BASKET_BURSTS);
    if(GlobalVariableCheck(GV_BASKET_STARTEQ)) g_basket_start_eq = GlobalVariableGet(GV_BASKET_STARTEQ);
    if(GlobalVariableCheck(GV_COOLDOWN)) g_cooldown_until = (datetime)GlobalVariableGet(GV_COOLDOWN);
+   // Without this the adapter's side gate sees an empty side after a restart
+   // and would let an opposite burst hedge a basket that is still open.
+   if(GlobalVariableCheck(GV_BASKET_SIDE))
+   {
+      double side_code = GlobalVariableGet(GV_BASKET_SIDE);
+      if(side_code > 0)      g_basket_side = "buy";
+      else if(side_code < 0) g_basket_side = "sell";
+   }
 
    PrintFormat("V5 EA initialized. magic=%d..%d basket_open=%s bursts=%d start_eq=%.2f cooldown=%s",
                InpBaseMagic, InpBaseMagic + InpMagicSlots - 1,
@@ -399,7 +412,19 @@ void PostBasketResult(const string &reason, double net_pnl,
    char post[]; char res[]; string rh;
    StringToCharArray(body, post, 0, StringLen(body), CP_UTF8);
    ResetLastError();
-   WebRequest("POST", InpBasketResultUrl, headers, 1000, post, res, rh);
+   int code = WebRequest("POST", InpBasketResultUrl, headers, 3000, post, res, rh);
+
+   // Losing this POST means the basket never reaches profit factor, win rate
+   // or expected value — the metrics would quietly under-report. Say so.
+   if(code == -1)
+      PrintFormat("V5: basket result NOT recorded (WebRequest err=%d). "
+                  "Allowlist %s under Tools > Options > Expert Advisors.",
+                  GetLastError(), InpBasketResultUrl);
+   else if(code != 200)
+      PrintFormat("V5: basket result rejected HTTP %d: %s",
+                  code, CharArrayToString(res, 0, -1, CP_UTF8));
+   else
+      PrintFormat("V5: basket result recorded (%s, net %.2f)", reason, net_pnl);
 }
 
 void ResetBasketState()
@@ -418,6 +443,7 @@ void ResetBasketState()
    GlobalVariableDel(GV_BASKET_OPENED);
    GlobalVariableDel(GV_BASKET_BURSTS);
    GlobalVariableDel(GV_BASKET_STARTEQ);
+   GlobalVariableDel(GV_BASKET_SIDE);
 }
 
 void CloseBasket(const string &reason)
@@ -645,6 +671,7 @@ string BuildBurstRequestJson(const string request_id)
    s += "},";
 
    s += "\"active_basket_bursts\":"+IntegerToString(g_basket_bursts)+",";
+   s += "\"active_basket_side\":\""+g_basket_side+"\",";
    s += "\"last_burst_ms_ago\":"+IntegerToString(last_burst_ms_ago)+",";
    s += "\"margin_level_pct\":"+JNum(mlevel,2);
    s += "}";
@@ -790,6 +817,8 @@ void ProcessBurstResponse(const string &resp)
          g_basket_start_eq = AccountInfoDouble(ACCOUNT_EQUITY);
          g_basket_id = StringFormat("%s-V5B-%I64u", _Symbol, NowMs());
          g_basket_side = side;
+         GlobalVariableSet(GV_BASKET_SIDE,
+                           side == "buy" ? SIDE_CODE_BUY : SIDE_CODE_SELL);
          g_basket_max_float_dd = 0.0;
          GlobalVariableSet(GV_BASKET_OPENED, (double)g_basket_opened_at);
          GlobalVariableSet(GV_BASKET_STARTEQ, g_basket_start_eq);

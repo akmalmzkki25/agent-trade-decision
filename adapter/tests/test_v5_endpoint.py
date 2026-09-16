@@ -58,6 +58,38 @@ def test_v5_vetoed_when_basket_full():
     assert body["error"]["code"] == "APP-CAPACITY-409"
 
 
+def test_v5_vetoed_when_burst_opposes_basket():
+    """A sell burst must not be added to a basket that is already long."""
+    # tick momentum down => the scenario wants to sell.
+    req = make_v5_request(
+        tick_momentum_signed=-1.0, bb_pos=-0.20, rsi_centered=-0.10,
+        active_basket_bursts=1, active_basket_side="buy",
+    )
+    r = client.post("/v5/burst", content=req.model_dump_json(), headers={"Content-Type": "application/json"})
+    body = r.json()
+    assert body["status"] == "veto"
+    assert body["error"]["code"] == "APP-SIDE-409"
+    assert body["burst"]["layers"] == []
+
+
+def test_v5_vetoed_when_basket_side_unknown():
+    """An EA restarted mid-basket reports bursts with an empty side."""
+    req = make_v5_request(active_basket_bursts=2, active_basket_side="")
+    r = client.post("/v5/burst", content=req.model_dump_json(), headers={"Content-Type": "application/json"})
+    body = r.json()
+    assert body["status"] == "veto"
+    assert body["error"]["code"] == "APP-SIDE-409"
+
+
+def test_v5_allows_burst_matching_basket_side():
+    req = make_v5_request(active_basket_bursts=1, active_basket_side="buy")
+    r = client.post("/v5/burst", content=req.model_dump_json(), headers={"Content-Type": "application/json"})
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["burst"]["side_bias"] == "buy"
+    assert len(body["burst"]["layers"]) == 3
+
+
 def test_v5_ok_empty_when_no_scalp():
     req = make_v5_request(tick_momentum_signed=0.0)
     r = client.post("/v5/burst", content=req.model_dump_json(), headers={"Content-Type": "application/json"})
