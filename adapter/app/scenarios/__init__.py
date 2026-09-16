@@ -54,9 +54,20 @@ def select_best_v4(req: V4PlanRequest) -> ScenarioResult | None:
     return None
 
 
+def evaluate_v5(req: V5BurstRequest) -> ScenarioResult:
+    """
+    Raw scalp evaluation, returned whether or not it clears the threshold.
+
+    The endpoint needs the losing result too: "ATR_TOO_QUIET" and
+    "VSA_CLIMAX_VETO" are the answer to "why isn't the bot trading?", and
+    collapsing them into a bare None throws that away.
+    """
+    return ScalpMicro().evaluate(req)
+
+
 def select_best_v5(req: V5BurstRequest) -> ScenarioResult | None:
     # V5 = single scalp scenario, tick-driven.
-    r = ScalpMicro().evaluate(req)
+    r = evaluate_v5(req)
     if r.score >= MIN_SCENARIO_SCORE_V5 and r.side != "none":
         return r
     return None
@@ -78,6 +89,7 @@ __all__ = [
     "ScalpMicro",
     "all_scenarios",
     "all_scenarios_v3",
+    "evaluate_v5",
     "select_best",
     "select_best_v3",
     "select_best_v4",

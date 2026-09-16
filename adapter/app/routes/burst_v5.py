@@ -20,7 +20,7 @@ from ..models import (
     V5ExitRules,
 )
 from ..news import get_blackout
-from ..scenarios import select_best_v5
+from ..scenarios import MIN_SCENARIO_SCORE_V5, evaluate_v5
 from ..security import read_verified_body
 
 router = APIRouter(tags=["v5"])
@@ -112,9 +112,10 @@ async def v5_burst(request: Request, x_internal_sig: str | None = Header(default
         ledger.write_v5_burst(req, resp)
         return resp
 
-    # 6) Scenario.
+    # 6) Scenario. Evaluate once and keep the full result: when it declines,
+    # its reason codes are the answer to "why isn't the bot trading?".
     try:
-        winner = select_best_v5(req)
+        assessment = evaluate_v5(req)
     except Exception as e:
         logger.exception("v5 scenario selection failed")
         resp = _v5_degraded(req, f"Scenario error: {type(e).__name__}", "APP-SCN-500")
@@ -122,17 +123,28 @@ async def v5_burst(request: Request, x_internal_sig: str | None = Header(default
         return resp
 
     latency_ms = int((time.perf_counter() - start) * 1000)
-    if winner is None:
+    tradeable = assessment.score >= MIN_SCENARIO_SCORE_V5 and assessment.side != "none"
+    if not tradeable:
+        declined = _v5_empty_burst("No valid scalp setup.")
+        # Surface the specific gate that blocked, not just a generic "no setup".
+        declined.reason_codes = assessment.reason_codes or ["NO_SETUP"]
+        declined.confidence = assessment.confidence
+        declined.rationale_short = (
+            f"declined at score {assessment.score:.2f} "
+            f"(needs {MIN_SCENARIO_SCORE_V5}): {', '.join(declined.reason_codes)}"
+        )[:240]
         resp = V5BurstResponse(
             schema_version="v5-burst-response.v1",
             request_id=req.request_id,
             status="ok",
-            burst=_v5_empty_burst("No valid scalp setup."),
+            burst=declined,
             news_context=news,
             meta=ResponseMeta(model="v5_scalp_micro", latency_ms=latency_ms),
         )
         ledger.write_v5_burst(req, resp)
         return resp
+
+    winner = assessment
 
     # 7) Build burst.
     try:

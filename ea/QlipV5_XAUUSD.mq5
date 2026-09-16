@@ -34,6 +34,7 @@ input double  InpBasketSlPctEquity    = 0.30;
 input int     InpMaxBurstsPerBasket   = 3;
 input int     InpMaxSpreadPoints      = 30;
 input int     InpDeviationPoints      = 30;        // slippage tolerance for market
+input int     InpSkipLogSeconds       = 60;        // how often to restate why it is idle
 
 //--- Globals
 CTrade        Trade;
@@ -653,9 +654,17 @@ void ProcessBurstResponse(const string &resp)
    string scenario = FindStringField(resp, "scenario");
    string side     = FindStringField(resp, "side_bias");
 
-   if(status != "ok") { PrintFormat("[V5 Burst] %s — skipped", status); return; }
-   if(scenario == "NONE" || scenario == "") return;
-   if(!InpEnableTrading) return;
+   string rationale = FindStringField(resp, "rationale_short");
+
+   if(status != "ok")
+   { ReportSkip(StringFormat("adapter %s: %s", status, rationale)); return; }
+
+   // The adapter explains which gate declined (ATR band, VSA climax, spread).
+   if(scenario == "NONE" || scenario == "")
+   { ReportSkip(StringFormat("no setup — %s", rationale)); return; }
+
+   if(!InpEnableTrading)
+   { ReportSkip("InpEnableTrading=false (dry run)"); return; }
 
    int placed = 0;
    for(int i=1; i<=20; i++)
@@ -703,24 +712,66 @@ void ProcessBurstResponse(const string &resp)
 //+------------------------------------------------------------------+
 //| Main loop                                                        |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Skip reporting.                                                   |
+//|                                                                   |
+//| TryBurst runs on every tick and most ticks are correctly skipped. |
+//| Logging each one would flood the journal, but staying silent      |
+//| leaves "the bot isn't trading" impossible to diagnose. So report   |
+//| a reason when it changes, and re-state the current one            |
+//| periodically so the log shows the bot is alive and why it waits.  |
+//+------------------------------------------------------------------+
+string   g_last_skip_reason = "";
+datetime g_last_skip_log = 0;
+
+void ReportSkip(const string reason)
+{
+   bool changed = (reason != g_last_skip_reason);
+   bool due = (TimeCurrent() - g_last_skip_log) >= InpSkipLogSeconds;
+   if(changed || due)
+   {
+      PrintFormat("[V5 idle] %s", reason);
+      g_last_skip_reason = reason;
+      g_last_skip_log = TimeCurrent();
+   }
+}
+
 void TryBurst()
 {
-   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) return;
-   if(!MQLInfoInteger(MQL_TRADE_ALLOWED)) return;
-   if(TimeCurrent() < g_cooldown_until) return;
-   if(NowMs() - g_last_burst_ms < (ulong)InpMinBurstIntervalMs) return;
-   if(g_basket_bursts >= InpMaxBurstsPerBasket) return;
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+   { ReportSkip("AutoTrading disabled in terminal (toolbar button)"); return; }
+   if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
+   { ReportSkip("Algo trading not allowed for this EA (chart properties)"); return; }
+
+   if(TimeCurrent() < g_cooldown_until)
+   { ReportSkip(StringFormat("cooldown for %d more sec",
+                             (int)(g_cooldown_until - TimeCurrent()))); return; }
+
+   if(NowMs() - g_last_burst_ms < (ulong)InpMinBurstIntervalMs) return;  // sub-second, not worth logging
+
+   if(g_basket_bursts >= InpMaxBurstsPerBasket)
+   { ReportSkip(StringFormat("basket full (%d/%d bursts)",
+                             g_basket_bursts, InpMaxBurstsPerBasket)); return; }
 
    long spread_pts = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   if(spread_pts > InpMaxSpreadPoints) return;
+   if(spread_pts > InpMaxSpreadPoints)
+   { ReportSkip(StringFormat("spread %d pts > limit %d", (int)spread_pts,
+                             InpMaxSpreadPoints)); return; }
+
    double mlevel = AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
-   if(mlevel > 0 && mlevel < InpMinMarginLevelPct) return;
+   if(mlevel > 0 && mlevel < InpMinMarginLevelPct)
+   { ReportSkip(StringFormat("margin level %.0f%% < %.0f%%", mlevel,
+                             InpMinMarginLevelPct)); return; }
 
    string rid = StringFormat("%s-V5-%I64u", _Symbol, NowMs());
    string body = BuildBurstRequestJson(rid);
+   if(body == "")
+   { ReportSkip("indicator data not ready (warming up)"); return; }
 
    string resp;
-   if(!CallAdapter(InpBurstUrl, body, resp)) return;
+   if(!CallAdapter(InpBurstUrl, body, resp))
+   { ReportSkip("adapter unreachable — check it is running and the URL is allowlisted"); return; }
+
    ProcessBurstResponse(resp);
 }
 
