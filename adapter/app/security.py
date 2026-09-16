@@ -19,19 +19,30 @@ Three layers guard against that:
    browser-initiated and cross-site is refused.
 3. hmac_ok — optional shared-secret signature, mandatory whenever the service
    is bound to a non-loopback address (enforced in settings).
+
+Operator and control routes (V6) add two more: the caller must be on this
+machine, and it must present the operator bearer token (`read_operator_body`,
+`require_operator`).
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
+from typing import Final
 
 from fastapi import HTTPException, Request
+from pydantic import SecretStr
 
 from .settings import settings
 
 _JSON_CONTENT_TYPES = ("application/json",)
 _SAFE_FETCH_SITES = ("same-origin", "same-site", "none")
+_LOOPBACK_NAMES: Final[frozenset[str]] = frozenset({"localhost"})
+_BEARER_SCHEME: Final[str] = "bearer"
+# Operator commands are a few dozen bytes; anything larger is not one of them.
+OPERATOR_MAX_BODY_BYTES: Final[int] = 4096
 
 
 def hmac_ok(raw_body: bytes, signature: str | None) -> bool:
@@ -117,6 +128,13 @@ async def read_capped_body(request: Request, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+def basic_request_guards(request: Request, limit: int) -> None:
+    """The header-only checks every JSON write endpoint runs before reading a byte."""
+    require_json_content_type(request)
+    reject_cross_site(request)
+    reject_declared_oversize(request, limit)
+
+
 async def read_verified_body(request: Request, signature: str | None) -> bytes:
     """
     Run every inbound-request guard, then return the raw body.
@@ -124,12 +142,66 @@ async def read_verified_body(request: Request, signature: str | None) -> bytes:
     Order matters: cheap header checks run before any body byte is read, so a
     forged or declared-oversized request is dropped before it costs memory.
     """
-    require_json_content_type(request)
-    reject_cross_site(request)
-    reject_declared_oversize(request, settings.max_request_bytes)
+    basic_request_guards(request, settings.max_request_bytes)
 
     raw = await read_capped_body(request, settings.max_request_bytes)
 
     if not hmac_ok(raw, signature):
         raise HTTPException(status_code=401, detail="invalid signature")
     return raw
+
+
+# --- operator / control routes ----------------------------------------------
+def _is_loopback_host(host: str) -> bool:
+    if host.lower() in _LOOPBACK_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def require_loopback_client(request: Request) -> None:
+    """Refuse any caller whose socket peer is not this machine."""
+    client = request.client
+    if client is None or not _is_loopback_host(client.host):
+        raise HTTPException(status_code=403, detail="loopback clients only")
+
+
+def _bearer_token(request: Request) -> str | None:
+    scheme, _, credentials = (request.headers.get("authorization") or "").partition(" ")
+    if scheme.lower() != _BEARER_SCHEME:
+        return None
+    return credentials.strip() or None
+
+
+def _require_bearer(request: Request, expected_token: SecretStr) -> None:
+    expected = expected_token.get_secret_value()
+    presented = _bearer_token(request)
+    # compare_digest runs even for a missing token so timing says nothing either way.
+    matches = hmac.compare_digest(
+        (presented or "").encode("utf-8"), expected.encode("utf-8"))
+    if not (expected and presented and matches):
+        raise HTTPException(status_code=401, detail="invalid operator token",
+                            headers={"WWW-Authenticate": "Bearer"})
+
+
+def require_operator(request: Request, expected_token: SecretStr) -> None:
+    """Guards for a body-less operator request: loopback, same-site, bearer token."""
+    require_loopback_client(request)
+    reject_cross_site(request)
+    _require_bearer(request, expected_token)
+
+
+async def read_operator_body(
+    request: Request, expected_token: SecretStr, limit: int = OPERATOR_MAX_BODY_BYTES
+) -> bytes:
+    """
+    Guard an operator write (loopback, JSON, same-site, size, bearer token) and
+    return its raw body. The token check runs after the header checks and
+    before any body byte is read.
+    """
+    require_loopback_client(request)
+    basic_request_guards(request, limit)
+    _require_bearer(request, expected_token)
+    return await read_capped_body(request, limit)

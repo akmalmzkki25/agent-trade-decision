@@ -42,8 +42,21 @@ class Bar:
         return abs(self.c - self.o)
 
 
+TickValueSource = Literal["order_calc", "reported", "mixed"]
+
+
 @dataclass(frozen=True)
 class SymbolSpec:
+    """Contract facts used for sizing.
+
+    `tick_value` / `tick_value_loss` are the values sizing must use. When the EA
+    could price a 1.00-lot move with OrderCalcProfit they are derived from that
+    (`tick_value_source="order_calc"`), because some servers report a
+    SYMBOL_TRADE_TICK_VALUE that is 10x off. `reported_*` keep the broker's own
+    numbers for the spec gate; None means the spec was built directly (tests,
+    V1-V5 style callers) and the reported value equals `tick_value`.
+    """
+
     digits: int
     point: float
     tick_size: float
@@ -55,6 +68,9 @@ class SymbolSpec:
     volume_max: float
     stops_level: int = 0
     freeze_level: int = 0
+    reported_tick_value: float | None = None
+    reported_tick_value_loss: float | None = None
+    tick_value_source: TickValueSource = "reported"
 
 
 @dataclass(frozen=True)

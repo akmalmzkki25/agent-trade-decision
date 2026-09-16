@@ -190,9 +190,11 @@ def test_non_loopback_bind_without_hmac_is_refused():
 
 def test_non_loopback_bind_with_hmac_and_real_key_is_allowed():
     cfg = Settings(
-        adapter_host="0.0.0.0", hmac_required=True, internal_hmac_key="a-real-strong-secret"
+        adapter_host="0.0.0.0", hmac_required=True, internal_hmac_key="a-real-strong-secret",
+        allowed_hosts="192.168.1.10",
     )
     assert cfg.hmac_required is True
+    assert cfg.extra_allowed_hosts == ("192.168.1.10",)
 
 
 def test_hmac_enabled_with_placeholder_key_is_refused():

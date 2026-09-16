@@ -9,6 +9,13 @@ from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PLACEHOLDER_HMAC_KEY: Final[str] = "change-me-dev-only"
+# Binds that name no host a client could send (every interface).
+WILDCARD_BIND_HOSTS: Final[frozenset[str]] = frozenset({"", "0.0.0.0", "::"})  # nosec B104
+HOST_WILDCARD_MARK: Final[str] = "*"
+
+
+def split_hosts(raw: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
 def _is_loopback(host: str) -> bool:
@@ -22,10 +29,16 @@ def _is_loopback(host: str) -> bool:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # hide_input_in_errors: a validation error must never print the raw settings,
+    # which hold INTERNAL_HMAC_KEY and ANTHROPIC_API_KEY.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore",
+                                      hide_input_in_errors=True)
 
     adapter_host: str = "127.0.0.1"
     adapter_port: int = 8765
+    # Extra Host header names accepted besides loopback (comma-separated), e.g. the
+    # LAN name remote EAs use. Required when ADAPTER_HOST binds every interface.
+    allowed_hosts: str = ""
 
     db_path: str = "./trade_ledger.db"
     replay_dir: str = "./replay_tapes"
@@ -47,6 +60,24 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr = SecretStr("")
     anthropic_model: str = "claude-opus-4-7"
     anthropic_timeout_seconds: float = 1.6
+
+    @property
+    def extra_allowed_hosts(self) -> tuple[str, ...]:
+        return split_hosts(self.allowed_hosts)
+
+    @model_validator(mode="after")
+    def _enforce_host_allowlist(self) -> "Settings":
+        """Only listed Host headers are served (app.host_guard), so say which ones."""
+        extra = self.extra_allowed_hosts
+        if any(HOST_WILDCARD_MARK in host for host in extra):
+            raise ValueError("ALLOWED_HOSTS must list explicit host names, not wildcards.")
+        if self.adapter_host in WILDCARD_BIND_HOSTS and not extra:
+            raise ValueError(
+                f"ADAPTER_HOST={self.adapter_host!r} binds every interface, but only loopback "
+                "Host headers are accepted. Set ALLOWED_HOSTS to the host names or addresses "
+                "remote clients use (comma-separated), or bind to 127.0.0.1."
+            )
+        return self
 
     @model_validator(mode="after")
     def _enforce_auth_posture(self) -> "Settings":

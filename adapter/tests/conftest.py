@@ -10,3 +10,5 @@ os.environ.setdefault("DECIDER", "dummy_trend_breakout")
 # The shared app must never start a V6 runtime, whatever adapter/.env says.
 # V6 tests build their own app with explicit V6Settings instead.
 os.environ["V6_ENABLED"] = "false"
+# Starlette's TestClient sends "Host: testserver"; production never allows it.
+os.environ["ALLOWED_HOSTS"] = "testserver"

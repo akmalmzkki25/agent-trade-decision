@@ -13,7 +13,7 @@ from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
-from ..types import TIMEFRAME_SECONDS, Bar, SymbolSpec
+from ..types import TIMEFRAME_SECONDS, Bar, SymbolSpec, TickValueSource
 
 MAX_BARS_PER_TF: Final[int] = 500
 MAX_BACKFILL_ROWS: Final[int] = 3000
@@ -99,15 +99,34 @@ class SymbolSpecBlock(_Strict):
     margin_per_lot_sell: float = Field(ge=0)
     filling_modes: int = Field(ge=0)
     expiration_modes: int = Field(ge=0)
+    # OrderCalcProfit for a BUY of 1.00 lot from ask to ask+1.0, and the absolute
+    # loss from ask to ask-1.0. 0 when the terminal could not price it.
+    calc_profit_per_price: float = Field(ge=0)
+    calc_loss_per_price: float = Field(ge=0)
 
     def to_spec(self) -> SymbolSpec:
+        """Sizing spec; tick values come from OrderCalcProfit whenever it priced them."""
+        has_profit = self.calc_profit_per_price > 0
+        has_loss = self.calc_loss_per_price > 0
+        tick_value = self.calc_profit_per_price * self.tick_size if has_profit else self.tick_value
+        tick_value_loss = (
+            self.calc_loss_per_price * self.tick_size if has_loss else self.tick_value_loss)
         return SymbolSpec(
             digits=self.digits, point=self.point, tick_size=self.tick_size,
-            tick_value=self.tick_value, tick_value_loss=self.tick_value_loss,
+            tick_value=tick_value, tick_value_loss=tick_value_loss,
             contract_size=self.contract_size, volume_min=self.volume_min,
             volume_step=self.volume_step, volume_max=self.volume_max,
             stops_level=self.stops_level, freeze_level=self.freeze_level,
+            reported_tick_value=self.tick_value,
+            reported_tick_value_loss=self.tick_value_loss,
+            tick_value_source=_tick_value_source(has_profit, has_loss),
         )
+
+
+def _tick_value_source(has_profit: bool, has_loss: bool) -> TickValueSource:
+    if has_profit and has_loss:
+        return "order_calc"
+    return "mixed" if has_profit or has_loss else "reported"
 
 
 class QuoteBlock(_Strict):

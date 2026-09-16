@@ -1,0 +1,15 @@
+"""V6 deliberation: the pure resolution rules (`protocol`) and, separately, the engine."""
+
+from .protocol import (
+    MARK_FALLBACK_PREFIX, MARK_LIMIT_OVERRIDE, MARK_REDUCED_TIER, MARK_STRUCTURE_LOGGED,
+    REBUTTAL_MAINTAIN, REBUTTAL_STANCES, REBUTTAL_WITHDRAW, RULE_CODES, RULE_GATES,
+    RULE_MULTIPLIER, RULE_ORDER_STYLE, RULE_TAKE, RULE_VETOES, RULE_VIEWS,
+    STRUCTURE_VETO_MODES, RebuttalStance, Resolution, resolve, resolve_detailed,
+)
+
+__all__ = [
+    "MARK_FALLBACK_PREFIX", "MARK_LIMIT_OVERRIDE", "MARK_REDUCED_TIER", "MARK_STRUCTURE_LOGGED",
+    "REBUTTAL_MAINTAIN", "REBUTTAL_STANCES", "REBUTTAL_WITHDRAW", "RULE_CODES", "RULE_GATES",
+    "RULE_MULTIPLIER", "RULE_ORDER_STYLE", "RULE_TAKE", "RULE_VETOES", "RULE_VIEWS",
+    "STRUCTURE_VETO_MODES", "RebuttalStance", "Resolution", "resolve", "resolve_detailed",
+]

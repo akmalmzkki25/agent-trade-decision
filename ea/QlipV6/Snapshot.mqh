@@ -20,9 +20,13 @@
 #define SHORT_TEXT_MAX       80
 #define SPEC_DIGITS          10
 #define CALENDAR_HORIZON_S   86400
+// Mirrors EVENT_LOOKBACK_S in adapter/app/v6/market/calendar.py.
+#define CALENDAR_LOOKBACK_S  7200
 #define PROBE_CALENDAR_S     (7 * 86400)
 #define PROBE_TRADE_TICKS_S  3600
 #define PROBE_REAL_VOL_BARS  100
+#define SPEC_CALC_LOTS       1.0
+#define SPEC_CALC_MOVE       1.0
 
 // Bars per timeframe in every snapshot (plan §5), all closed.
 #define SNAP_BARS_M1   12
@@ -80,6 +84,28 @@ double MarginPerLot(const ENUM_ORDER_TYPE type, const double price)
    return MathMax(margin, 0.0);
 }
 
+// Account currency per 1.0 price unit for a BUY of 1.00 lot moved `move` from
+// `ask`: the profit for move > 0, the absolute loss for move < 0. Some servers
+// report a SYMBOL_TRADE_TICK_VALUE that is 10x off, so the adapter sizes from
+// these. 0 when the terminal cannot price it (or the sign is wrong); the
+// adapter then falls back to the reported tick value.
+double PnlPerPriceUnit(const double ask, const double move)
+{
+   double pnl = 0.0;
+   if(ask <= 0.0 || move == 0.0 || ask + move <= 0.0)
+      return 0.0;
+   ResetLastError();
+   if(!OrderCalcProfit(ORDER_TYPE_BUY, _Symbol, SPEC_CALC_LOTS, ask, ask + move, pnl))
+   {
+      PrintFormat("V6 spec: OrderCalcProfit failed (err=%d)", GetLastError());
+      return 0.0;
+   }
+   double gain = (move > 0.0) ? pnl : -pnl;
+   if(!MathIsValidNumber(gain) || gain <= 0.0)
+      return 0.0;
+   return gain / MathAbs(move);
+}
+
 string SymbolSpecJson(const MqlTick &tick)
 {
    CJsonObject o;
@@ -98,6 +124,8 @@ string SymbolSpecJson(const MqlTick &tick)
    o.AddNum("margin_per_lot_sell", MarginPerLot(ORDER_TYPE_SELL, tick.bid), MoneyDigits());
    o.AddInt("filling_modes", SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE));
    o.AddInt("expiration_modes", SymbolInfoInteger(_Symbol, SYMBOL_EXPIRATION_MODE));
+   o.AddNum("calc_profit_per_price", PnlPerPriceUnit(tick.ask, SPEC_CALC_MOVE), SPEC_DIGITS);
+   o.AddNum("calc_loss_per_price", PnlPerPriceUnit(tick.ask, -SPEC_CALC_MOVE), SPEC_DIGITS);
    return o.Text();
 }
 
@@ -255,7 +283,8 @@ string BuildSnapshotJson(const long magic, const datetime bar_open_server,
    o.AddRaw("positions", PositionsJson(magic, offset));
    o.AddRaw("pending_orders", PendingOrdersJson(magic, offset));
    o.AddRaw("day", DayJson(magic, now_utc, offset));
-   o.AddRaw("calendar", CalendarHighUsdJson(TimeTradeServer(), CALENDAR_HORIZON_S, offset));
+   o.AddRaw("calendar", CalendarHighUsdJson(TimeTradeServer(), CALENDAR_LOOKBACK_S,
+                                            CALENDAR_HORIZON_S, offset));
    if(with_probe)
       o.AddRaw("probe", ProbeJson(tick, offset));
    else

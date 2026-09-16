@@ -16,6 +16,7 @@ from typing import Final, Literal
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .market.broker_hours import DEFAULT_QUOTE_GAP_UTC, DailyUtcWindow, parse_daily_window
 from .risk import limits
 
 ADAPTER_DIR: Final[Path] = Path(__file__).resolve().parents[2]
@@ -38,11 +39,14 @@ def _is_placeholder(secret: SecretStr) -> bool:
 
 
 class V6Settings(BaseSettings):
+    # hide_input_in_errors: a validation error must never print the raw settings,
+    # which hold V6_OPERATOR_TOKEN and OPENROUTER_API_KEY.
     model_config = SettingsConfigDict(
         env_prefix="V6_",
         env_file=str(ADAPTER_DIR / ".env"),
         extra="ignore",
         populate_by_name=True,
+        hide_input_in_errors=True,
     )
 
     # --- runtime -----------------------------------------------------------
@@ -102,6 +106,10 @@ class V6Settings(BaseSettings):
     # --- news --------------------------------------------------------------
     news_rss_urls_csv: str = Field(default="", alias="V6_NEWS_RSS_URLS")
 
+    # --- broker facts -------------------------------------------------------
+    # "HH:MM-HH:MM" UTC without quotes every day ("" for none); market.broker_hours.
+    broker_quote_gap_utc: str = DEFAULT_QUOTE_GAP_UTC
+
     # --- derived views -----------------------------------------------------
     @property
     def effective_max_spread_points(self) -> int:
@@ -131,6 +139,10 @@ class V6Settings(BaseSettings):
     @property
     def news_rss_urls(self) -> tuple[str, ...]:
         return _split_csv(self.news_rss_urls_csv)
+
+    @property
+    def quote_gap(self) -> DailyUtcWindow | None:
+        return parse_daily_window(self.broker_quote_gap_utc)
 
     @property
     def available_backends(self) -> tuple[Backend, ...]:
@@ -186,6 +198,10 @@ class V6Settings(BaseSettings):
             re.compile(self.demo_server_pattern)
         except re.error as exc:
             raise ValueError(f"V6_DEMO_SERVER_PATTERN is not a valid regex: {exc}") from exc
+        try:
+            parse_daily_window(self.broker_quote_gap_utc)
+        except ValueError as exc:
+            raise ValueError(f"V6_BROKER_QUOTE_GAP_UTC: {exc}") from exc
         return self
 
     @model_validator(mode="after")

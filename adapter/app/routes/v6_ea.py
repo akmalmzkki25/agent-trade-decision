@@ -3,9 +3,11 @@ V6 EA-facing endpoints (data plane).
 
     POST /v6/bars/backfill   closed-bar history at EA start
     POST /v6/snapshot        one snapshot per M15 close, idempotent per snapshot_id
-    POST /v6/intent/poll     heartbeat; no intents exist yet (execution is a later phase)
+    POST /v6/intent/poll     heartbeat; never an intent in Phase 2 (shadow only), plus the
+                             pending EA command (CANCEL_PENDING after a session stop, and
+                             while halted or a breaker is tripped)
     POST /v6/execution       EA outcome of an intent
-    GET  /v6/status          runtime, EA and bar-coverage summary (no secrets)
+    GET  /v6/status          runtime, session, last cycle, EA and bar coverage (no secrets)
 
 Every POST body passes `read_verified_body`, so the JSON-only, cross-site,
 size and optional HMAC guards apply exactly as on /v5/burst. Blocking SQLite
@@ -27,9 +29,14 @@ from pydantic import BaseModel, ValidationError
 
 from ..security import read_verified_body
 from ..v6.container import V6Container, require_active_container
+from ..v6.dashboard_queries import cycle_header, failed_gate_codes
+from ..v6.ledger_cycles import LedgerCycles
+from ..v6.ledger_cycles_schema import BreakerRecord, CycleRecord, SessionRecord
 from ..v6.ledger_v6 import AccountMark, SnapshotRecord
 from ..v6.market.bar_store import BarStore
-from ..v6.runtime.ea_state import InboxItem, SnapshotMeta, cycle_id_for
+from ..v6.runtime.ea_state import EaStateView, InboxItem, SnapshotMeta, cycle_id_for
+from ..v6.runtime.sessions import poll_command, session_to_dict
+from ..v6.runtime.status import classify, snapshot_stale
 from ..v6.schemas.intent import ExecutionReport, PollRequest, PollResponse
 from ..v6.schemas.snapshot import BackfillRequest, BarRow, V6Snapshot, rows_to_bars
 from ..v6.types import TIMEFRAME_SECONDS
@@ -143,12 +150,16 @@ async def _halt_requested(container: V6Container) -> bool:
 @router.post("/v6/intent/poll", response_model=PollResponse)
 async def v6_poll(request: Request, container: ActiveContainer,
                   x_internal_sig: SignatureHeader = None) -> PollResponse:
+    """Shadow mode: `has_intent` is always false; only the command can change."""
     raw = await read_verified_body(request, x_internal_sig)
     poll = _parse(PollRequest, raw)
     now = container.clock.now_epoch()
     container.ea_state.record_poll(poll, now)
     await _record_mark(container, poll, now)
-    command = "CANCEL_PENDING" if await _halt_requested(container) else "NONE"
+    parts = container.parts
+    halted = await _halt_requested(container) or parts.watchdog.state.breakers_tripped
+    command = poll_command(parts.control.commands, halted=halted,
+                           pending_v6_orders=poll.pending_v6_orders, now=now)
     return PollResponse(server_time_epoch=int(now), command=command)
 
 
@@ -182,13 +193,54 @@ def _snapshot_status(meta: SnapshotMeta | None, now: float) -> dict[str, Any] | 
             "bar_open_epoch": meta.bar_open_epoch, "age_s": _age(now, meta.received_at)}
 
 
+LedgerView = tuple[SessionRecord | None, tuple[BreakerRecord, ...], CycleRecord | None]
+
+
+def _ledger_status(ledger: LedgerCycles) -> LedgerView:
+    recent = ledger.recent_cycles(1)
+    return ledger.active_session(), ledger.active_breakers(), recent[0] if recent else None
+
+
+def _cycle_status(cycle: CycleRecord | None) -> dict[str, Any] | None:
+    if cycle is None:
+        return None
+    summary = cycle.summary()
+    candidates = summary.get("candidates")
+    return {
+        **cycle_header(cycle), "hold_detail": summary.get("hold_detail", ""),
+        "failed_gates": failed_gate_codes(summary),
+        "candidates": len(candidates) if isinstance(candidates, list) else 0,
+        "shadow_intent": summary.get("shadow_intent"),
+    }
+
+
+def _runtime_status(container: V6Container, view: EaStateView, now: float, halted: bool,
+                    breakers: tuple[BreakerRecord, ...]) -> dict[str, Any]:
+    parts = container.parts
+    watchdog = parts.watchdog.state
+    command = parts.control.commands.current(now)
+    status = classify(
+        active=container.active, halted=halted,
+        breaker_tripped=bool(breakers) or watchdog.breakers_tripped,
+        ea_age_s=view.ea_age_s(now), ea_stale_s=container.settings.ea_stale_s,
+        stale_snapshot=snapshot_stale(view, now, quote_gap=container.settings.quote_gap))
+    return {
+        "status": status, "tasks_running": container.run_tasks,
+        "breakers": [f"{record.scope}:{record.period_key}" for record in breakers],
+        "pending_command": None if command is None else command.to_dict(),
+        "worker": parts.worker.stats.to_dict(), "watchdog": watchdog.to_dict(),
+    }
+
+
 @router.get("/v6/status")
 async def v6_status(container: ActiveContainer) -> dict[str, Any]:
     """Built field by field from non-secret values; settings are never dumped whole."""
     now = container.clock.now_epoch()
     coverage, warm = await _storage(_market_status, container.bar_store, int(now))
+    session, breakers, last_cycle = await _storage(_ledger_status, container.ledger_cycles)
     view = container.ea_state.view()
     settings = container.settings
+    halted = await _halt_requested(container)
     return {
         "enabled": container.active,
         "mode": settings.mode,
@@ -202,5 +254,8 @@ async def v6_status(container: ActiveContainer) -> dict[str, Any]:
         "warm": warm,
         "superseded": view.superseded,
         "inbox_pending": view.inbox_pending,
-        "halt_file_present": await _halt_requested(container),
+        "halt_file_present": halted,
+        "runtime": _runtime_status(container, view, now, halted, breakers),
+        "session": None if session is None else session_to_dict(session),
+        "last_cycle": _cycle_status(last_cycle),
     }

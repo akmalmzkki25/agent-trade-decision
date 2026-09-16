@@ -51,8 +51,9 @@ def _settings(tmp_path: Path, **overrides: Any) -> V6Settings:
 
 
 def _build(tmp_path: Path, db_path: Path, clock: FakeClock, **overrides: Any) -> FastAPI:
+    # Data-plane tests: the Phase 2 worker would consume the inbox these tests inspect.
     return create_app(v6_settings=_settings(tmp_path, **overrides), clock=clock,
-                      v6_db_path=str(db_path))
+                      v6_db_path=str(db_path), v6_tasks=False)
 
 
 def _post(client: TestClient, path: str, body: dict[str, Any] | bytes, **headers: str):

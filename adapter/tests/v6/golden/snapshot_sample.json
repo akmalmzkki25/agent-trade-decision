@@ -7,7 +7,7 @@
   "bar_tf": "M15",
   "bar_open_epoch": 1789564500,
   "account": {"login":"10000001","trade_mode":"DEMO","server":"MetaQuotes-Demo","currency":"USD","leverage":200,"balance":92429.34,"equity":92429.34,"margin":0.00,"free_margin":92429.34,"margin_level":0.00},
-  "symbol_spec": {"digits":2,"point":0.0100000000,"tick_size":0.0100000000,"tick_value":0.1000000000,"tick_value_loss":0.1000000000,"contract_size":10.0000000000,"volume_min":0.01000000,"volume_step":0.01000000,"volume_max":100.00000000,"stops_level":0,"freeze_level":0,"margin_per_lot_buy":226.77,"margin_per_lot_sell":226.76,"filling_modes":3,"expiration_modes":15},
+  "symbol_spec": {"digits":2,"point":0.0100000000,"tick_size":0.0100000000,"tick_value":0.1000000000,"tick_value_loss":0.1000000000,"contract_size":100.0000000000,"volume_min":0.01000000,"volume_step":0.01000000,"volume_max":100.00000000,"stops_level":0,"freeze_level":0,"margin_per_lot_buy":2267.68,"margin_per_lot_sell":2267.59,"filling_modes":3,"expiration_modes":15,"calc_profit_per_price":100.0000000000,"calc_loss_per_price":100.0000000000},
   "quote": {"bid":4535.18,"ask":4535.35,"spread_points":17,"time_msc":1789565400412},
   "bars": {
     "M1": [

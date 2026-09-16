@@ -79,18 +79,22 @@ int CalendarUsdValues(const datetime from_server, const int horizon_s, MqlCalend
    return ArraySize(values);
 }
 
-// High-impact USD events from now to `horizon_s` ahead, as a JSON array.
-string CalendarHighUsdJson(const datetime now_server, const int horizon_s, const int offset_s)
+// High-impact USD events from `lookback_s` before now to `horizon_s` ahead, as a
+// JSON array. Released events carry their actual value once MT5 has it, which is
+// what the adapter's post-release surprise window needs.
+string CalendarHighUsdJson(const datetime now_server, const int lookback_s,
+                           const int horizon_s, const int offset_s)
 {
    MqlCalendarValue values[];
-   int n = CalendarUsdValues(now_server, horizon_s, values);
+   datetime from_server = now_server - lookback_s;
+   int n = CalendarUsdValues(from_server, lookback_s + horizon_s, values);
    CJsonArray events;
    for(int i = 0; i < n && events.Count() < CALENDAR_MAX_EVENTS; i++)
    {
       MqlCalendarEvent event;
       if(!CalendarEventById(values[i].event_id, event))
          continue;
-      if(event.importance != CALENDAR_IMPORTANCE_HIGH || values[i].time < now_server)
+      if(event.importance != CALENDAR_IMPORTANCE_HIGH || values[i].time < from_server)
          continue;
       events.AddRaw(CalendarEventJson(values[i], event, offset_s));
    }

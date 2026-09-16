@@ -7,7 +7,12 @@ single-instance lock, hydrates the bar cache and keeps the lock alive with a
 heartbeat. Until that succeeds, and again after the lock is lost, every
 `/v6/*` route answers 404 through `require_active_container`.
 
-A container serves one app lifespan: shutdown closes its ledger connection.
+Phase 2 adds the runtime parts (`runtime.wiring`): the cycle ledger, the control
+plane, the deliberation worker and the watchdog. `start_runtime` starts the
+worker and the watchdog beside the heartbeat, and only once the lock is held, so
+a second process on the same database never runs a worker.
+
+A container serves one app lifespan: shutdown closes its ledger connections.
 """
 
 from __future__ import annotations
@@ -29,9 +34,12 @@ from fastapi import FastAPI, HTTPException, Request
 
 from .clock import Clock, SystemClock
 from .config import ADAPTER_DIR, V6Settings, load_v6_settings
+from .ledger_cycles import LedgerCycles
 from .ledger_v6 import LedgerV6
 from .market.bar_store import BarStore
 from .runtime.ea_state import EaState
+from .runtime.watchdog import WATCHDOG_INTERVAL_S
+from .runtime.wiring import CoreParts, RuntimeParts, build_runtime_parts
 
 logger = logging.getLogger(__name__)
 
@@ -63,28 +71,28 @@ class RuntimeSwitch:
     """Whether this process currently acts as the V6 runtime.
 
     Flipped only on the event loop thread (lifespan and heartbeat), so a plain
-    attribute is enough. The heartbeat task handle is kept after a switch-off
-    so shutdown can still cancel and await it.
+    attribute is enough. The task handles (heartbeat, worker, watchdog) are kept
+    after a switch-off so shutdown can still cancel and await them.
     """
 
     def __init__(self) -> None:
         self._active = False
-        self._task: asyncio.Task[None] | None = None
+        self._tasks: tuple[asyncio.Task[None], ...] = ()
 
     @property
     def active(self) -> bool:
         return self._active
 
-    def turn_on(self, task: asyncio.Task[None]) -> None:
-        self._task = task
+    def turn_on(self, *tasks: asyncio.Task[None]) -> None:
+        self._tasks = tuple(tasks)
         self._active = True
 
     def turn_off(self) -> None:
         self._active = False
 
-    def take_task(self) -> asyncio.Task[None] | None:
-        task, self._task = self._task, None
-        return task
+    def take_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        tasks, self._tasks = self._tasks, ()
+        return tasks
 
 
 @dataclass(frozen=True)
@@ -97,14 +105,33 @@ class V6Container:
     holder: str
     halt_path: Path
     switch: RuntimeSwitch
+    parts: RuntimeParts
     heartbeat_interval_s: float = HEARTBEAT_INTERVAL_S
+    run_tasks: bool = True
 
     @property
     def active(self) -> bool:
         return self.switch.active
 
+    @property
+    def ledger_cycles(self) -> LedgerCycles:
+        return self.parts.ledger_cycles
+
     def close(self) -> None:
-        self.ledger_v6.close()
+        try:
+            self.parts.ledger_cycles.close()
+        finally:
+            self.ledger_v6.close()
+
+
+def _parts(core: CoreParts, db_path: str | PathLike[str],
+           watchdog_interval_s: float) -> RuntimeParts:
+    cycles = LedgerCycles(db_path)
+    try:
+        return build_runtime_parts(core, cycles, watchdog_interval_s=watchdog_interval_s)
+    except Exception:
+        cycles.close()
+        raise
 
 
 def build_container(
@@ -113,27 +140,40 @@ def build_container(
     clock: Clock | None = None,
     *,
     heartbeat_interval_s: float = HEARTBEAT_INTERVAL_S,
+    run_tasks: bool = True,
+    watchdog_interval_s: float = WATCHDOG_INTERVAL_S,
 ) -> V6Container:
+    """`run_tasks=False` keeps the worker and the watchdog off (data-plane tests)."""
     if not 0 < heartbeat_interval_s < LOCK_STALE_AFTER_S:
         raise ValueError(f"heartbeat interval must be in (0, {LOCK_STALE_AFTER_S}) seconds")
     resolved_clock: Clock = clock if clock is not None else SystemClock()
     ledger = LedgerV6(db_path, clock=resolved_clock)
+    switch, ea_state, bar_store = RuntimeSwitch(), EaState(), BarStore(ledger)
+    halt_path = _resolve_halt_path(v6_settings.halt_file)
+    core = CoreParts(settings=v6_settings, clock=resolved_clock, ledger_v6=ledger,
+                     bar_store=bar_store, ea_state=ea_state, halt_path=halt_path,
+                     is_active=lambda: switch.active)
+    try:
+        parts = _parts(core, db_path, watchdog_interval_s)
+    except Exception:
+        ledger.close()
+        raise
     return V6Container(
-        settings=v6_settings, clock=resolved_clock, ledger_v6=ledger,
-        bar_store=BarStore(ledger), ea_state=EaState(), holder=_new_holder(),
-        halt_path=_resolve_halt_path(v6_settings.halt_file), switch=RuntimeSwitch(),
-        heartbeat_interval_s=heartbeat_interval_s,
+        settings=v6_settings, clock=resolved_clock, ledger_v6=ledger, bar_store=bar_store,
+        ea_state=ea_state, holder=_new_holder(), halt_path=halt_path, switch=switch,
+        parts=parts, heartbeat_interval_s=heartbeat_interval_s, run_tasks=run_tasks,
     )
 
 
 def container_for_app(
-    v6_settings: V6Settings | None, db_path: str | PathLike[str], clock: Clock | None
+    v6_settings: V6Settings | None, db_path: str | PathLike[str], clock: Clock | None,
+    *, run_tasks: bool = True,
 ) -> V6Container | None:
     """None when V6 is disabled or its mode is `off`; invalid V6 configuration raises at startup."""
     resolved = v6_settings if v6_settings is not None else load_v6_settings()
     if not resolved.enabled or resolved.mode == "off":
         return None
-    return build_container(resolved, db_path, clock)
+    return build_container(resolved, db_path, clock, run_tasks=run_tasks)
 
 
 def require_active_container(request: Request) -> V6Container:
@@ -177,8 +217,21 @@ async def _release(container: V6Container) -> None:
         logger.warning("v6 runtime lock was no longer held by %s at shutdown", container.holder)
 
 
+def _runtime_tasks(container: V6Container) -> tuple[asyncio.Task[None], ...]:
+    heartbeat = asyncio.create_task(heartbeat_loop(container), name="v6-heartbeat")
+    if not container.run_tasks:
+        return (heartbeat,)
+    parts = container.parts
+    return (heartbeat,
+            asyncio.create_task(parts.worker.run_forever(), name="v6-worker"),
+            asyncio.create_task(parts.watchdog.run_forever(), name="v6-watchdog"))
+
+
 async def start_runtime(container: V6Container) -> bool:
-    """Take the lock, hydrate the bar cache and start the heartbeat; False leaves V6 off."""
+    """Take the lock, hydrate the bar cache, start heartbeat, worker and watchdog.
+
+    False leaves V6 off in this process (no task is started).
+    """
     try:
         if not await _acquire(container):
             return False
@@ -191,21 +244,22 @@ async def start_runtime(container: V6Container) -> bool:
         logger.exception("v6 bar cache hydration failed; V6 stays disabled")
         await _release(container)
         return False
-    container.switch.turn_on(asyncio.create_task(heartbeat_loop(container)))
+    container.switch.turn_on(*_runtime_tasks(container))
     await _audit(container, "runtime_start")
-    logger.info("v6 runtime started (holder=%s mode=%s backend=%s cached_bars=%s)",
+    logger.info("v6 runtime started (holder=%s mode=%s backend=%s cached_bars=%s tasks=%s)",
                 container.holder, container.settings.mode, container.settings.backend,
-                dict(counts))
+                dict(counts), container.run_tasks)
     return True
 
 
 async def stop_runtime(container: V6Container) -> None:
     container.switch.turn_off()
-    task = container.switch.take_task()
-    if task is not None:
+    tasks = container.switch.take_tasks()
+    for task in tasks:
         task.cancel()
+    if tasks:
         # wait() never raises, so a cancellation aimed at shutdown itself still propagates.
-        await asyncio.wait({task})
+        await asyncio.wait(set(tasks))
     await _audit(container, "runtime_stop")
     await _release(container)
     logger.info("v6 runtime stopped (holder=%s)", container.holder)

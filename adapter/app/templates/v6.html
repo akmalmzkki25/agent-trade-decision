@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}V6 Desk · Qlip Adapter{% endblock %}
+
+{% block content %}
+<section id="v6-root" class="space-y-8"
+         data-csrf="{{ csrf_nonce }}"
+         data-poll-ms="{{ poll_interval_ms }}"
+         data-enabled="{{ 'true' if v6_enabled else 'false' }}">
+
+  <!-- Masthead: what this desk is, how healthy it is, and the kill switch -->
+  <!-- overflow-clip, not overflow-hidden: the glow must not make this box scrollable on focus -->
+  <div class="relative overflow-clip rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-950 p-6">
+    <div class="pointer-events-none absolute -right-24 -top-24 h-64 w-64 rounded-full bg-emerald-500/5 blur-3xl"></div>
+    <div class="relative flex flex-wrap items-start justify-between gap-6">
+      <div class="max-w-2xl">
+        <p class="font-mono text-[11px] uppercase tracking-[0.2em] text-emerald-400/80">V6 · XAUUSD · M15 · <span id="v6-mode">{{ v6_mode }}</span></p>
+        <h1 class="mt-2 text-3xl font-semibold tracking-tight text-slate-50">Deliberation desk</h1>
+        <p class="mt-2 text-sm leading-relaxed text-slate-400">
+          Every closed M15 bar is analysed and recorded. In shadow mode nothing is sent to the EA:
+          approved trades appear here as shadow intents only.
+        </p>
+      </div>
+      <div class="flex flex-col items-end gap-3">
+        <div class="flex items-center gap-3">
+          <span id="v6-status" class="rounded-lg bg-slate-800 px-3 py-1.5 font-mono text-sm font-semibold tracking-wide text-slate-300 ring-1 ring-slate-700">…</span>
+          <button id="v6-halt" type="button"
+                  class="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-rose-900/30 ring-1 ring-rose-400/40 transition hover:bg-rose-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40"
+                  {% if not v6_enabled %}disabled{% endif %}>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
+            HALT
+          </button>
+        </div>
+        <p class="text-[11px] text-slate-500">Last update: <span id="v6-last-update" class="tabular text-slate-300">—</span></p>
+        <p id="v6-halt-result" class="text-xs text-rose-300" role="status" aria-live="polite"></p>
+        <p id="v6-error" class="text-xs text-amber-300" role="alert"></p>
+      </div>
+    </div>
+  </div>
+
+  <div id="v6-disabled" class="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300" {% if v6_enabled %}hidden{% endif %}>
+    <strong class="font-semibold">V6 is not running in this process.</strong>
+    Set <span class="font-mono">V6_ENABLED=true</span> with a mode other than <span class="font-mono">off</span> and restart the adapter.
+  </div>
+
+  <!-- Status strip -->
+  <div class="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-slate-800 bg-slate-800/60 md:grid-cols-3 xl:grid-cols-6">
+    {% for key, label in [
+      ('runtime', 'Runtime'), ('ea', 'EA link'), ('session', 'Session'),
+      ('exposure', 'Left running'), ('today', 'Today'), ('sizing', 'Min tradeable equity'),
+    ] %}
+    <div class="bg-slate-900/80 p-4">
+      <p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">{{ label }}</p>
+      <p id="v6-tile-{{ key }}" class="mt-2 tabular text-xl font-semibold text-slate-100">—</p>
+      <p id="v6-tile-{{ key }}-sub" class="mt-1 text-[11px] leading-snug text-slate-500">—</p>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+    <!-- Gate table of the newest cycle -->
+    <section class="rounded-xl border border-slate-800 bg-slate-900/40 lg:col-span-2">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-5 py-3">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-100">Hard gates · last cycle</h2>
+          <p class="text-xs text-slate-500">Evaluated in order before any agent is asked. One failure holds the bar.</p>
+        </div>
+        <span id="v6-last-cycle" class="font-mono text-[11px] text-slate-500">—</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="text-left text-[11px] uppercase tracking-wider text-slate-500">
+              <th class="px-5 py-2 font-medium">Gate</th>
+              <th class="px-3 py-2 font-medium">Result</th>
+              <th class="px-3 py-2 text-right font-medium">Value</th>
+              <th class="px-3 py-2 text-right font-medium">Limit</th>
+              <th class="px-3 py-2 font-medium">Detail</th>
+            </tr>
+          </thead>
+          <tbody id="v6-gates" class="divide-y divide-slate-800/60">
+            <tr><td colspan="5" class="px-5 py-8 text-center text-xs text-slate-500">No cycle recorded yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="space-y-6">
+      <section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+        <h2 class="text-sm font-semibold text-slate-100">Circuit breakers</h2>
+        <p class="text-xs text-slate-500">Survive restarts; reset is manual.</p>
+        <div id="v6-breakers" class="mt-3"></div>
+      </section>
+      <section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+        <div class="flex items-baseline justify-between">
+          <h2 class="text-sm font-semibold text-slate-100">Why the desk held</h2>
+          <span class="text-[11px] text-slate-500">last 7 days</span>
+        </div>
+        <div id="v6-hold-reasons" class="mt-3"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Discussion transcript -->
+  <section class="space-y-3">
+    <div class="flex items-end justify-between gap-4">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-100">Discussion transcript</h2>
+        <p class="text-xs text-slate-500">Newest cycles first. Agent notes are untrusted text and are shown in quotes.</p>
+      </div>
+      <span class="text-[11px] text-slate-500">Direction always comes from a detected candidate.</span>
+    </div>
+    <div id="v6-cycles" class="space-y-4"></div>
+  </section>
+
+  <!-- Counterfactual labels -->
+  <section class="rounded-xl border border-slate-800 bg-slate-900/40">
+    <div class="border-b border-slate-800 px-5 py-3">
+      <h2 class="text-sm font-semibold text-slate-100">Candidate labels · 30 days</h2>
+      <p class="text-xs text-slate-500">Triple-barrier outcome of every detected candidate, taken or not.</p>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="min-w-full text-sm">
+        <thead>
+          <tr class="text-left text-[11px] uppercase tracking-wider text-slate-500">
+            <th class="px-5 py-2 font-medium">Setup</th>
+            <th class="px-3 py-2 font-medium">Verdict</th>
+            <th class="px-3 py-2 font-medium">Label</th>
+            <th class="px-3 py-2 font-medium">Outcome</th>
+            <th class="px-3 py-2 text-right font-medium">n</th>
+            <th class="px-3 py-2 text-right font-medium">Mean R</th>
+          </tr>
+        </thead>
+        <tbody id="v6-labels" class="divide-y divide-slate-800/60">
+          <tr><td colspan="6" class="px-5 py-8 text-center text-xs text-slate-500">No candidates yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/v6/static/v6.js" defer></script>
+{% endblock %}

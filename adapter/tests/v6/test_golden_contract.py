@@ -33,6 +33,8 @@ PROBE_SCRIPT: Final[Path] = REPO_ROOT / "ea" / "Scripts" / "QlipV6_Probe.mq5"
 EXPECTED_BAR_COUNTS: Final[dict[str, int]] = {"M1": 12, "M5": 48, "M15": 16, "H1": 8, "D1": 3}
 MAX_EA_MAIN_LINES: Final[int] = 300
 MAX_INCLUDE_LINES: Final[int] = 400
+# The probe is a standalone, self-contained script; plan section 5 caps EA files at 800.
+MAX_PROBE_LINES: Final[int] = 800
 TRADING_CALLS: Final[tuple[str, ...]] = (
     "OrderSend", "OrderSendAsync", "CTrade", "Trade.mqh", "PositionClose", "OrderModify",
 )
@@ -181,11 +183,41 @@ def test_snapshot_golden_is_data_only() -> None:
     assert snapshot.ea_state.last_intent_id == ""
 
 
-def test_golden_spec_is_self_consistent() -> None:
-    """tick_value must equal tick_size x contract_size, the spec gate's rule."""
-    spec = V6Snapshot.model_validate_json(_read_golden("snapshot_sample.json")).symbol_spec
+def test_golden_spec_matches_the_probe_findings() -> None:
+    """MetaQuotes-Demo probe (2026-09-16): the server reports tick_value 0.1, but
+    OrderCalcProfit and realised deals both pay $100 per 1.00 move per lot."""
+    block = V6Snapshot.model_validate_json(_read_golden("snapshot_sample.json")).symbol_spec
+
+    assert block.contract_size == 100.0
+    assert block.tick_value == 0.1
+    assert block.calc_profit_per_price == block.calc_loss_per_price == 100.0
+    assert math.isclose(block.margin_per_lot_buy, 4535.35 * 100 / 200, rel_tol=1e-4)
+
+
+def test_golden_spec_derived_tick_value_passes_the_spec_rule() -> None:
+    """The sizing spec satisfies tick_value == tick_size x contract_size; the
+    broker's reported value stays available and is still 10x off."""
+    snapshot = V6Snapshot.model_validate_json(_read_golden("snapshot_sample.json"))
+    spec = snapshot.symbol_spec.to_spec()
 
     assert math.isclose(spec.tick_value, spec.tick_size * spec.contract_size, rel_tol=1e-9)
+    assert math.isclose(spec.tick_value_loss, spec.tick_size * spec.contract_size, rel_tol=1e-9)
+    assert spec.tick_value_source == "order_calc"
+    assert spec.reported_tick_value == 0.1
+    assert spec.reported_tick_value_loss == 0.1
+
+
+def test_ea_emits_symbol_spec_fields_in_model_order() -> None:
+    """SymbolSpecJson writes the block in the order the model and golden list it."""
+    source = (EA_INCLUDE_DIR / "Snapshot.mqh").read_text(encoding="utf-8")
+    body = source[source.index("string SymbolSpecJson("):]
+    body = body[:body.index("return o.Text();")]
+    emitted = re.findall(r'\.Add(?:Str|Num|Int|Bool|Raw|Null)\(\s*"(\w+)"', body)
+    golden = list(json.loads(_read_golden("snapshot_sample.json"))["symbol_spec"])
+    fields = list(V6Snapshot.model_fields["symbol_spec"].annotation.model_fields)
+
+    assert emitted == fields == golden
+    assert "OrderCalcProfit(ORDER_TYPE_BUY" in source
 
 
 # --- the contract stays strict -----------------------------------------------
@@ -325,5 +357,6 @@ def test_ea_contains_no_trading_calls() -> None:
 
 def test_ea_files_stay_within_size_limits() -> None:
     assert len(EA_MAIN.read_text(encoding="utf-8").splitlines()) <= MAX_EA_MAIN_LINES
-    for path in [PROBE_SCRIPT, *EA_INCLUDE_DIR.glob("*.mqh")]:
+    assert len(PROBE_SCRIPT.read_text(encoding="utf-8").splitlines()) <= MAX_PROBE_LINES
+    for path in EA_INCLUDE_DIR.glob("*.mqh"):
         assert len(path.read_text(encoding="utf-8").splitlines()) <= MAX_INCLUDE_LINES, path.name
