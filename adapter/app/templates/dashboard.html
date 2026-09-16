@@ -47,6 +47,96 @@
     {% endfor %}
   </div>
 
+  <!-- Scalper performance metrics (profit factor, EV, latency, risk) -->
+  <section class="rounded-xl border border-slate-800 bg-slate-900/40">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-3">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-100">Strategy performance</h2>
+        <p class="text-xs text-slate-500">Computed from closed baskets across all strategy versions.</p>
+      </div>
+      <div class="flex items-center gap-2">
+        {% if perf.sample_size == 0 %}
+          <span class="rounded-md bg-slate-800 px-2 py-1 text-[11px] text-slate-400">No closed baskets yet</span>
+        {% elif perf.is_significant %}
+          <span class="rounded-md bg-emerald-500/15 px-2 py-1 text-[11px] font-medium text-emerald-300 ring-1 ring-emerald-500/30">
+            {{ perf.sample_size }} baskets · statistically meaningful
+          </span>
+        {% else %}
+          <span class="rounded-md bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-300 ring-1 ring-amber-500/30">
+            {{ perf.sample_size }} / {{ perf.min_significant_sample }} baskets · too early to trust
+          </span>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-px bg-slate-800/60 md:grid-cols-3 lg:grid-cols-6">
+      {% set perf_cards = [
+        ('Profit factor', '%.2f'|format(perf.profit_factor), 'target ≥ ' ~ perf.profit_factor_target,
+         'emerald' if perf.meets_profit_factor_target else ('slate' if perf.sample_size == 0 else 'rose')),
+        ('Win rate', '%.1f'|format(perf.win_rate_pct) ~ '%', perf.wins ~ 'W / ' ~ perf.losses ~ 'L', 'slate'),
+        ('Expected value', '%.3f'|format(perf.expected_value), 'per basket, after R:R',
+         'emerald' if perf.expected_value > 0 else ('slate' if perf.sample_size == 0 else 'rose')),
+        ('Net PnL', '%.2f'|format(perf.net_pnl), 'avg win ' ~ '%.2f'|format(perf.avg_win) ~ ' / loss ' ~ '%.2f'|format(perf.avg_loss),
+         'emerald' if perf.net_pnl > 0 else ('slate' if perf.sample_size == 0 else 'rose')),
+        ('Max floating DD', '%.2f'|format(perf.max_floating_drawdown), 'worst unrealised dip',
+         'rose' if perf.max_floating_drawdown < 0 else 'slate'),
+        ('p95 latency', '%.0f'|format(perf.p95_latency_ms) ~ ' ms', 'target < ' ~ perf.latency_target_ms ~ ' ms',
+         'emerald' if (perf.p95_latency_ms > 0 and perf.p95_latency_ms <= perf.latency_target_ms) else ('slate' if perf.p95_latency_ms == 0 else 'amber')),
+      ] %}
+      {% for label, value, sub, tone in perf_cards %}
+      <div class="bg-slate-900/60 p-4">
+        <p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">{{ label }}</p>
+        <p class="mt-1.5 tabular text-xl font-semibold
+                  {% if tone == 'emerald' %}text-emerald-300
+                  {% elif tone == 'rose' %}text-rose-300
+                  {% elif tone == 'amber' %}text-amber-300
+                  {% else %}text-slate-100{% endif %}">{{ value }}</p>
+        <p class="mt-1 text-[11px] text-slate-500">{{ sub }}</p>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="grid grid-cols-1 gap-6 p-5 lg:grid-cols-3">
+      <div class="lg:col-span-2">
+        <h3 class="text-xs font-medium uppercase tracking-wider text-slate-500">Equity curve</h3>
+        <div class="mt-3 h-48">
+          {% if equity_curve %}
+            <canvas id="equityChart"></canvas>
+          {% else %}
+            <div class="grid h-full place-items-center rounded-md border border-dashed border-slate-800 text-xs text-slate-500">
+              Equity curve appears once baskets start closing.
+            </div>
+          {% endif %}
+        </div>
+      </div>
+      <div>
+        <h3 class="text-xs font-medium uppercase tracking-wider text-slate-500">Execution cost</h3>
+        <dl class="mt-3 space-y-2 text-sm">
+          <div class="flex items-center justify-between rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+            <dt class="text-slate-400">Avg slippage</dt>
+            <dd class="tabular text-slate-200">{{ '%.2f'|format(perf.avg_slippage_points) }} pts</dd>
+          </div>
+          <div class="flex items-center justify-between rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+            <dt class="text-slate-400">Avg spread</dt>
+            <dd class="tabular text-slate-200">{{ '%.2f'|format(perf.avg_spread_points) }} pts</dd>
+          </div>
+          <div class="flex items-center justify-between rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+            <dt class="text-slate-400">Avg latency</dt>
+            <dd class="tabular text-slate-200">{{ '%.0f'|format(perf.avg_latency_ms) }} ms</dd>
+          </div>
+          <div class="flex items-center justify-between rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+            <dt class="text-slate-400">Best / worst basket</dt>
+            <dd class="tabular text-slate-200">
+              <span class="text-emerald-300">{{ '%.2f'|format(perf.best_basket_pnl) }}</span>
+              <span class="text-slate-600">/</span>
+              <span class="text-rose-300">{{ '%.2f'|format(perf.worst_basket_pnl) }}</span>
+            </dd>
+          </div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
   <!-- Chart + recent plans side by side -->
   <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
     <div class="lg:col-span-2 rounded-xl border border-slate-800 bg-slate-900/40 p-5">
@@ -73,7 +163,16 @@
         {% for p in plans[:8] %}
         <li class="rounded-md border border-slate-800 bg-slate-900/60 p-3">
           <div class="flex items-center justify-between gap-2">
-            <span class="rounded-md bg-slate-800 px-1.5 py-0.5 text-[11px] font-mono text-slate-300">{{ p.scenario }}</span>
+            <div class="flex items-center gap-1.5">
+              <span class="rounded-md px-1.5 py-0.5 text-[10px] font-medium font-mono uppercase tracking-wider
+                         {% if p.version == 'v5' %}bg-pink-500/15 text-pink-300 ring-1 ring-pink-500/30
+                         {% elif p.version == 'v4' %}bg-teal-500/15 text-teal-300 ring-1 ring-teal-500/30
+                         {% elif p.version == 'v3' %}bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30
+                         {% else %}bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30{% endif %}">
+                {{ p.version }}{% if p.basket_slot %} · {{ p.basket_slot }}{% endif %}
+              </span>
+              <span class="rounded-md bg-slate-800 px-1.5 py-0.5 text-[11px] font-mono text-slate-300">{{ p.scenario }}</span>
+            </div>
             <span class="rounded-md px-1.5 py-0.5 text-[11px] font-medium
                        {% if p.side == 'buy' %}bg-emerald-500/15 text-emerald-300
                        {% elif p.side == 'sell' %}bg-rose-500/15 text-rose-300
@@ -241,6 +340,48 @@
       },
     },
   });
+
+  const equityData = {{ equity_curve | tojson }};
+  const equityCanvas = document.getElementById('equityChart');
+  if (equityCanvas && equityData.length) {
+    new Chart(equityCanvas.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: equityData.map((_, i) => i + 1),
+        datasets: [{
+          label: 'Cumulative PnL',
+          data: equityData.map(d => d.cumulative_pnl),
+          borderColor: '#34d399',
+          backgroundColor: 'rgba(52, 211, 153, 0.12)',
+          borderWidth: 2,
+          fill: true,
+          pointRadius: 0,
+          tension: 0.25,
+        }],
+      },
+      options: {
+        maintainAspectRatio: false,
+        animation: { duration: 200 },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#0f172a', borderColor: '#1e293b', borderWidth: 1,
+            callbacks: {
+              title: (items) => 'Basket #' + items[0].label,
+              label: (item) => {
+                const point = equityData[item.dataIndex];
+                return `cum ${point.cumulative_pnl} (this ${point.net_pnl}) · ${point.close_reason || ''}`;
+              },
+            },
+          },
+        },
+        scales: {
+          x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', font: { size: 10 }, maxTicksLimit: 12 } },
+          y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', font: { size: 10 } } },
+        },
+      },
+    });
+  }
 
   function formatTime(d) {
     return d.toISOString().slice(11, 19) + ' UTC';

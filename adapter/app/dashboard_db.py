@@ -8,32 +8,17 @@ the Ledger. All queries are bounded and parameterized.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
-from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 
-from .settings import settings
+from .db import clamp_limit, read_only_connection, table_exists
 
+logger = logging.getLogger(__name__)
 
-@contextmanager
-def _conn():
-    db_path = Path(settings.db_path).resolve()
-    # Use URI with mode=ro to enforce read-only access.
-    uri = f"file:{db_path.as_posix()}?mode=ro"
-    cn = sqlite3.connect(uri, uri=True, check_same_thread=False)
-    cn.row_factory = sqlite3.Row
-    try:
-        yield cn
-    finally:
-        cn.close()
-
-
-def _table_exists(cn: sqlite3.Connection, name: str) -> bool:
-    row = cn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone()
-    return row is not None
+# Kept as module-local aliases so existing call sites stay readable.
+_conn = read_only_connection
+_table_exists = table_exists
 
 
 def get_stats() -> dict[str, Any]:
@@ -94,6 +79,7 @@ def get_stats() -> dict[str, Any]:
                 if row:
                     out["trade_events_total"] = int(row["c"] or 0)
     except sqlite3.OperationalError:
+        logger.warning("ledger unreadable while building dashboard stats", exc_info=True)
         out["ledger_available"] = False
     return out
 
@@ -137,7 +123,7 @@ def recent_decisions(limit: int = 25) -> list[dict[str, Any]]:
                     }
                 )
     except sqlite3.OperationalError:
-        pass
+        logger.warning("ledger read failed; returning empty result", exc_info=True)
     return rows
 
 
@@ -147,19 +133,38 @@ def recent_plans(limit: int = 25) -> list[dict[str, Any]]:
         with _conn() as cn:
             if not _table_exists(cn, "plans"):
                 return rows
-            for r in cn.execute(
-                """
-                SELECT request_id, symbol, scenario, side, confidence, basket_tp_pct,
-                       invalidation_price, layers_count, status, created_at
-                FROM plans
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall():
-                rows.append(dict(r))
+            # Try V3-aware columns; fall back if older schema.
+            try:
+                cur = cn.execute(
+                    """
+                    SELECT request_id, symbol, scenario, side, confidence, basket_tp_pct,
+                           invalidation_price, layers_count, status, created_at,
+                           COALESCE(version, 'v2') AS version,
+                           basket_slot
+                    FROM plans
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+            except sqlite3.OperationalError:
+                cur = cn.execute(
+                    """
+                    SELECT request_id, symbol, scenario, side, confidence, basket_tp_pct,
+                           invalidation_price, layers_count, status, created_at
+                    FROM plans
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+            for r in cur.fetchall():
+                d = dict(r)
+                d.setdefault("version", "v2")
+                d.setdefault("basket_slot", None)
+                rows.append(d)
     except sqlite3.OperationalError:
-        pass
+        logger.warning("ledger read failed; returning empty result", exc_info=True)
     return rows
 
 
@@ -181,7 +186,7 @@ def recent_trade_events(limit: int = 25) -> list[dict[str, Any]]:
             ).fetchall():
                 rows.append(dict(r))
     except sqlite3.OperationalError:
-        pass
+        logger.warning("ledger read failed; returning empty result", exc_info=True)
     return rows
 
 
@@ -202,7 +207,7 @@ def action_distribution() -> list[dict[str, Any]]:
             ).fetchall():
                 rows.append({"action": r["action"] or "unknown", "count": int(r["c"])})
     except sqlite3.OperationalError:
-        pass
+        logger.warning("ledger read failed; returning empty result", exc_info=True)
     return rows
 
 

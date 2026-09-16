@@ -100,3 +100,24 @@ def test_api_trade_events_endpoint():
     r = client.get("/api/dashboard/trade-events")
     assert r.status_code == 200
     assert isinstance(r.json(), list)
+
+
+def test_dashboard_renders_performance_section():
+    """The scalper brief's metric set must be visible on the dashboard."""
+    r = client.get("/dashboard")
+    assert r.status_code == 200
+    body = r.text
+    assert "Strategy performance" in body
+    assert "Profit factor" in body
+    assert "Expected value" in body
+    assert "Max floating DD" in body
+    assert "p95 latency" in body
+    assert "Avg slippage" in body
+
+
+def test_dashboard_warns_when_sample_too_small():
+    """Brief: don't trust a scalper's edge below 1000 trades."""
+    r = client.get("/dashboard")
+    body = r.text
+    # With an empty/small ledger the page must not claim significance.
+    assert ("too early to trust" in body) or ("No closed baskets yet" in body)
