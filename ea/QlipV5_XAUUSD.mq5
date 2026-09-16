@@ -80,6 +80,57 @@ int           g_basket_last_latency_ms = 0;
 #define SIDE_CODE_BUY        1.0
 #define SIDE_CODE_SELL       (-1.0)
 #define GV_LAST_BURST_MS     GV_PREFIX "LASTMS"
+// The basket id and its analytics have to survive a restart too, otherwise a
+// basket that reopens after reinit closes with no id and PostBasketResult
+// drops the row, losing the trade from the metrics entirely.
+#define GV_BASKET_IDMS       GV_PREFIX "BIDMS"
+#define GV_BASKET_POSITIONS  GV_PREFIX "BPOS"
+#define GV_BASKET_MAXDD      GV_PREFIX "BMAXDD"
+#define GV_BASKET_SLIPSUM    GV_PREFIX "BSLIPSUM"
+#define GV_BASKET_SLIPN      GV_PREFIX "BSLIPN"
+#define GV_BASKET_SPRSUM     GV_PREFIX "BSPRSUM"
+#define GV_BASKET_SPRN       GV_PREFIX "BSPRN"
+
+// Rebuilds the basket id from the timestamp it was minted with, so the id a
+// restored basket reports is the same one its earlier rows used.
+string BasketIdFromMs(const ulong ms)
+{
+   return StringFormat("%s-V5B-%I64u", _Symbol, ms);
+}
+
+void PersistBasketAnalytics()
+{
+   GlobalVariableSet(GV_BASKET_POSITIONS, (double)g_basket_positions);
+   GlobalVariableSet(GV_BASKET_MAXDD, g_basket_max_float_dd);
+   GlobalVariableSet(GV_BASKET_SLIPSUM, g_basket_slippage_sum);
+   GlobalVariableSet(GV_BASKET_SLIPN, (double)g_basket_slippage_n);
+   GlobalVariableSet(GV_BASKET_SPRSUM, g_basket_spread_sum);
+   GlobalVariableSet(GV_BASKET_SPRN, (double)g_basket_spread_n);
+}
+
+void RestoreBasketAnalytics()
+{
+   if(GlobalVariableCheck(GV_BASKET_IDMS))
+      g_basket_id = BasketIdFromMs((ulong)GlobalVariableGet(GV_BASKET_IDMS));
+   if(GlobalVariableCheck(GV_BASKET_SIDE))
+   {
+      double side_code = GlobalVariableGet(GV_BASKET_SIDE);
+      if(side_code > 0)      g_basket_side = "buy";
+      else if(side_code < 0) g_basket_side = "sell";
+   }
+   if(GlobalVariableCheck(GV_BASKET_POSITIONS))
+      g_basket_positions = (int)GlobalVariableGet(GV_BASKET_POSITIONS);
+   if(GlobalVariableCheck(GV_BASKET_MAXDD))
+      g_basket_max_float_dd = GlobalVariableGet(GV_BASKET_MAXDD);
+   if(GlobalVariableCheck(GV_BASKET_SLIPSUM))
+      g_basket_slippage_sum = GlobalVariableGet(GV_BASKET_SLIPSUM);
+   if(GlobalVariableCheck(GV_BASKET_SLIPN))
+      g_basket_slippage_n = (int)GlobalVariableGet(GV_BASKET_SLIPN);
+   if(GlobalVariableCheck(GV_BASKET_SPRSUM))
+      g_basket_spread_sum = GlobalVariableGet(GV_BASKET_SPRSUM);
+   if(GlobalVariableCheck(GV_BASKET_SPRN))
+      g_basket_spread_n = (int)GlobalVariableGet(GV_BASKET_SPRN);
+}
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -112,12 +163,7 @@ int OnInit()
    if(GlobalVariableCheck(GV_COOLDOWN)) g_cooldown_until = (datetime)GlobalVariableGet(GV_COOLDOWN);
    // Without this the adapter's side gate sees an empty side after a restart
    // and would let an opposite burst hedge a basket that is still open.
-   if(GlobalVariableCheck(GV_BASKET_SIDE))
-   {
-      double side_code = GlobalVariableGet(GV_BASKET_SIDE);
-      if(side_code > 0)      g_basket_side = "buy";
-      else if(side_code < 0) g_basket_side = "sell";
-   }
+   RestoreBasketAnalytics();
 
    PrintFormat("V5 EA initialized. magic=%d..%d basket_open=%s bursts=%d start_eq=%.2f cooldown=%s",
                InpBaseMagic, InpBaseMagic + InpMagicSlots - 1,
@@ -444,6 +490,13 @@ void ResetBasketState()
    GlobalVariableDel(GV_BASKET_BURSTS);
    GlobalVariableDel(GV_BASKET_STARTEQ);
    GlobalVariableDel(GV_BASKET_SIDE);
+   GlobalVariableDel(GV_BASKET_IDMS);
+   GlobalVariableDel(GV_BASKET_POSITIONS);
+   GlobalVariableDel(GV_BASKET_MAXDD);
+   GlobalVariableDel(GV_BASKET_SLIPSUM);
+   GlobalVariableDel(GV_BASKET_SLIPN);
+   GlobalVariableDel(GV_BASKET_SPRSUM);
+   GlobalVariableDel(GV_BASKET_SPRN);
 }
 
 void CloseBasket(const string &reason)
@@ -495,7 +548,11 @@ void EvaluateBasket()
    double pct = (g_basket_start_eq > 0) ? (pnl / g_basket_start_eq) * 100.0 : 0.0;
 
    // Track the worst floating PnL this basket ever saw (max floating drawdown).
-   if(pnl < g_basket_max_float_dd) g_basket_max_float_dd = pnl;
+   if(pnl < g_basket_max_float_dd)
+   {
+      g_basket_max_float_dd = pnl;
+      GlobalVariableSet(GV_BASKET_MAXDD, g_basket_max_float_dd);
+   }
 
    // Basket TP — whichever threshold (USD or %) hits first
    if(pnl >= InpBasketTpUsd || pct >= InpBasketTpPctEquity)
@@ -767,6 +824,7 @@ bool SendMarket(const string &side, double lots, long magic)
    g_basket_spread_sum += (double)spread_at_send;
    g_basket_spread_n++;
    g_basket_positions++;
+   PersistBasketAnalytics();
    return true;
 }
 
@@ -815,7 +873,9 @@ void ProcessBurstResponse(const string &resp)
       {
          g_basket_opened_at = TimeCurrent();
          g_basket_start_eq = AccountInfoDouble(ACCOUNT_EQUITY);
-         g_basket_id = StringFormat("%s-V5B-%I64u", _Symbol, NowMs());
+         ulong basket_ms = NowMs();
+         g_basket_id = BasketIdFromMs(basket_ms);
+         GlobalVariableSet(GV_BASKET_IDMS, (double)basket_ms);
          g_basket_side = side;
          GlobalVariableSet(GV_BASKET_SIDE,
                            side == "buy" ? SIDE_CODE_BUY : SIDE_CODE_SELL);
