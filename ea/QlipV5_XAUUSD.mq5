@@ -36,12 +36,17 @@ input int     InpMaxSpreadPoints      = 30;
 input int     InpDeviationPoints      = 30;        // slippage tolerance for market
 input int     InpSkipLogSeconds       = 60;        // how often to restate why it is idle
 input int     InpDomMaxAgeMs          = 2000;      // ignore depth older than this
+input int     InpDomStaticSamples     = 50;        // identical readings before DOM is disabled
 
 //--- Globals
 CTrade        Trade;
 int           h_bb_m1=-1, h_rsi_m1=-1, h_adx_h1=-1, h_atr_m1=-1;
 ulong         g_last_burst_ms = 0;
 ulong         g_book_updated_ms = 0;   // set by OnBookEvent
+bool          g_dom_is_static = false; // true once the book proves frozen
+double        g_dom_first_seen = 0.0;
+int           g_dom_samples = 0;
+int           g_dom_identical = 0;
 datetime      g_basket_opened_at = 0;
 int           g_basket_bursts = 0;
 double        g_basket_start_eq = 0.0;
@@ -123,19 +128,42 @@ void OnDeinit(const int reason)
 //| Micro-volatility: ATR M1 percentile over its own recent history.  |
 //| Returns 0..1. The scenario only trades inside the sweet spot.     |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Current ATR relative to its own longer-run average.                |
+//|                                                                    |
+//| 1.0 means volatility is normal for this symbol, 2.0 means it has   |
+//| doubled, 0.5 means it has halved. A ratio is used rather than a    |
+//| percentile rank because ATR is a smoothed, strongly autocorrelated |
+//| series: ranked against its own recent window it sits near an       |
+//| extreme almost all the time (live data had 97% of readings above   |
+//| the 0.90 rank), which makes a rank-based band unusable as a gate.  |
+//+------------------------------------------------------------------+
+double AtrM1Ratio(int baseline = 100)
+{
+   double atr[];
+   ArraySetAsSeries(atr, true);          // index 0 = most recently closed bar
+   if(CopyBuffer(h_atr_m1, 0, 1, baseline, atr) != baseline) return 1.0;
+
+   double sum = 0.0;
+   for(int i = 0; i < baseline; i++) sum += atr[i];
+   double mean = sum / baseline;
+   if(mean <= 1e-12) return 1.0;
+   return atr[0] / mean;
+}
+
+//+------------------------------------------------------------------+
+//| Percentile rank, kept for observability only. Recorded in the      |
+//| ledger so the ratio thresholds can be tuned against real data,     |
+//| but no longer used as a gate — see AtrM1Ratio for why.             |
+//+------------------------------------------------------------------+
 double AtrM1Percentile(int lookback = 50)
 {
    double atr[];
-   // Set the series flag explicitly: without it the buffer orientation is
-   // ambiguous and index 0 can be the OLDEST bar, which silently inverts this
-   // gate (a calming market then reads as "too wild").
    ArraySetAsSeries(atr, true);
    if(CopyBuffer(h_atr_m1, 0, 1, lookback, atr) != lookback) return 0.5;
 
-   double current = atr[0];              // most recently closed M1 bar
+   double current = atr[0];
    int below = 0;
-   // Rank against history only. Including the current value in its own
-   // baseline biases every reading upward.
    for(int i = 1; i < lookback; i++)
       if(atr[i] < current) below++;
    return (double)below / (double)(lookback - 1);
@@ -191,15 +219,47 @@ void VsaZScores(double &out_volume_z, double &out_range_z, int lookback = 50)
 //| Returns 0.0 when depth is unavailable (most retail FX/CFD feeds). |
 //| Range -1..+1: positive = bid-heavy (buy pressure).                |
 //+------------------------------------------------------------------+
-double DomImbalance(int levels = 5)
+//+------------------------------------------------------------------+
+//| Watch whether the book ever actually moves. Called on every book   |
+//| event; after InpDomStaticSamples consecutive identical readings    |
+//| the feed is declared synthetic and DomImbalance() stops using it.  |
+//+------------------------------------------------------------------+
+void TrackDomVariability(double imbalance)
+{
+   if(g_dom_samples == 0)
+   {
+      g_dom_first_seen = imbalance;
+      g_dom_samples = 1;
+      g_dom_identical = 1;
+      return;
+   }
+   g_dom_samples++;
+   if(MathAbs(imbalance - g_dom_first_seen) < 1e-9)
+   {
+      g_dom_identical++;
+      if(!g_dom_is_static && g_dom_identical >= InpDomStaticSamples)
+      {
+         g_dom_is_static = true;
+         PrintFormat("V5: depth of market is static at %.4f over %d samples — "
+                     "treating order-book imbalance as unavailable",
+                     g_dom_first_seen, g_dom_identical);
+      }
+   }
+   else if(g_dom_is_static)
+   {
+      g_dom_is_static = false;
+      Print("V5: depth of market started moving — order-book imbalance re-enabled");
+      g_dom_first_seen = imbalance;
+      g_dom_identical = 1;
+   }
+}
+
+double DomImbalanceRaw(int levels = 5)
 {
    // MarketBookGet returns the last snapshot the terminal received. If no book
    // update has arrived since the previous read, that snapshot is stale and
    // reusing it would feed the same imbalance into every decision. OnBookEvent
    // stamps g_book_updated_ms; anything older than InpDomMaxAgeMs is discarded.
-   if(g_book_updated_ms == 0) return 0.0;
-   if(NowMs() - g_book_updated_ms > (ulong)InpDomMaxAgeMs) return 0.0;
-
    MqlBookInfo book[];
    if(!MarketBookGet(_Symbol, book)) return 0.0;
    int n = ArraySize(book);
@@ -217,6 +277,18 @@ double DomImbalance(int levels = 5)
    double total = bid_vol + ask_vol;
    if(total < 1e-9) return 0.0;
    return (bid_vol - ask_vol) / total;
+}
+
+//+------------------------------------------------------------------+
+//| Order-book imbalance, or 0.0 when the feed cannot be trusted:      |
+//| never received, gone stale, or frozen at a constant value.         |
+//+------------------------------------------------------------------+
+double DomImbalance(int levels = 5)
+{
+   if(g_book_updated_ms == 0) return 0.0;
+   if(NowMs() - g_book_updated_ms > (ulong)InpDomMaxAgeMs) return 0.0;
+   if(g_dom_is_static) return 0.0;
+   return DomImbalanceRaw(levels);
 }
 
 //+------------------------------------------------------------------+
@@ -506,7 +578,8 @@ string BuildBurstRequestJson(const string request_id)
 
    int tick_mom = TickMomentumSigned();
    double tick_vol_z = TickVolumeZ();
-   double atr_pctl = AtrM1Percentile();
+   double atr_pctl  = AtrM1Percentile();
+   double atr_ratio = AtrM1Ratio();
    double vsa_vol_z = 0.0, vsa_range_z = 0.0;
    VsaZScores(vsa_vol_z, vsa_range_z);
    double dom_imb = DomImbalance();
@@ -562,6 +635,7 @@ string BuildBurstRequestJson(const string request_id)
    s += "\"tick_momentum_signed\":"+IntegerToString(tick_mom)+",";
    s += "\"tick_volume_z\":"+JNum(tick_vol_z,4)+",";
    s += "\"atr_m1_percentile\":"+JNum(atr_pctl,4)+",";
+   s += "\"atr_m1_ratio\":"+JNum(atr_ratio,4)+",";
    s += "\"vsa_volume_z\":"+JNum(vsa_vol_z,4)+",";
    s += "\"vsa_range_z\":"+JNum(vsa_range_z,4)+",";
    s += "\"dom_imbalance\":"+JNum(dom_imb,4)+"},";
@@ -808,7 +882,9 @@ void OnTimer()
 //+------------------------------------------------------------------+
 void OnBookEvent(const string &symbol)
 {
-   if(symbol == _Symbol) g_book_updated_ms = NowMs();
+   if(symbol != _Symbol) return;
+   g_book_updated_ms = NowMs();
+   TrackDomVariability(DomImbalanceRaw());
 }
 
 void OnTick()

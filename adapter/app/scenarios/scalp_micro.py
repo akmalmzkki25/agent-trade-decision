@@ -34,9 +34,15 @@ from .base import ScenarioResult, _safe
 # --- Hard gates -------------------------------------------------------------
 MAX_SPREAD_POINTS: Final[float] = 30.0
 
-# ATR sweet spot: percentile of current M1 ATR vs its own recent history.
-ATR_SWEET_SPOT_MIN: Final[float] = 0.25   # below this = market too quiet
-ATR_SWEET_SPOT_MAX: Final[float] = 0.90   # above this = news spike / too wild
+# ATR sweet spot, expressed as current M1 ATR divided by its 100-bar average.
+# 1.0 is normal volatility for the symbol, 2.0 is double, 0.5 is half.
+#
+# This replaced a percentile rank. ATR is smoothed and strongly autocorrelated,
+# so ranked against its own recent window the newest value sits near an extreme
+# nearly always: 276 of 283 live readings scored above the 0.90 rank, including
+# during quiet periods, which made the band unusable as a gate.
+ATR_RATIO_MIN: Final[float] = 0.60   # below this = market has gone flat
+ATR_RATIO_MAX: Final[float] = 2.50   # above this = spike, spread/slippage eat the edge
 
 RSI_EXTREME: Final[float] = 0.40
 
@@ -97,11 +103,11 @@ def _check_gates(req: V5BurstRequest, feats: dict[str, float]) -> ScenarioResult
     if req.market.spread_points > MAX_SPREAD_POINTS:
         return _reject("SPREAD_TOO_WIDE")
 
-    atr_percentile = feats["atr_percentile"]
-    if atr_percentile < ATR_SWEET_SPOT_MIN:
-        return _reject("ATR_TOO_QUIET", {"atr_percentile": atr_percentile})
-    if atr_percentile > ATR_SWEET_SPOT_MAX:
-        return _reject("ATR_TOO_WILD", {"atr_percentile": atr_percentile})
+    atr_ratio = feats["atr_ratio"]
+    if atr_ratio < ATR_RATIO_MIN:
+        return _reject("ATR_TOO_QUIET", {"atr_ratio": atr_ratio})
+    if atr_ratio > ATR_RATIO_MAX:
+        return _reject("ATR_TOO_WILD", {"atr_ratio": atr_ratio})
 
     if abs(feats["rsi_m1"]) >= RSI_EXTREME:
         return _reject("RSI_EXTREME_M1")
@@ -177,6 +183,9 @@ class ScalpMicro:
             "tick_vol_z": _safe(dec, "tick_volume_z"),
             "bb_pos_m1": _safe(dec, "bb_pos"),
             "rsi_m1": _safe(dec, "rsi_centered"),
+            # Older EA builds send no ratio; default 1.0 = "normal", so an
+            # EA that predates this field is not gated out entirely.
+            "atr_ratio": _safe(dec, "atr_m1_ratio", 1.0),
             "atr_percentile": _safe(dec, "atr_m1_percentile"),
             "vsa_volume_z": _safe(dec, "vsa_volume_z"),
             "vsa_range_z": _safe(dec, "vsa_range_z"),
@@ -212,6 +221,7 @@ class ScalpMicro:
             confidence=score,
             invalidation_price=None,
             key_levels={
+                "atr_ratio": feats["atr_ratio"],
                 "atr_percentile": feats["atr_percentile"],
                 "vsa_volume_z": feats["vsa_volume_z"],
                 "vsa_range_z": feats["vsa_range_z"],

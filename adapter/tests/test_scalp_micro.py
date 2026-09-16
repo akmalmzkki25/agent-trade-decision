@@ -50,6 +50,16 @@ def test_bb_extreme_blocks_entry():
     assert "BB_EXTREME_BLOCK" in r.reason_codes
 
 
+def test_high_atr_percentile_alone_does_not_block():
+    """
+    Percentile is recorded but must not gate: a smoothed series sits near its
+    own extremes most of the time, so ranking it blocked 97% of live readings.
+    """
+    req = make_v5_request(atr_m1_percentile=0.99, atr_m1_ratio=1.1)
+    r = ScalpMicro().evaluate(req)
+    assert r.side == "buy"
+
+
 def test_volume_spike_boosts_score():
     req_no = make_v5_request(tick_volume_z=0.1)
     req_yes = make_v5_request(tick_volume_z=2.0)
@@ -62,7 +72,8 @@ def test_volume_spike_boosts_score():
 
 
 def test_atr_too_quiet_vetoed():
-    req = make_v5_request(atr_m1_percentile=0.10)
+    """Ratio well under 1.0 = volatility collapsed vs its own baseline."""
+    req = make_v5_request(atr_m1_ratio=0.30)
     r = ScalpMicro().evaluate(req)
     assert r.side == "none"
     assert "ATR_TOO_QUIET" in r.reason_codes
@@ -70,14 +81,14 @@ def test_atr_too_quiet_vetoed():
 
 def test_atr_too_wild_vetoed():
     """News spike volatility — spread/slippage would eat the scalp edge."""
-    req = make_v5_request(atr_m1_percentile=0.95)
+    req = make_v5_request(atr_m1_ratio=3.2)
     r = ScalpMicro().evaluate(req)
     assert r.side == "none"
     assert "ATR_TOO_WILD" in r.reason_codes
 
 
 def test_atr_sweet_spot_allows_entry():
-    req = make_v5_request(atr_m1_percentile=0.55)
+    req = make_v5_request(atr_m1_ratio=1.1)
     r = ScalpMicro().evaluate(req)
     assert r.side == "buy"
     assert "ATR_SWEET_SPOT" in r.reason_codes
