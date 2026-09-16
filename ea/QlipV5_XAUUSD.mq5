@@ -35,11 +35,13 @@ input int     InpMaxBurstsPerBasket   = 3;
 input int     InpMaxSpreadPoints      = 30;
 input int     InpDeviationPoints      = 30;        // slippage tolerance for market
 input int     InpSkipLogSeconds       = 60;        // how often to restate why it is idle
+input int     InpDomMaxAgeMs          = 2000;      // ignore depth older than this
 
 //--- Globals
 CTrade        Trade;
 int           h_bb_m1=-1, h_rsi_m1=-1, h_adx_h1=-1, h_atr_m1=-1;
 ulong         g_last_burst_ms = 0;
+ulong         g_book_updated_ms = 0;   // set by OnBookEvent
 datetime      g_basket_opened_at = 0;
 int           g_basket_bursts = 0;
 double        g_basket_start_eq = 0.0;
@@ -124,11 +126,19 @@ void OnDeinit(const int reason)
 double AtrM1Percentile(int lookback = 50)
 {
    double atr[];
+   // Set the series flag explicitly: without it the buffer orientation is
+   // ambiguous and index 0 can be the OLDEST bar, which silently inverts this
+   // gate (a calming market then reads as "too wild").
+   ArraySetAsSeries(atr, true);
    if(CopyBuffer(h_atr_m1, 0, 1, lookback, atr) != lookback) return 0.5;
-   double current = atr[lookback - 1];   // most recent of the copied window
+
+   double current = atr[0];              // most recently closed M1 bar
    int below = 0;
-   for(int i = 0; i < lookback; i++) if(atr[i] <= current) below++;
-   return (double)below / (double)lookback;
+   // Rank against history only. Including the current value in its own
+   // baseline biases every reading upward.
+   for(int i = 1; i < lookback; i++)
+      if(atr[i] < current) below++;
+   return (double)below / (double)(lookback - 1);
 }
 
 //+------------------------------------------------------------------+
@@ -142,6 +152,10 @@ void VsaZScores(double &out_volume_z, double &out_range_z, int lookback = 50)
 
    long   vols[];
    double highs[], lows[];
+   // Same reason as AtrM1Percentile: pin index 0 to the newest bar explicitly.
+   ArraySetAsSeries(vols, true);
+   ArraySetAsSeries(highs, true);
+   ArraySetAsSeries(lows, true);
    if(CopyTickVolume(_Symbol, PERIOD_M1, 1, lookback, vols) != lookback) return;
    if(CopyHigh(_Symbol, PERIOD_M1, 1, lookback, highs) != lookback) return;
    if(CopyLow(_Symbol, PERIOD_M1, 1, lookback, lows) != lookback) return;
@@ -167,9 +181,9 @@ void VsaZScores(double &out_volume_z, double &out_range_z, int lookback = 50)
    double v_std = MathSqrt(v_var / MathMax(1, lookback - 1));
    double r_std = MathSqrt(r_var / MathMax(1, lookback - 1));
 
-   int last = lookback - 1;   // most recent closed bar in the copied window
-   if(v_std > 1e-9) out_volume_z = ((double)vols[last] - v_mean) / v_std;
-   if(r_std > 1e-9) out_range_z  = (ranges[last] - r_mean) / r_std;
+   // With the series flag set, index 0 is the most recently closed bar.
+   if(v_std > 1e-9) out_volume_z = ((double)vols[0] - v_mean) / v_std;
+   if(r_std > 1e-9) out_range_z  = (ranges[0] - r_mean) / r_std;
 }
 
 //+------------------------------------------------------------------+
@@ -179,6 +193,13 @@ void VsaZScores(double &out_volume_z, double &out_range_z, int lookback = 50)
 //+------------------------------------------------------------------+
 double DomImbalance(int levels = 5)
 {
+   // MarketBookGet returns the last snapshot the terminal received. If no book
+   // update has arrived since the previous read, that snapshot is stale and
+   // reusing it would feed the same imbalance into every decision. OnBookEvent
+   // stamps g_book_updated_ms; anything older than InpDomMaxAgeMs is discarded.
+   if(g_book_updated_ms == 0) return 0.0;
+   if(NowMs() - g_book_updated_ms > (ulong)InpDomMaxAgeMs) return 0.0;
+
    MqlBookInfo book[];
    if(!MarketBookGet(_Symbol, book)) return 0.0;
    int n = ArraySize(book);
@@ -779,6 +800,15 @@ void TryBurst()
 void OnTimer()
 {
    EvaluateBasket();
+}
+
+//+------------------------------------------------------------------+
+//| Depth-of-market update. Only stamps freshness; the imbalance is    |
+//| computed on demand in DomImbalance().                              |
+//+------------------------------------------------------------------+
+void OnBookEvent(const string &symbol)
+{
+   if(symbol == _Symbol) g_book_updated_ms = NowMs();
 }
 
 void OnTick()
