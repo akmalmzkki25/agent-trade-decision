@@ -1,4 +1,4 @@
-"""Agent backends for V6: the deterministic rules baseline and, later, LLM providers."""
+"""Agent backends for V6: the deterministic rules baseline and the operator backend."""
 
 from .base import AgentProvider, ProviderResult, ask_safely
 

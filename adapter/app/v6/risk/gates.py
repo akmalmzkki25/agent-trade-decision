@@ -20,7 +20,6 @@ The plan's gate list maps onto the codes like this:
   ATR floor      -> ATR_M5 (ATR(14, M5) >= V6_MIN_ATR_M5_POINTS)
   occupancy      -> OCCUPANCY (no V6 position or pending order), TRADES_TODAY
   breaker        -> BREAKER (risk.breakers status, plus the EA's local breaker)
-  LLM budget     -> LLM_BUDGET (always passes in Phase 2: rules only, no spend)
 
 Missing data fails closed. A gate that raises is reported as failed with value
 "ERROR" instead of hiding the rest of the table.
@@ -38,9 +37,9 @@ from typing import Final
 from ..config import V6Settings
 from ..cycle_codes import (
     CAL_STALE, F_ATR_M5, F_ATR_M5_POINTS, F_FRICTION_ATR, F_FRICTION_PRICE, GATE_ACCOUNT_POLICY,
-    GATE_ATR, GATE_BREAKER, GATE_CLOCK_SKEW, GATE_FRICTION, GATE_HALTED, GATE_LLM_BUDGET,
-    GATE_NEWS, GATE_OCCUPANCY, GATE_SESSION, GATE_SNAPSHOT_AGE, GATE_SPEC, GATE_SPREAD,
-    GATE_TRADES_TODAY, GATE_WARMUP,
+    GATE_ATR, GATE_BREAKER, GATE_CLOCK_SKEW, GATE_FRICTION, GATE_HALTED, GATE_NEWS,
+    GATE_OCCUPANCY, GATE_SESSION, GATE_SNAPSHOT_AGE, GATE_SPEC, GATE_SPREAD, GATE_TRADES_TODAY,
+    GATE_WARMUP,
 )
 from ..cycle_types import CalendarAssessment, MarketContext
 from ..types import TIMEFRAME_SECONDS, GateResult, SymbolSpec
@@ -70,7 +69,6 @@ CAL_ASOF_MISMATCH: Final[str] = "CAL_ASOF_MISMATCH"
 CALENDAR_MAX_OFFSET_S: Final[int] = TIMEFRAME_SECONDS["M15"]
 EA_BREAKER_NONE: Final[str] = "none"
 MAX_OCCUPANCY: Final[int] = limits.MAX_OPEN_POSITIONS - 1
-PHASE2_LLM_SPEND_USD: Final[float] = 0.0
 VALUE_DECIMALS: Final[int] = 4
 SPEC_PCT_DECIMALS: Final[int] = 1
 
@@ -286,7 +284,7 @@ def _atr_gate(context: MarketContext, settings: V6Settings) -> GateResult:
     return GateResult(code=GATE_ATR, passed=points >= limit, value=_round(points), limit=limit)
 
 
-# --- exposure, breakers, budget ----------------------------------------------------
+# --- exposure and breakers ---------------------------------------------------------
 
 def _occupancy_gate(context: MarketContext) -> GateResult:
     positions, pending = len(context.positions), len(context.pending_orders)
@@ -311,12 +309,6 @@ def _breaker_gate(context: MarketContext, breaker_status: BreakerStatus) -> Gate
     passed = not breaker_status.tripped and ea_breaker == EA_BREAKER_NONE
     return GateResult(code=GATE_BREAKER, passed=passed, value=",".join(labels) or VALUE_OK,
                       detail="; ".join(details))
-
-
-def _llm_budget_gate(settings: V6Settings) -> GateResult:
-    return GateResult(code=GATE_LLM_BUDGET, passed=True, value=PHASE2_LLM_SPEND_USD,
-                      limit=settings.daily_llm_budget_usd,
-                      detail="phase 2 runs the rules baseline only; no LLM spend")
 
 
 # --- public API ------------------------------------------------------------------
@@ -354,7 +346,6 @@ def evaluate_gates(context: MarketContext, calendar_assessment: CalendarAssessme
         (GATE_OCCUPANCY, lambda: _occupancy_gate(context)),
         (GATE_TRADES_TODAY, lambda: _trades_today_gate(context, settings)),
         (GATE_BREAKER, lambda: _breaker_gate(context, breaker_status)),
-        (GATE_LLM_BUDGET, lambda: _llm_budget_gate(settings)),
     )
     return tuple(_run(code, check) for code, check in checks)
 

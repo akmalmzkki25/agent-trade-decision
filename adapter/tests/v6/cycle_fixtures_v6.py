@@ -114,7 +114,7 @@ def view_records() -> tuple[ViewRecord, ...]:
     return (
         ViewRecord(role="price_action", source="rules", view=views.price_action, latency_ms=1),
         ViewRecord(role="news_risk", source="rules", view=views.news_risk),
-        ViewRecord(role="chief", source="openrouter", view=None,
+        ViewRecord(role="chief", source="operator", view=None,
                    error_code="PROVIDER_TIMEOUT", latency_ms=20_000, model="m",
                    tokens_in=900, tokens_out=0, cost_usd=0.001),
     )
@@ -139,8 +139,8 @@ def enter_result(cycle_id: str = CYCLE_ID, *, bar_open: int = BAR_OPEN,
                  candidate_ids: tuple[str, ...] = (CANDIDATE_ID,)) -> CycleResult:
     return CycleResult(
         cycle_id=cycle_id, snapshot_id=f"snap-{cycle_id}", bar_open_epoch=bar_open,
-        status="ENTER_SHADOW", hold_reason=None, backend="openrouter", provider="rules",
-        provider_status="backend_not_built", timings=timings(), session_id="abc123",
+        status="ENTER_SHADOW", hold_reason=None, backend="operator", provider="rules",
+        provider_status="partial", timings=timings(), session_id="abc123",
         gates=(GateResult(code=GATE_SPREAD, passed=True, value=20, limit=35),),
         candidates=tuple(assessment(cid, bar_t=bar_open) for cid in candidate_ids),
         views=desk_views(), view_records=view_records(), decision=chief_decision(),

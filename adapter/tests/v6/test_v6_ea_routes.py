@@ -25,7 +25,7 @@ from app.main import app as global_app
 from app.main import create_app
 from app.settings import settings as adapter_settings
 from app.v6.clock import FakeClock
-from app.v6.config import V6Settings
+from app.v6.config import OPERATOR_AGENTS, V6Settings
 
 from .payloads_v6 import (
     BAR_OPEN,
@@ -41,7 +41,7 @@ from .payloads_v6 import (
 JSON_HEADERS = {"Content-Type": "application/json"}
 V6_POST_PATHS = ("/v6/bars/backfill", "/v6/snapshot", "/v6/intent/poll", "/v6/execution")
 OPERATOR_TOKEN = "operator-token-" + "q" * 40
-OPENROUTER_KEY = "sk-or-v1-" + "z" * 48
+EA_KEY = "ea-hmac-key-" + "z" * 40
 SECRET_FRAGMENTS = ("token", "secret", "password", "api_key")
 
 
@@ -133,13 +133,14 @@ def test_malformed_or_unknown_bodies_are_400(client: TestClient, path: str) -> N
     assert isinstance(r.json()["detail"], list)
 
 
-def test_hmac_is_enforced_when_required(client: TestClient,
-                                        monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_v1_v5_hmac_never_applies_to_v6_routes(client: TestClient,
+                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    """V6 routes use their own key and headers (wire contract section 1)."""
     key = "k" * 40
     monkeypatch.setattr(adapter_settings, "hmac_required", True)
     monkeypatch.setattr(adapter_settings, "internal_hmac_key", SecretStr(key))
     body = json.dumps(execution_payload()).encode("utf-8")
-    assert _post(client, "/v6/execution", body).status_code == 401
+    assert _post(client, "/v6/execution", body).status_code == 200
     signature = hmac.new(key.encode("utf-8"), body, hashlib.sha256).hexdigest()
     assert _post(client, "/v6/execution", body, **{"X-Internal-Sig": signature}).status_code == 200
 
@@ -329,7 +330,8 @@ def test_status_reports_runtime_ea_and_market_state(client: TestClient,
     status = client.get("/v6/status").json()
     assert status["enabled"] is True
     assert (status["mode"], status["backend"]) == ("shadow", "rules")
-    assert status["available_backends"] == ["rules"]
+    assert status["operator_agents"] == list(OPERATOR_AGENTS)
+    assert (status["operator_ready"], status["ea_signing"]) == (False, "off")
     assert status["ea_last_seen_age_s"] == pytest.approx(4.0)
     assert status["trade_mode"] == "CONTEST"
     assert status["last_snapshot"] == {
@@ -352,14 +354,14 @@ def _keys(node: object) -> list[str]:
 
 def test_status_never_contains_secret_material(tmp_path: Path, db_path: Path,
                                                clock: FakeClock) -> None:
-    app = _build(tmp_path, db_path, clock, operator_token=SecretStr(OPERATOR_TOKEN),
-                 openrouter_api_key=SecretStr(OPENROUTER_KEY))
+    app = _build(tmp_path, db_path, clock, backend="operator",
+                 operator_token=SecretStr(OPERATOR_TOKEN), ea_hmac_key=SecretStr(EA_KEY))
     with TestClient(app) as secret_client:
         r = secret_client.get("/v6/status")
     assert r.status_code == 200
     assert OPERATOR_TOKEN not in r.text
-    assert OPENROUTER_KEY not in r.text
-    assert r.json()["available_backends"] == ["rules", "openrouter", "claude_code"]
+    assert EA_KEY not in r.text
+    assert (r.json()["operator_ready"], r.json()["ea_signing"]) == (True, "available")
     keys = " ".join(_keys(r.json())).lower()
     assert not [fragment for fragment in SECRET_FRAGMENTS if fragment in keys]
 

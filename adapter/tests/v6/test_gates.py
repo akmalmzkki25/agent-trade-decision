@@ -201,11 +201,11 @@ def test_each_gate_fails_on_its_own(case: str) -> None:
         {"cal": replace(calendar(), as_of_epoch=AS_OF + M15)},
         {"context": _context(spec=_spec(calc_profit_per_price=102.0))},
         {"context": _context(spec=_spec(calc_loss_per_price=98.0))},
-        {"settings": _settings(backend="claude_code")},
+        {"settings": _settings(backend="operator")},
     ],
     ids=["age-20s", "age-0s", "close-5s-ahead", "skew+5s", "skew-5s", "spread-35",
          "friction-0.0799", "atr-250", "trades-3", "calendar-900s", "tick-value+2%",
-         "tick-loss-2%", "claude-code-on-demo"],
+         "tick-loss-2%", "operator-on-demo"],
 )
 def test_boundaries_pass(kwargs: dict[str, Any]) -> None:
     gates = _evaluate(**kwargs)
@@ -344,12 +344,13 @@ def test_allowed_logins_apply_to_the_account_gate() -> None:
     assert (gate.passed, gate.value) == (False, "POLICY_LOGIN_NOT_ALLOWED")
 
 
-def test_llm_budget_always_passes_in_phase_2() -> None:
-    settings = _settings(backend="openrouter", daily_llm_budget_usd=0.0)
+@pytest.mark.parametrize("trade_mode", ["CONTEST", "REAL"])
+def test_the_operator_backend_is_refused_for_non_demo_accounts(trade_mode: str) -> None:
+    context = _context(trade_mode=trade_mode)
 
-    gate = _gate(_evaluate(settings=settings), "LLM_BUDGET")
+    gate = _gate(_evaluate(context, settings=_settings(backend="operator")), "ACCOUNT_POLICY")
 
-    assert (gate.passed, gate.value, gate.limit) == (True, 0.0, 0.0)
+    assert (gate.passed, gate.value) == (False, "POLICY_OPERATOR_DEMO_ONLY")
 
 
 def test_breaker_gate_lists_every_active_period() -> None:

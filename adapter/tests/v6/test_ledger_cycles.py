@@ -95,12 +95,12 @@ def test_record_enter_cycle_writes_views_and_candidates(ledger: LedgerCycles) ->
     candidates = ledger.candidates_for_cycle(CYCLE_ID)
 
     assert record is not None and record.hold_reason is None
-    assert record.session_id == "abc123" and record.backend == "openrouter"
+    assert record.session_id == "abc123" and record.backend == "operator"
     assert "view_records" not in record.summary()
     assert record.summary()["shadow_intent"]["lots"] == 0.01
     assert [(v.role, v.source, v.error_code) for v in views] == [
         ("price_action", "rules", ""), ("news_risk", "rules", ""),
-        ("chief", "openrouter", "PROVIDER_TIMEOUT")]
+        ("chief", "operator", "PROVIDER_TIMEOUT")]
     assert views[0].view()["ranked"][0]["candidate_id"] == CANDIDATE_ID
     assert views[2].view() is None and views[2].tokens_in == 900
     assert len(candidates) == 1
@@ -169,12 +169,15 @@ def test_cycle_summary_and_histogram(ledger: LedgerCycles) -> None:
                                     bar_open=BAR_OPEN + 2 * M15), CREATED)
     ledger.record_cycle(enter_result("d", bar_open=BAR_OPEN + 3 * M15,
                                      candidate_ids=("cand-d",)), CREATED)
+    published = replace(enter_result("e", bar_open=BAR_OPEN + 4 * M15,
+                                     candidate_ids=("cand-e",)), status="ENTER")
+    ledger.record_cycle(published, CREATED)
 
     summary = ledger.cycle_summary(BAR_OPEN)
     window = ledger.cycle_summary(BAR_OPEN + M15, BAR_OPEN + 3 * M15)
 
-    assert summary.total == 4 and summary.shadow_entries == 1
-    assert dict(summary.by_status) == {"HOLD": 2, "LATE": 1, "ENTER_SHADOW": 1}
+    assert summary.total == 5 and (summary.shadow_entries, summary.entries) == (1, 1)
+    assert dict(summary.by_status) == {"HOLD": 2, "LATE": 1, "ENTER_SHADOW": 1, "ENTER": 1}
     assert dict(ledger.hold_reason_histogram(BAR_OPEN)) == {"APP-V6-GATE": 2, "APP-V6-LATE": 1}
     assert window.total == 2
     with pytest.raises(TypeError):

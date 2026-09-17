@@ -6,32 +6,34 @@ from dataclasses import FrozenInstanceError
 from typing import Any
 
 import pytest
+from pydantic import SecretStr
 
 from app.v6.config import V6Settings
 from app.v6.risk.policy import (
-    DEMO_403_CODE, POLICY_CLAUDE_CODE_DEMO_ONLY, POLICY_CLAUDE_CODE_MODE,
-    POLICY_CONTEST_REFUSED, POLICY_LOGIN_NOT_ALLOWED, POLICY_OK, POLICY_REAL_ACCOUNT_FLAG,
-    POLICY_REAL_REFUSED, POLICY_SERVER_NOT_DEMO, POLICY_UNKNOWN_SOURCE,
-    POLICY_UNKNOWN_TRADE_MODE, PolicyDecision, check_intent_source, check_settings_policy,
-    evaluate_account_policy, is_demo_allowed,
+    DEMO_403_CODE, POLICY_AGENT_NOT_ALLOWED, POLICY_CONTEST_REFUSED,
+    POLICY_EXECUTE_LOT_CAP, POLICY_EXECUTE_NEEDS_KEY, POLICY_EXECUTE_NEEDS_OPERATOR,
+    POLICY_LOGIN_NOT_ALLOWED, POLICY_OK, POLICY_OPERATOR_DEMO_ONLY, POLICY_OPERATOR_MODE,
+    POLICY_REAL_ACCOUNT_FLAG, POLICY_REAL_REFUSED, POLICY_SERVER_NOT_DEMO,
+    POLICY_UNKNOWN_SOURCE, POLICY_UNKNOWN_TRADE_MODE, SOURCES, PolicyDecision,
+    check_intent_source, check_operator_agent, check_settings_policy, evaluate_account_policy,
+    is_demo_allowed,
 )
+from app.v6.schemas.intent import SOURCES as INTENT_SOURCES
 
 DEMO_SERVER = "MetaQuotes-Demo"
 LOGIN = "12345"
-BACKENDS = ("rules", "openrouter", "claude_code")
+BACKENDS = ("rules", "operator")
+EA_KEY = "ea-key-" + "k" * 40
 
 # (trade_mode, backend) -> expected code. Only DEMO is allowed in V6.0, for every
-# backend; claude_code reports its permanent rule before the V6.0 refusals.
+# backend; the operator reports its permanent rule before the V6.0 refusals.
 TRUTH_TABLE = {
     ("DEMO", "rules"): POLICY_OK,
-    ("DEMO", "openrouter"): POLICY_OK,
-    ("DEMO", "claude_code"): POLICY_OK,
+    ("DEMO", "operator"): POLICY_OK,
     ("CONTEST", "rules"): POLICY_CONTEST_REFUSED,
-    ("CONTEST", "openrouter"): POLICY_CONTEST_REFUSED,
-    ("CONTEST", "claude_code"): POLICY_CLAUDE_CODE_DEMO_ONLY,
+    ("CONTEST", "operator"): POLICY_OPERATOR_DEMO_ONLY,
     ("REAL", "rules"): POLICY_REAL_REFUSED,
-    ("REAL", "openrouter"): POLICY_REAL_REFUSED,
-    ("REAL", "claude_code"): POLICY_CLAUDE_CODE_DEMO_ONLY,
+    ("REAL", "operator"): POLICY_OPERATOR_DEMO_ONLY,
 }
 
 
@@ -75,12 +77,37 @@ def test_real_money_flag_cannot_unlock_non_demo_accounts(trade_mode: str) -> Non
         assert not decision.allowed
 
 
-def test_claude_code_on_real_names_the_permanent_rule() -> None:
-    decision = check_intent_source("claude_code", "REAL", "Broker-Real", LOGIN, _settings())
+def test_operator_on_real_names_the_permanent_rule() -> None:
+    decision = check_intent_source("operator", "REAL", "Broker-Real", LOGIN, _settings())
 
-    assert decision.code == POLICY_CLAUDE_CODE_DEMO_ONLY
+    assert decision.code == POLICY_OPERATOR_DEMO_ONLY
     assert "DEMO accounts only" in decision.detail
     assert DEMO_403_CODE == "APP-V6-DEMO-403"
+
+
+def test_sources_match_the_intent_schema() -> None:
+    assert SOURCES == frozenset(INTENT_SOURCES) == frozenset(BACKENDS)
+    for removed in ("claude_code", "codex"):
+        assert evaluate_account_policy("DEMO", DEMO_SERVER, LOGIN, _settings(),
+                                       source=removed).code == POLICY_UNKNOWN_SOURCE
+
+
+@pytest.mark.parametrize(
+    ("agents", "agent", "code"),
+    [
+        ("claude_code,codex", "claude_code", POLICY_OK),
+        ("claude_code,codex", "codex", POLICY_OK),
+        ("codex", "claude_code", POLICY_AGENT_NOT_ALLOWED),
+        ("claude_code", "gpt", POLICY_AGENT_NOT_ALLOWED),
+        ("claude_code", None, POLICY_AGENT_NOT_ALLOWED),
+        ("claude_code", "claude_code" * 5, POLICY_AGENT_NOT_ALLOWED),
+    ],
+)
+def test_operator_agent_must_be_enabled(agents: str, agent: Any, code: str) -> None:
+    decision = check_operator_agent(agent, _settings(V6_OPERATOR_AGENTS=agents))
+
+    assert (decision.code, decision.allowed) == (code, code == POLICY_OK)
+    assert len(decision.detail) < 80
 
 
 # --- server pattern ----------------------------------------------------------------
@@ -188,15 +215,23 @@ def test_unknown_source_or_trade_mode_is_refused(trade_mode: Any, source: str,
 # --- layer 1: settings ---------------------------------------------------------------
 
 
+EXECUTE = {"backend": "operator", "mode": "execute", "ea_hmac_key": SecretStr(EA_KEY)}
+
+
 @pytest.mark.parametrize(
     ("update", "code"),
     [
         ({}, POLICY_OK),
-        ({"backend": "claude_code", "mode": "shadow"}, POLICY_OK),
-        ({"backend": "claude_code", "mode": "execute"}, POLICY_OK),
+        ({"backend": "operator", "mode": "shadow"}, POLICY_OK),
+        (EXECUTE, POLICY_OK),
+        ({**EXECUTE, "max_lots": 0.005}, POLICY_OK),
         ({"backend": "rules", "mode": "off"}, POLICY_OK),
-        ({"backend": "claude_code", "mode": "off"}, POLICY_CLAUDE_CODE_MODE),
+        ({"backend": "operator", "mode": "off"}, POLICY_OPERATOR_MODE),
         ({"allow_real_account": True}, POLICY_REAL_ACCOUNT_FLAG),
+        ({**EXECUTE, "backend": "rules"}, POLICY_EXECUTE_NEEDS_OPERATOR),
+        ({**EXECUTE, "ea_hmac_key": SecretStr("")}, POLICY_EXECUTE_NEEDS_KEY),
+        ({**EXECUTE, "ea_hmac_key": SecretStr("short")}, POLICY_EXECUTE_NEEDS_KEY),
+        ({**EXECUTE, "max_lots": 0.02}, POLICY_EXECUTE_LOT_CAP),
     ],
 )
 def test_settings_policy(update: dict[str, Any], code: str) -> None:

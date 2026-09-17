@@ -1,0 +1,169 @@
+{
+  "schema": "v6.hmac.vectors.1",
+  "note": "Public test vectors for the V6 wire contract (docs/v6-wire-contract.md). test_key is NOT a production key. Regenerate only together with the EA self-test; tests/v6/test_wire_golden.py checks every value.",
+  "test_key": "qlip-v6-public-test-vector-key-0123456789",
+  "fingerprint_label": "qlip-v6-key-fingerprint",
+  "test_key_fingerprint": "3ddbc8fce1f7",
+  "hmac": [
+    {
+      "name": "rfc4231-tc1",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "4869205468657265",
+      "data_text": "Hi There",
+      "sig": "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+    },
+    {
+      "name": "rfc4231-tc2",
+      "key_hex": "4a656665",
+      "data_hex": "7768617420646f2079612077616e7420666f72206e6f7468696e673f",
+      "data_text": "what do ya want for nothing?",
+      "sig": "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+      "key_text": "Jefe"
+    },
+    {
+      "name": "rfc4231-tc6",
+      "key_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "data_hex": "54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579204669727374",
+      "data_text": "Test Using Larger Than Block-Size Key - Hash Key First",
+      "sig": "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+    }
+  ],
+  "requests": [
+    {
+      "name": "poll",
+      "ts": 1789565407,
+      "method": "POST",
+      "path": "/v6/intent/poll",
+      "body": "{\"schema_version\":\"v6.poll.1\",\"login\":\"10000001\",\"trade_mode\":\"DEMO\",\"server\":\"MetaQuotes-Demo\",\"sent_at_epoch\":1789565407,\"balance\":92429.34,\"equity\":92429.34,\"free_margin\":92429.34,\"bid\":4535.18,\"ask\":4535.35,\"spread_points\":17,\"open_v6_positions\":0,\"pending_v6_orders\":0,\"floating_pnl_v6\":0.0,\"last_intent_id\":\"\",\"local_halt\":false}",
+      "signing_payload_hex": "313738393536353430370a504f53540a2f76362f696e74656e742f706f6c6c0a7b22736368656d615f76657273696f6e223a2276362e706f6c6c2e31222c226c6f67696e223a223130303030303031222c2274726164655f6d6f6465223a2244454d4f222c22736572766572223a224d65746151756f7465732d44656d6f222c2273656e745f61745f65706f6368223a313738393536353430372c2262616c616e6365223a39323432392e33342c22657175697479223a39323432392e33342c22667265655f6d617267696e223a39323432392e33342c22626964223a343533352e31382c2261736b223a343533352e33352c227370726561645f706f696e7473223a31372c226f70656e5f76365f706f736974696f6e73223a302c2270656e64696e675f76365f6f7264657273223a302c22666c6f6174696e675f706e6c5f7636223a302e302c226c6173745f696e74656e745f6964223a22222c226c6f63616c5f68616c74223a66616c73657d",
+      "sig": "4c012a7fcd0e92c2f027ff5e88cc82a01f3a19543f9cc6a1f24d5dad69a99b58"
+    },
+    {
+      "name": "execution",
+      "ts": 1789565410,
+      "method": "POST",
+      "path": "/v6/execution",
+      "body": "{\"schema_version\":\"v6.execution.1\",\"intent_id\":\"k7w2m4pq3xza\",\"status\":\"placed\",\"reason_code\":\"NONE\",\"ticket\":5012345702,\"retcode\":10008,\"requested_price\":4535.07,\"fill_price\":0.0,\"slippage_points\":0.0,\"spread_points\":17,\"latency_ms\":42,\"sent_at_epoch\":1789565410}",
+      "signing_payload_hex": "313738393536353431300a504f53540a2f76362f657865637574696f6e0a7b22736368656d615f76657273696f6e223a2276362e657865637574696f6e2e31222c22696e74656e745f6964223a226b3777326d34707133787a61222c22737461747573223a22706c61636564222c22726561736f6e5f636f6465223a224e4f4e45222c227469636b6574223a353031323334353730322c22726574636f6465223a31303030382c227265717565737465645f7072696365223a343533352e30372c2266696c6c5f7072696365223a302e302c22736c6970706167655f706f696e7473223a302e302c227370726561645f706f696e7473223a31372c226c6174656e63795f6d73223a34322c2273656e745f61745f65706f6368223a313738393536353431307d",
+      "sig": "1e0e4817df4c76823576626840a5dcf457283028b08d58dad55b2949dcabf5c5"
+    }
+  ],
+  "intents": [
+    {
+      "name": "idle",
+      "point": 0.01,
+      "response": {
+        "schema_version": "v6.intent.1",
+        "server_time_epoch": 1789565408,
+        "command": "NONE",
+        "has_intent": false,
+        "intent_id": "",
+        "source": "",
+        "require_demo": 1,
+        "side": "",
+        "order_type": "NONE",
+        "entry": 0.0,
+        "sl": 0.0,
+        "tp": 0.0,
+        "lots": 0.0,
+        "ref_price": 0.0,
+        "max_drift_points": 0,
+        "max_spread_points": 0,
+        "valid_until_epoch": 0,
+        "pending_expiry_epoch": 0,
+        "time_barrier_s": 0,
+        "magic": 0,
+        "sig": "129a6abc2d97675b715acf3f39cec48f207a439212951f2ab655385c3bc73400"
+      },
+      "canonical": "v6.intent.1|1789565408|NONE|0|||1||NONE|0|0|0|0|0|0|0|0|0|0|0",
+      "sig": "129a6abc2d97675b715acf3f39cec48f207a439212951f2ab655385c3bc73400"
+    },
+    {
+      "name": "cancel-pending",
+      "point": 0.01,
+      "response": {
+        "schema_version": "v6.intent.1",
+        "server_time_epoch": 1789565408,
+        "command": "CANCEL_PENDING",
+        "has_intent": false,
+        "intent_id": "",
+        "source": "",
+        "require_demo": 1,
+        "side": "",
+        "order_type": "NONE",
+        "entry": 0.0,
+        "sl": 0.0,
+        "tp": 0.0,
+        "lots": 0.0,
+        "ref_price": 0.0,
+        "max_drift_points": 0,
+        "max_spread_points": 0,
+        "valid_until_epoch": 0,
+        "pending_expiry_epoch": 0,
+        "time_barrier_s": 0,
+        "magic": 0,
+        "sig": "91753aab56ba26dbf52794c8c5f49af611731e9246d1bcb5f41257c5ce2b2716"
+      },
+      "canonical": "v6.intent.1|1789565408|CANCEL_PENDING|0|||1||NONE|0|0|0|0|0|0|0|0|0|0|0",
+      "sig": "91753aab56ba26dbf52794c8c5f49af611731e9246d1bcb5f41257c5ce2b2716"
+    },
+    {
+      "name": "buy-limit",
+      "point": 0.01,
+      "response": {
+        "schema_version": "v6.intent.1",
+        "server_time_epoch": 1789565408,
+        "command": "NONE",
+        "has_intent": true,
+        "intent_id": "k7w2m4pq3xza",
+        "source": "operator",
+        "require_demo": 1,
+        "side": "buy",
+        "order_type": "BUY_LIMIT",
+        "entry": 4535.07,
+        "sl": 4528.07,
+        "tp": 4549.07,
+        "lots": 0.01,
+        "ref_price": 4535.35,
+        "max_drift_points": 200,
+        "max_spread_points": 35,
+        "valid_until_epoch": 1789565528,
+        "pending_expiry_epoch": 1789567200,
+        "time_barrier_s": 7200,
+        "magic": 250570,
+        "sig": "9aee1b5eb5d37dfc995f74c6d3262df6adf63d31a43f264b53632ef2a43e016d"
+      },
+      "canonical": "v6.intent.1|1789565408|NONE|1|k7w2m4pq3xza|operator|1|buy|BUY_LIMIT|453507|452807|454907|1|453535|200|35|1789565528|1789567200|7200|250570",
+      "sig": "9aee1b5eb5d37dfc995f74c6d3262df6adf63d31a43f264b53632ef2a43e016d"
+    },
+    {
+      "name": "sell-market",
+      "point": 0.01,
+      "response": {
+        "schema_version": "v6.intent.1",
+        "server_time_epoch": 1789565408,
+        "command": "NONE",
+        "has_intent": true,
+        "intent_id": "b5n6r7t2vw3y",
+        "source": "operator",
+        "require_demo": 1,
+        "side": "sell",
+        "order_type": "SELL",
+        "entry": 4535.18,
+        "sl": 4542.18,
+        "tp": 4521.18,
+        "lots": 0.01,
+        "ref_price": 4535.18,
+        "max_drift_points": 150,
+        "max_spread_points": 30,
+        "valid_until_epoch": 1789565468,
+        "pending_expiry_epoch": 0,
+        "time_barrier_s": 7200,
+        "magic": 250570,
+        "sig": "1f203e109dc5a53931774513144d3912f5c08fbfffc9887027cc404c72102a12"
+      },
+      "canonical": "v6.intent.1|1789565408|NONE|1|b5n6r7t2vw3y|operator|1|sell|SELL|453518|454218|452118|1|453518|150|30|1789565468|0|7200|250570",
+      "sig": "1f203e109dc5a53931774513144d3912f5c08fbfffc9887027cc404c72102a12"
+    }
+  ]
+}

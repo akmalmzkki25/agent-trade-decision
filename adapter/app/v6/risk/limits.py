@@ -48,6 +48,13 @@ MAX_TIME_BARRIER_S: Final[int] = 4 * 3600
 # V6.0 carries at most one position (no layering, user decision).
 MAX_OPEN_POSITIONS: Final[int] = 1
 
+# Plan section 11, phase 5: demo execution trades the minimum lot, never more.
+MAX_EXECUTE_LOTS: Final[float] = 0.01
+
+# Plan section 5: the V6 magic range (250570 is the default; the rest are reserved).
+V6_MAGIC_FIRST: Final[int] = 250570
+V6_MAGIC_LAST: Final[int] = 250579
+
 # Fraction of free margin a new position may consume.
 MAX_MARGIN_USE: Final[float] = 0.25
 

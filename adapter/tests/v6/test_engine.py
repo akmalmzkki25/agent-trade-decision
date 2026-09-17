@@ -17,7 +17,7 @@ from app.v6.deliberation.engine import (
     DeliberationEngine, EngineDeps, build_engine, panel_for_backend, rules_provider_for,
 )
 from app.v6.providers.base import (
-    PROVIDER_STATUS_BACKEND_NOT_BUILT, PROVIDER_STATUS_OK, PROVIDER_STATUS_SKIPPED,
+    ERR_UNAVAILABLE, PROVIDER_STATUS_FAILED, PROVIDER_STATUS_OK, PROVIDER_STATUS_SKIPPED,
 )
 from app.v6.risk.breakers import BreakerStatus
 from app.v6.risk.gates import HALT_SOURCE_FILE
@@ -25,8 +25,7 @@ from app.v6.risk.limits import FRICTION_PRICE
 
 from . import engine_fixtures_v6 as ef
 
-OPENROUTER = {"backend": "openrouter", "openrouter_api_key": "sk-or-v1-" + "x" * 48,
-              "openrouter_desk_models_csv": "a/desk", "openrouter_chief_models_csv": "a/chief"}
+OPERATOR = {"backend": "operator", "operator_token": "operator-token-" + "t" * 40}
 
 
 @pytest.fixture
@@ -86,13 +85,18 @@ async def test_the_candidate_keeps_its_exit_plan_geometry_for_the_labeler() -> N
 
 
 @pytest.mark.anyio
-async def test_an_unbuilt_backend_runs_the_rules_baseline() -> None:
-    engine, _ = make_engine(ef.candidate(), **OPENROUTER)
+async def test_an_operator_backend_without_a_channel_holds() -> None:
+    """Direction never comes from the rules desks when the operator backend is selected."""
+    engine, _ = make_engine(ef.candidate(), **OPERATOR)
     result = (await engine.run(ef.request())).result
-    assert result.status == "ENTER_SHADOW"
+    assert (result.status, result.hold_reason) == ("HOLD", HoldReason.INVALID_VIEW)
     assert (result.backend, result.provider, result.provider_status) == (
-        "openrouter", "rules", PROVIDER_STATUS_BACKEND_NOT_BUILT)
-    assert result.shadow_intent.source == "rules"
+        "operator", "operator", PROVIDER_STATUS_FAILED)
+    assert result.shadow_intent is None and result.decision is None
+    assert result.views.price_action is None and result.views.news_risk is not None
+    last = result.view_records[-1]
+    assert (last.role, last.source, last.error_code) == ("chief", "operator", ERR_UNAVAILABLE)
+    assert verdicts(result) == {ef.CANDIDATE_ID: "unranked"}
 
 
 def test_build_engine_selects_the_panel_by_backend() -> None:
@@ -101,7 +105,7 @@ def test_build_engine_selects_the_panel_by_backend() -> None:
         ef.settings()))
     assert rules_engine.settings.backend == "rules"
     assert rules_engine.deps.panel is rules_engine.deps.rules
-    other = build_engine(ef.settings(**OPENROUTER), clock, ef.MemoryBars({}),
+    other = build_engine(ef.settings(**OPERATOR), clock, ef.MemoryBars({}),
                          ef.healthy_breakers(ef.settings()))
     assert other.deps.panel is None
 

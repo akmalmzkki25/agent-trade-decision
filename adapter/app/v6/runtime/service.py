@@ -7,8 +7,9 @@ and probe carried from the previous cycle), runs the engine and records the
 CycleResult with its views and candidates. SQLite work runs in worker threads.
 
 The EA route has already stored the snapshot and its bars before queueing it,
-so the BarStore holds every bar the cycle reads. Shadow only: nothing here
-publishes an intent. The worker never dies on a failed cycle; it logs one line
+so the BarStore holds every bar the cycle reads. Only the engine's publisher
+(execute mode, armed session, operator decision) publishes an intent; the cycle
+then records its id. The worker never dies on a failed cycle; it logs one line
 per cycle with the cycle id and moves on.
 """
 
@@ -30,6 +31,7 @@ from ..deliberation.cycle_draft import CycleDraft, CycleOutcome, CycleRequest
 from ..deliberation.engine import DeliberationEngine
 from ..ledger_cycles import LedgerCycles
 from ..learning.labeler import XAUUSD_POINT
+from ..ledger_cycles_schema import SessionRecord
 from ..market.bar_store import WARM_M5_DAYS, WARM_M15_DAYS, BarStore
 from ..risk.gates import HALT_SOURCE_FILE, RuntimeGateState
 from ..schemas.snapshot import ProbeBlock
@@ -160,10 +162,12 @@ class DeliberationRuntime:
             warmed_up=False, halt_sources=await self._halt_sources(),
             warmup_detail=WARMUP_UNKNOWN)
         runtime = await self._warmup(runtime, as_of_for(item.snapshot))
+        session = await self._session()
         return CycleRequest(
             cycle_id=item.cycle_id, snapshot=item.snapshot, received_at=item.received_at,
-            runtime=runtime, session_id=await self._session_id(),
-            carried_events=self._carry.events, probe=self._carry.probe)
+            runtime=runtime, session_id=None if session is None else session.session_id,
+            carried_events=self._carry.events, probe=self._carry.probe,
+            session_armed=session is not None and session.armed)
 
     async def _halt_sources(self) -> tuple[str, ...]:
         try:
@@ -186,13 +190,12 @@ class DeliberationRuntime:
                   f"M5 {m5.distinct_days}/{WARM_M5_DAYS} days")
         return replace(runtime, warmed_up=warm, warmup_detail=detail)
 
-    async def _session_id(self) -> str | None:
+    async def _session(self) -> SessionRecord | None:
         try:
-            session = await self._sessions.active()
+            return await self._sessions.active()
         except sqlite3.Error as exc:
             logger.error("v6 active session unreadable (%s); tier 0 only", type(exc).__name__)
             return None
-        return None if session is None else session.session_id
 
     # --- record ----------------------------------------------------------------------
     async def _record(self, result: CycleResult) -> str:
@@ -218,7 +221,7 @@ class DeliberationRuntime:
         failed = ",".join(gate.code for gate in result.failed_gates) or "-"
         logger.info(
             "v6 cycle %s bar=%d status=%s hold=%s provider=%s/%s candidates=%d "
-            "failed_gates=%s total_ms=%d recorded=%s", result.cycle_id,
+            "failed_gates=%s intent=%s total_ms=%d recorded=%s", result.cycle_id,
             result.bar_open_epoch, result.status, result.hold_reason or "-", result.provider,
-            result.provider_status, len(result.candidates), failed,
+            result.provider_status, len(result.candidates), failed, result.intent_id or "-",
             result.timings.total_ms, recorded)

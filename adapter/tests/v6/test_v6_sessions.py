@@ -245,14 +245,14 @@ async def test_start_is_refused_in_the_rollover_block_and_at_the_weekend(
 async def test_start_opens_one_session_per_trading_day(
         service: SessionService, ea_state: EaState, db_path: Path) -> None:
     _poll(ea_state)
-    first = await service.start(backend="openrouter", mode="shadow", actor="operator",
+    first = await service.start(backend="operator", mode="shadow", actor="operator",
                                 now=MIDDAY)
-    again = await service.start(backend="openrouter", mode="shadow", actor="operator",
+    again = await service.start(backend="operator", mode="shadow", actor="operator",
                                 now=MIDDAY + 60)
 
     assert first.created and not first.refused and first.trading_day == DAY
     assert first.session is not None and first.session.armed is False
-    assert (first.session.backend, first.session.mode) == ("openrouter", "shadow")
+    assert (first.session.backend, first.session.mode) == ("operator", "shadow")
     assert not again.created and again.session == first.session
     assert [a[:2] for a in _actions(db_path)] == [("operator", "session_start")]
     assert _actions(db_path)[0][2]["session_id"] == first.session.session_id
@@ -305,7 +305,7 @@ async def test_stop_closes_the_session_cancels_pending_and_summarises_the_day(
     assert [s.session_id for s in summary.sessions] == [started.session.session_id]
     payload = json.loads(json.dumps(outcome.to_dict()))
     assert payload["summary"]["exposure"]["open_v6_positions"] == 1
-    assert payload["session"]["active"] is False
+    assert payload["session"]["active"] is False and payload["summary"]["intents"] == 0
     assert ledger.active_session() is None
     assert [a[1] for a in _actions(db_path)] == ["session_start", "session_stop"]
 

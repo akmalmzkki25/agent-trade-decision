@@ -16,6 +16,12 @@ requests. Token routes answer 503 until V6_OPERATOR_TOKEN is configured.
 HALT alone also accepts an unauthenticated same-origin JSON POST carrying the
 per-process CSRF nonce rendered into /v6, because stopping must always be
 possible, token or not. Resuming never is.
+
+With an execution desk (the V6 runtime's control plane): a session start arms an
+execute session when every arming check passes; HALT disarms the session,
+cancels undelivered intents, withdraws a pending operator packet and queues
+CANCEL_PENDING (after the sentinel is written, so a failure there never blocks
+the halt); resume re-arms an active execute session when the checks pass again.
 """
 
 from __future__ import annotations
@@ -41,9 +47,10 @@ from ..security import (
     OPERATOR_MAX_BODY_BYTES, basic_request_guards, read_capped_body, read_operator_body,
     require_loopback_client, require_operator,
 )
-from ..v6.config import MIN_TOKEN_LENGTH, PLACEHOLDER_SECRETS, V6Settings
+from ..v6.config import V6Settings
 from ..v6.container import DISABLED_DETAIL, V6Container, require_active_container
 from ..v6.risk.breakers import BreakerEvaluation, reset_breaker
+from ..v6.runtime.arming import DISARM_HALTED
 from ..v6.runtime.sessions import ControlPlane
 
 logger = logging.getLogger(__name__)
@@ -137,8 +144,8 @@ Control = Annotated[ControlContext, Depends(require_control)]
 
 
 def operator_token_configured(settings: V6Settings) -> bool:
-    token = settings.operator_token.get_secret_value()
-    return len(token) >= MIN_TOKEN_LENGTH and token.strip().lower() not in PLACEHOLDER_SECRETS
+    """Same rule as the settings validator (length, no placeholder)."""
+    return settings.operator_token_ok
 
 
 def _configured_token(settings: V6Settings) -> SecretStr:
@@ -194,6 +201,35 @@ def _remove_halt_file(path: Path) -> bool:
     except FileNotFoundError:
         return False
     return True
+
+
+async def _stand_down(ctx: ControlContext, now: float) -> None:
+    """HALT's execution side: disarm, cancel undelivered intents, CANCEL_PENDING."""
+    plane = ctx.plane
+    if plane.desk is None:
+        return
+    plane.commands.request_cancel_pending(ACTION_HALT, now)
+    try:
+        session = await plane.sessions.active()
+        await plane.desk.disarm(None if session is None else session.session_id,
+                                reason=DISARM_HALTED, cancel_reason=DISARM_HALTED, now=now)
+    except (sqlite3.Error, ValueError, LookupError) as exc:
+        # The sentinel is written: the watchdog disarms on its next tick anyway.
+        logger.error("v6 HALT: disarm failed (%s); the watchdog retries", type(exc).__name__)
+
+
+async def _rearm(ctx: ControlContext, now: float) -> dict[str, object]:
+    """Resume's execution side: re-arm the active execute session when allowed."""
+    plane = ctx.plane
+    session = None if plane.desk is None else await plane.sessions.active()
+    if plane.desk is None or session is None:
+        return {}
+    session, decision = await plane.desk.try_arm(session, now)
+    if decision is None:
+        return {}
+    return {"armed": session.armed,
+            "arm": {"armed": decision.armed, "reason": decision.reason,
+                    "detail": decision.detail}}
 
 
 # --- session -------------------------------------------------------------------
@@ -254,6 +290,7 @@ async def control_halt(request: Request, ctx: Control) -> JSONResponse:
         logger.exception("v6 HALT FAILED: sentinel %s could not be written", container.halt_path)
         raise HTTPException(status_code=503, detail=HALT_WRITE_FAILED) from None
     logger.warning("v6 HALT requested by %s (%s, new=%s)", actor, command.reason, created)
+    await _stand_down(ctx, now)
     await _audit(container, actor, ACTION_HALT, {"reason": command.reason, "created": created})
     return JSONResponse(content={"halted": True, "created": created, "actor": actor,
                                  "halt_file": container.halt_path.name})
@@ -279,7 +316,8 @@ async def control_resume(request: Request, ctx: Control) -> JSONResponse:
     logger.warning("v6 resume by operator (%s, removed=%s)", command.reason, removed)
     await _audit(container, ACTOR_OPERATOR, ACTION_RESUME,
                  {"reason": command.reason, "removed": removed})
-    return JSONResponse(content={"halted": False, "removed": removed})
+    arming = await _storage(_rearm(ctx, container.clock.now_epoch()))
+    return JSONResponse(content={"halted": False, "removed": removed, **arming})
 
 
 # --- breaker reset ---------------------------------------------------------------

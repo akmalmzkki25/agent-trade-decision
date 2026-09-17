@@ -1,9 +1,10 @@
 /*
- * V6 deliberation desk: polls /v6/api/overview and renders it.
+ * V6 deliberation desk: polls /v6/api/overview and renders it with the helpers of
+ * /v6/static/v6_render.js (window.QlipV6Render, loaded first).
  *
- * Everything reaches the page through createElement + textContent. Agent
- * notes are untrusted model output and must never be parsed as HTML. The HALT
- * nonce is refreshed by every overview: it changes when the adapter restarts.
+ * Everything reaches the page through createElement + textContent; recorded text is
+ * untrusted. The HALT nonce is refreshed by every overview (it changes when the
+ * adapter restarts), and HALT keeps working even when the renderer did not load.
  */
 (() => {
   'use strict';
@@ -11,96 +12,31 @@
   const root = document.getElementById('v6-root');
   if (!root) return;
 
+  const R = window.QlipV6Render || null;
   const POLL_MS = Number(root.dataset.pollMs) || 5000;
   let csrfNonce = root.dataset.csrf || '';
   const [OVERVIEW_URL, HALT_URL] = ['/v6/api/overview', '/v6/control/halt'];
-  const HOLD_PREFIX = 'APP-V6-';
   const HALT_FALLBACK = ' (reload the page and retry, or create the V6_HALT file)';
-  const ROLE_ORDER = ['price_action', 'news_risk', 'liquidity', 'structure', 'chief'];
-  const ROLE_LABELS = {
-    price_action: 'Price action', news_risk: 'News risk', liquidity: 'Liquidity',
-    structure: 'Structure', chief: 'Chief',
-  };
-  const UNTRUSTED_KEYS = new Set(['note', 'rationale', 'dissent']);
-  const TONES = {
-    emerald: 'bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30',
-    rose: 'bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30',
-    amber: 'bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/30',
-    sky: 'bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30',
-    slate: 'bg-slate-800 text-slate-300 ring-1 ring-slate-700',
-  };
-  const TEXT_TONES = { emerald: 'text-emerald-300', rose: 'text-rose-300', amber: 'text-amber-300' };
-  const STATUS_TONES = {
-    RUNNING: 'emerald', HALTED: 'rose', BREAKER: 'rose', STALE: 'amber',
-    WAITING_EA: 'amber', DISABLED: 'slate',
-    ENTER_SHADOW: 'emerald', HOLD: 'slate', LATE: 'amber', ABORTED: 'amber', ERROR: 'rose',
-  };
+  const RENDERER_MISSING = 'the page renderer (v6_render.js) did not load';
   const PILL = 'rounded-lg px-3 py-1.5 font-mono text-sm font-semibold tracking-wide ';
-  const ROW = 'text-slate-300 transition hover:bg-slate-800/40';
-
-  // --- DOM helpers ---------------------------------------------------------
-  function el(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined && text !== null) node.textContent = String(text);
-    return node;
-  }
+  const LIFECYCLE = [['created_at', 'published'], ['delivered_at', 'delivered'],
+    ['reported_at', 'reported'], ['closed_at', 'closed']];
+  const C = 'px-3 py-2 text-xs';
+  const N = C + ' tabular text-right whitespace-nowrap';
+  const F = 'px-5 py-2 text-xs tabular whitespace-nowrap';
+  const MONO = C + ' font-mono';
+  const {
+    el, badge, statusBadge, toned, group, stacked, pairs, renderTable, isNumber, num, utc,
+    clock, ago, scalar, money, signedR, pnl, pnlTone,
+    TONES = {}, TEXT_TONES = {}, STATUS_TONES = {},
+  } = R || {};
 
   const byId = (id) => document.getElementById(id);
   const setText = (id, text) => { byId(id).textContent = text; };
-  const fill = (id, ...children) => byId(id).replaceChildren(...children);
-
-  function badge(text, tone) {
-    const classes = TONES[tone] || TONES.slate;
-    return el('span', 'rounded-md px-1.5 py-0.5 text-[11px] font-medium ' + classes, text);
-  }
-
-  function emptyNote(text) {
-    return el('p', 'rounded-md border border-dashed border-slate-800 px-3 py-5 text-center text-xs text-slate-500', text);
-  }
-
-  function emptyRow(columns, text) {
-    const cell = el('td', 'px-5 py-8 text-center text-xs text-slate-500', text);
-    cell.colSpan = columns;
-    const row = el('tr');
-    row.append(cell);
-    return row;
-  }
-
-  // cells: [className, content]; content is text or a node.
-  function tableRow(cells) {
-    const row = el('tr', ROW);
-    cells.forEach(([className, content]) => {
-      const cell = el('td', className);
-      if (content instanceof Node) cell.append(content);
-      else cell.textContent = content === null || content === undefined ? '—' : String(content);
-      row.append(cell);
-    });
-    return row;
-  }
-
-  // --- formatting ----------------------------------------------------------
-  const isNumber = (value) => typeof value === 'number' && Number.isFinite(value);
-  const num = (value, digits = 2) => (isNumber(value) ? value.toFixed(digits) : '—');
-  const shortReason = (reason) => (typeof reason === 'string' ? reason.replace(HOLD_PREFIX, '') : '—');
-
-  function utc(epoch) {
-    if (!isNumber(epoch)) return '—';
-    return new Date(epoch * 1000).toISOString().slice(5, 16).replace('T', ' ') + 'Z';
-  }
-
-  function ago(seconds) {
-    if (!isNumber(seconds)) return 'never';
-    if (seconds < 90) return Math.round(seconds) + ' s ago';
-    if (seconds < 5400) return Math.round(seconds / 60) + ' min ago';
-    return (seconds / 3600).toFixed(1) + ' h ago';
-  }
-
-  // Up to four decimals, trailing zeros dropped: 4289.8, 0.01, 0.7.
-  function scalar(value) {
-    if (value === null || value === undefined) return '—';
-    return isNumber(value) ? String(Number(value.toFixed(4))) : String(value);
-  }
+  const count = (value) => 'n = ' + (value ?? 0);
+  // An average over a handful of trades is noise: colour it only from this many on.
+  const MIN_TONED_SAMPLE = 30;
+  const sampleTone = (value, n) => ((n ?? 0) >= MIN_TONED_SAMPLE ? pnlTone(value) : '');
 
   // --- status tiles --------------------------------------------------------
   function tile(key, value, sub, tone) {
@@ -133,15 +69,19 @@
 
   function renderSession(session) {
     const active = session.active;
-    if (active) {
-      tile('session', 'Active', 'since ' + utc(active.started_at) + ' · ' + active.backend, 'emerald');
-    } else {
+    const execute = session.mode === 'execute';
+    if (!active) {
       tile('session', 'None', 'tier 0 only · analysis still recorded', '');
+    } else if (session.armed) {
+      tile('session', 'Armed', 'since ' + utc(active.armed_at) + ' · ' + active.backend, 'emerald');
+    } else {
+      tile('session', 'Active', (execute ? 'not armed · no intents' : 'shadow · never armed') +
+        ' · since ' + utc(active.started_at), execute ? 'amber' : 'sky');
     }
     const day = session.day || {};
     const holds = Object.values(day.hold_reasons || {}).reduce((a, b) => a + b, 0);
-    tile('today', (day.cycles ?? 0) + ' cycles',
-      (day.shadow_intents ?? 0) + ' shadow intents · ' + holds + ' holds · ' + session.trading_day, '');
+    tile('today', (day.cycles ?? 0) + ' cycles', (day.intents ?? 0) + ' intents · ' +
+      (day.shadow_intents ?? 0) + ' shadow · ' + holds + ' holds · ' + session.trading_day, '');
   }
 
   function renderSizing(sizing) {
@@ -151,193 +91,168 @@
       ' (' + sizing.tick_value_source + ')', sizing.tradeable_at_basis ? 'emerald' : 'rose');
   }
 
-  // --- panels --------------------------------------------------------------
-  function renderGates(lastCycle) {
-    setText('v6-last-cycle', lastCycle ? lastCycle.cycle_id + ' · bar ' + utc(lastCycle.bar_open_epoch) : '—');
-    const gates = lastCycle ? lastCycle.gates || [] : [];
-    if (!gates.length) {
-      return fill('v6-gates', emptyRow(5, lastCycle ? 'This cycle recorded no gates.' : 'No cycle recorded yet.'));
-    }
-    fill('v6-gates', ...gates.map((gate) => tableRow([
-      ['px-5 py-2 font-mono text-xs', gate.code],
-      ['px-3 py-2', badge(gate.passed ? 'pass' : 'FAIL', gate.passed ? 'emerald' : 'rose')],
-      ['px-3 py-2 tabular text-right text-xs', scalar(gate.value)],
-      ['px-3 py-2 tabular text-right text-xs text-slate-500', scalar(gate.limit)],
-      ['px-3 py-2 text-xs text-slate-400', gate.detail || ''],
-    ])));
+  // --- session and operator --------------------------------------------------
+  function armedState(session) {
+    const active = session.active;
+    if (!active) return '—';
+    if (session.armed) return group(badge('ARMED', 'emerald'), 'since ' + utc(active.armed_at));
+    const last = active.disarm_reason
+      ? 'disarmed ' + utc(active.disarmed_at) + ' (' + active.disarm_reason + ')' : 'never armed';
+    return group(badge('DISARMED', session.mode === 'execute' ? 'amber' : 'slate'), last);
   }
 
-  function renderBreakers(breakers) {
-    if (!breakers.length) return fill('v6-breakers', badge('none tripped', 'emerald'));
-    const list = el('ul', 'space-y-2');
-    breakers.forEach((b) => {
-      const item = el('li', 'rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200');
-      item.append(el('p', 'font-mono font-semibold', b.scope + ' · ' + b.period_key),
-        el('p', 'text-rose-300/80', b.reason + ' · ' + utc(b.tripped_at)));
-      list.append(item);
-    });
-    fill('v6-breakers', list);
+  function pendingDecision(operator) {
+    if (!operator.pending_cycle_id) return 'none';
+    const left = operator.pending_seconds_left;
+    return group(el('span', 'font-mono', operator.pending_cycle_id),
+      toned(isNumber(left) ? left + ' s left' : 'deadline unknown', left < 60 ? 'amber' : 'sky'));
   }
 
-  function holdBar(reason, count, max) {
-    const item = el('li', 'text-xs');
-    const head = el('div', 'flex items-center justify-between gap-2');
-    head.append(el('span', 'font-mono text-slate-300', shortReason(reason)),
-      el('span', 'tabular text-slate-400', count));
-    const track = el('div', 'mt-1 h-1.5 overflow-hidden rounded-full bg-slate-800');
-    const bar = el('div', 'h-full rounded-full bg-emerald-400/70');
-    bar.style.width = Math.max(4, Math.round((100 * count) / max)) + '%';
-    track.append(bar);
-    item.append(head, track);
-    return item;
+  function renderOperator(session, runtime) {
+    const operator = session.operator || {};
+    const active = session.active;
+    const lastAgent = operator.last_agent
+      ? group(el('span', 'font-mono', operator.last_agent), ago(operator.last_seen_age_s))
+      : 'no decision yet';
+    const sessionId = active
+      ? group(el('span', 'font-mono', active.session_id), 'since ' + utc(active.started_at)) : 'none';
+    R.fill('v6-operator', pairs([
+      ['Session', sessionId],
+      ['Armed', armedState(session)],
+      ['Backend · mode', session.backend + ' · ' + session.mode],
+      ['Agents allowed', (operator.agents || []).join(', ') || '—'],
+      ['Operator token', runtime.operator_ready ? 'configured' : toned('missing', 'amber')],
+      ['EA signing', runtime.ea_signing],
+      ['Last decision by', lastAgent],
+      ['Awaiting decision', pendingDecision(operator)],
+    ]));
   }
 
-  function renderHoldReasons(counts) {
-    const entries = Object.entries(counts || {}).sort((a, b) => b[1] - a[1]);
-    if (!entries.length) return fill('v6-hold-reasons', emptyNote('No holds recorded.'));
-    const list = el('ul', 'space-y-2.5');
-    entries.forEach(([reason, count]) => list.append(holdBar(reason, count, entries[0][1])));
-    fill('v6-hold-reasons', list);
+  // --- trading tables ----------------------------------------------------------
+  const lifecycle = (intent) => LIFECYCLE.filter(([key]) => isNumber(intent[key]))
+    .map(([key, label]) => label + ' ' + clock(intent[key])).join(' → ');
+  const sideBadge = (side) => badge(side || '?', STATUS_TONES[side]);
+  const reason = (code) => (code && code !== 'NONE' ? code : '');
+
+  function labelCell(label) {
+    if (!label) return '—';
+    return group(el('span', 'font-mono', label.outcome || label.label_status), signedR(label.r));
   }
 
-  function renderLabels(stats) {
-    if (!stats.length) return fill('v6-labels', emptyRow(6, 'No candidates yet.'));
-    fill('v6-labels', ...stats.map((s) => tableRow([
-      ['px-5 py-2 font-mono text-xs', s.setup],
-      ['px-3 py-2 text-xs', s.verdict],
-      ['px-3 py-2 text-xs text-slate-400', s.label_status],
-      ['px-3 py-2 text-xs', s.outcome],
-      ['px-3 py-2 tabular text-right text-xs', s.count],
-      ['px-3 py-2 tabular text-right text-xs', num(s.mean_r)],
-    ])));
+  const INTENT_COLUMNS = [
+    [F, (i) => utc(i.created_at)],
+    [MONO, (i) => stacked(i.intent_id, i.agent || i.source)],
+    [C, (i) => group(sideBadge(i.side), i.order_type)],
+    [N, (i) => num(i.entry)], [N, (i) => num(i.sl)], [N, (i) => num(i.tp)],
+    [N, (i) => scalar(i.lots)], [N, (i) => money(i.risk_usd)],
+    [C, (i) => group(statusBadge(i.status), reason(i.report_reason))],
+    [C + ' text-slate-400', lifecycle],
+    [N, (i) => i.ticket],
+    [N, (i) => stacked(pnl(i.outcome_pnl), signedR(i.r_multiple))],
+  ];
+  const EXECUTION_COLUMNS = [
+    [F, (x) => utc(x.received_at)],
+    [MONO, (x) => x.intent_id],
+    [C, (x) => statusBadge(x.status)],
+    [MONO, (x) => reason(x.reason_code) || '—'],
+    [N, (x) => x.ticket || '—'],
+    [N, (x) => (x.fill_price ? num(x.fill_price) : '—')],
+    [N, (x) => scalar(x.slippage_points)],
+    [N, (x) => scalar(x.spread_points)],
+    [N, (x) => (isNumber(x.latency_ms) ? x.latency_ms + ' ms' : '—')],
+  ];
+  const POSITION_COLUMNS = [
+    [F, (p) => p.ticket],
+    [MONO, (p) => p.intent_id || p.comment || '—'],
+    [C, (p) => sideBadge(p.side)],
+    [N, (p) => scalar(p.volume)], [N, (p) => num(p.price_open)],
+    [N, (p) => num(p.sl)], [N, (p) => num(p.tp)],
+    [N, (p) => pnl(p.profit + p.swap)],
+    [N, (p) => scalar(p.mae_points) + ' / ' + scalar(p.mfe_points)],
+    [C, (p) => utc(p.open_epoch)],
+  ];
+  const ORDER_COLUMNS = [
+    [F, (o) => o.ticket],
+    [MONO, (o) => o.intent_id || o.comment || '—'],
+    [C, (o) => o.order_type],
+    [N, (o) => num(o.price)], [N, (o) => num(o.sl)], [N, (o) => num(o.tp)],
+    [N, (o) => scalar(o.volume)],
+    [C, (o) => (o.expiration_epoch ? utc(o.expiration_epoch) : 'no expiry')],
+  ];
+  const OUTCOME_COLUMNS = [
+    [F, (o) => utc(o.closed_epoch)],
+    [MONO, (o) => (o.linked ? o.intent_id : group(o.intent_id || o.basket_id, badge('unlinked', 'amber')))],
+    [C, (o) => o.agent || o.source],
+    [C, (o) => sideBadge(o.side)],
+    [MONO, (o) => o.close_reason || '—'],
+    [N, (o) => pnl(o.net_pnl)],
+    [N, (o) => signedR(o.r_multiple)],
+    [C, (o) => labelCell(o.label)],
+    [N, (o) => signedR(o.r_gap)],
+  ];
+
+  function renderOpenOrders(orders) {
+    setText('v6-orders-asof', orders.available ? 'as of ' + utc(orders.as_of_epoch) : 'no snapshot yet');
+    renderTable('v6-positions', POSITION_COLUMNS, orders.positions, 'No open V6 position.');
+    renderTable('v6-orders', ORDER_COLUMNS, orders.pending_orders, 'No pending V6 order.');
   }
 
-  // --- transcript ----------------------------------------------------------
-  function renderValue(value) {
-    if (value === null || value === undefined) return el('span', 'text-slate-600', '—');
-    if (Array.isArray(value)) return renderList(value);
-    if (typeof value === 'object') return renderObject(value);
-    if (typeof value === 'boolean') return el('span', 'font-mono text-slate-300', value ? 'yes' : 'no');
-    if (isNumber(value)) return el('span', 'tabular text-slate-200', scalar(value));
-    return el('span', 'break-words text-slate-300', value);
-  }
-
-  function renderList(values) {
-    if (!values.length) return el('span', 'text-slate-600', 'none');
-    if (values.every((v) => v === null || typeof v !== 'object')) {
-      return el('span', 'break-words font-mono text-[11px] text-slate-300', values.join(', '));
-    }
-    const list = el('div', 'space-y-1.5');
-    values.forEach((v) => {
-      const box = el('div', 'rounded-md border border-slate-800 bg-slate-950/60 p-2');
-      box.append(renderValue(v));
-      list.append(box);
-    });
-    return list;
-  }
-
-  function renderObject(object) {
-    const grid = el('dl', 'grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs');
-    Object.entries(object).forEach(([key, value]) => {
-      const cell = el('dd', 'min-w-0');
-      if (UNTRUSTED_KEYS.has(key) && typeof value === 'string') {
-        cell.append(el('span', 'break-words italic text-slate-400', value ? '“' + value + '”' : '—'));
-      } else {
-        cell.append(renderValue(value));
-      }
-      grid.append(el('dt', 'text-slate-500', key), cell);
-    });
-    return grid;
-  }
-
-  function roleCard(record) {
-    // Price action carries the ranked candidates, so it gets a double-width column.
-    const span = record.role === 'price_action' ? ' md:col-span-2' : '';
-    const card = el('div', 'min-w-0 rounded-lg border border-slate-800 bg-slate-950/50 p-3' + span);
-    const head = el('div', 'mb-2 flex items-center justify-between gap-2');
-    head.append(el('h4', 'text-xs font-semibold text-slate-200', ROLE_LABELS[record.role] || record.role),
-      badge(record.source, record.source === 'rules' ? 'slate' : 'sky'));
-    card.append(head, record.error_code ? badge(record.error_code, 'rose') : renderValue(record.view));
-    return card;
-  }
-
-  function renderRoles(views) {
-    if (!views.length) return el('p', 'text-xs text-slate-500', 'No agent was asked (tier 0 held).');
-    const ordered = [...views].sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role));
-    const grid = el('div', 'grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6');
-    ordered.forEach((record) => grid.append(roleCard(record)));
-    return grid;
-  }
-
-  function renderCandidates(candidates) {
-    if (!candidates.length) return el('p', 'text-xs text-slate-500', 'No candidate detected.');
-    const list = el('div', 'flex flex-wrap gap-2');
-    candidates.forEach((c) => {
-      const chip = el('div', 'flex items-center gap-2 rounded-md border border-slate-800 bg-slate-950/60 px-2 py-1 text-[11px]');
-      chip.append(badge(c.side || '?', c.side === 'buy' ? 'emerald' : 'rose'),
-        el('span', 'font-mono text-slate-300', c.candidate_id),
-        el('span', 'text-slate-500', c.verdict + ' · entry ' + num(c.entry) + ' · stop ' + num(c.stop)));
-      if (c.refusal && c.refusal.length) chip.append(badge(c.refusal.join(','), 'amber'));
-      list.append(chip);
-    });
-    return list;
-  }
-
-  function panel(title, value) {
-    const box = el('div', 'rounded-lg border border-slate-800 p-3');
-    box.append(el('h4', 'mb-2 text-xs font-semibold text-slate-200', title), renderValue(value));
+  function statTile(label, value, sub, tone) {
+    const box = el('div', 'bg-slate-900/80 px-5 py-4');
+    box.append(el('p', 'text-[11px] font-medium uppercase tracking-wider text-slate-500', label),
+      el('p', 'mt-1 tabular text-2xl font-semibold ' + (TEXT_TONES[tone] || 'text-slate-100'), value),
+      el('p', 'mt-1 text-[11px] text-slate-500', sub));
     return box;
   }
 
-  function cycleHeader(cycle) {
-    const head = el('header', 'flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-2.5');
-    const left = el('div', 'flex flex-wrap items-center gap-2');
-    left.append(el('span', 'tabular text-xs text-slate-400', utc(cycle.bar_open_epoch)),
-      badge(cycle.status, STATUS_TONES[cycle.status]));
-    if (cycle.hold_reason) left.append(el('span', 'font-mono text-[11px] text-slate-300', shortReason(cycle.hold_reason)));
-    if (cycle.hold_detail) left.append(el('span', 'text-[11px] text-slate-500', cycle.hold_detail));
-    const right = el('div', 'flex items-center gap-3 text-[11px] text-slate-500');
-    right.append(el('span', 'font-mono', cycle.provider + ' · ' + cycle.provider_status),
-      el('span', 'tabular', cycle.total_ms + ' ms'));
-    head.append(left, right);
-    return head;
+  function outcomeNote(stats, invalid) {
+    const notes = [];
+    if (stats.unlinked) notes.push(stats.unlinked + ' result(s) name no known intent and carry no R.');
+    if (invalid.length) {
+      notes.push(invalid.length + ' unreadable result(s) skipped: ' + invalid.join(', ') + '.');
+    }
+    notes.push('Averages stay uncoloured below n = ' + MIN_TONED_SAMPLE + '; knowledge/15 asks for ' +
+      't > 3 over a large n before any edge is trusted.');
+    return notes.join(' ');
   }
 
-  function cycleCard(cycle) {
-    const card = el('article', 'overflow-hidden rounded-xl border border-slate-800 bg-slate-900/40');
-    const body = el('div', 'space-y-3 p-4');
-    if (cycle.failed_gates.length) {
-      body.append(el('p', 'text-xs text-rose-300', 'Failed gates: ' + cycle.failed_gates.join(', ')));
-    }
-    body.append(renderCandidates(cycle.candidates), renderRoles(cycle.views));
-    if (cycle.protocol || cycle.shadow_intent || cycle.refusal) {
-      const verdict = el('div', 'grid grid-cols-1 gap-3 md:grid-cols-2');
-      verdict.append(panel('Protocol', cycle.protocol),
-        panel('Shadow intent (never sent)', cycle.shadow_intent || cycle.refusal));
-      body.append(verdict);
-    }
-    card.append(cycleHeader(cycle), body);
-    return card;
-  }
-
-  function renderCycles(cycles) {
-    if (!cycles.length) {
-      return fill('v6-cycles', emptyNote('No cycle recorded yet. The desk runs at every M15 close.'));
-    }
-    fill('v6-cycles', ...cycles.map(cycleCard));
+  function renderOutcomes(outcomes) {
+    const s = outcomes.stats || {};
+    const t = isNumber(s.t_r) ? ' · t = ' + s.t_r.toFixed(2) : '';
+    const rate = isNumber(s.win_rate_pct) ? s.win_rate_pct.toFixed(1) + '%' : '—';
+    setText('v6-outcome-window', outcomes.window_days + ' days');
+    const split = (s.wins ?? 0) + ' won · ' + (s.losses ?? 0) + ' lost · ' + (s.breakeven ?? 0) + ' flat';
+    R.fill('v6-outcome-stats',
+      statTile('Closed', String(s.n ?? 0), split),
+      statTile('Win rate', rate, count((s.wins ?? 0) + (s.losses ?? 0)) + ' decided'),
+      statTile('Average R', signedR(s.avg_r), count(s.n_r) + t, sampleTone(s.avg_r, s.n_r)),
+      statTile('Net P&L', money(s.total_pnl), count(s.n), pnlTone(s.total_pnl)),
+      statTile('Label R', signedR(s.avg_label_r), count(s.n_label) + ' chosen candidates'),
+      statTile('Execution gap', signedR(s.avg_r_gap), count(s.n_gap) + ' · realised minus label',
+        sampleTone(s.avg_r_gap, s.n_gap)));
+    setText('v6-outcome-note', outcomeNote(s, outcomes.invalid || []));
+    renderTable('v6-outcomes', OUTCOME_COLUMNS, outcomes.recent, 'No V6 position has closed yet.');
   }
 
   // --- refresh loop --------------------------------------------------------
   function render(data) {
+    if (!R) throw new Error(RENDERER_MISSING);
     renderStatus(data.runtime);
     renderEa(data.ea);
     renderSession(data.session);
     renderSizing(data.sizing);
-    renderGates(data.last_cycle);
-    renderBreakers(data.breakers);
-    renderHoldReasons(data.hold_reasons_7d);
-    renderCycles(data.recent_cycles);
-    renderLabels(data.label_stats);
+    renderOperator(data.session, data.runtime);
+    renderOutcomes(data.outcomes);
+    renderTable('v6-intents', INTENT_COLUMNS, data.intents,
+      'No intent published yet. Shadow mode never publishes one.');
+    renderTable('v6-executions', EXECUTION_COLUMNS, data.executions, 'No execution report yet.');
+    renderOpenOrders(data.open_orders);
+    R.renderGates(data.last_cycle);
+    R.renderBreakers(data.breakers);
+    R.renderRealised(data.outcomes.realised);
+    R.renderHoldReasons(data.hold_reasons_7d);
+    R.renderCycles(data.recent_cycles);
+    R.renderLabels(data.label_stats);
   }
 
   function showDisabled(disabled) {
@@ -346,7 +261,7 @@
     if (disabled) {
       const status = byId('v6-status');
       status.textContent = 'DISABLED';
-      status.className = PILL + TONES.slate;
+      status.className = PILL + (TONES.slate || '');
     }
   }
 

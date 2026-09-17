@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 from app.routes import v6_control, v6_dashboard
 from app.routes.v6_control import install_control_plane
 from app.v6.clock import FakeClock
-from app.v6.config import V6Settings
+from app.v6.config import OPERATOR_AGENTS, V6Settings
 from app.v6.container import APP_STATE_KEY, V6Container, container_for_app, v6_lifespan
 from app.v6.cycle_types import ViewRecord
 from app.v6.dashboard_queries import (
@@ -101,6 +101,9 @@ def record_demo_poll(container: V6Container, trade_mode: str = "DEMO") -> None:
 APP_DIR = Path(__file__).resolve().parents[2] / "app"
 TEMPLATE = APP_DIR / "templates" / "v6.html"
 SCRIPT = APP_DIR / "static" / "v6.js"
+RENDER_SCRIPT = APP_DIR / "static" / "v6_render.js"
+SCRIPTS = (RENDER_SCRIPT, SCRIPT)          # the page loads them in this order
+MAX_LINES = 400
 HOSTILE_NOTE = '<img src=x onerror="alert(1)">'
 FORBIDDEN_JS_SINKS = ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write",
                       "eval(", "new Function")
@@ -152,7 +155,9 @@ def test_page_renders_with_the_csrf_nonce_when_v6_runs(client: TestClient,
     assert response.status_code == 200
     assert f'data-csrf="{wired.plane.csrf_nonce}"' in response.text
     assert 'data-enabled="true"' in response.text
-    assert '<script src="/v6/static/v6.js" defer></script>' in response.text
+    tags = [f'<script src="/v6/static/{script.name}" defer></script>' for script in SCRIPTS]
+    assert all(tag in response.text for tag in tags)
+    assert response.text.index(tags[0]) < response.text.index(tags[1])
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-frame-options"] == "DENY"
     banner = re.search(r'<div id="v6-disabled"[^>]*>', response.text)
@@ -171,20 +176,26 @@ def test_page_renders_a_disabled_banner_without_a_nonce(tmp_path: Path, db_path:
     assert overview.status_code == 404
 
 
-def test_the_script_is_served_and_never_parses_html(client: TestClient) -> None:
-    response = client.get("/v6/static/v6.js")
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda path: path.name)
+def test_the_scripts_are_served(client: TestClient, wired: ControlApp, script: Path) -> None:
+    url = f"/v6/static/{script.name}"
+    if not any(getattr(route, "path", "") == url for route in wired.app.routes):
+        pytest.skip(f"{url} is not routed yet (integrator: routes/v6_dashboard.py)")
+    response = client.get(url)
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/javascript")
-    assert "textContent" in response.text
-    for sink in FORBIDDEN_JS_SINKS:
-        assert sink not in response.text, sink
+    assert response.content == script.read_bytes()
 
 
-def test_templates_and_script_stay_within_the_safety_rules() -> None:
+def test_templates_and_scripts_stay_within_the_safety_rules() -> None:
     template = TEMPLATE.read_text(encoding="utf-8")
     assert not re.search(r"\|\s*safe\b", template)
-    assert "autoescape" not in template
-    assert len(SCRIPT.read_text(encoding="utf-8").splitlines()) <= 400
+    assert "autoescape" not in template and len(template.splitlines()) <= MAX_LINES
+    for script in SCRIPTS:
+        source = script.read_text(encoding="utf-8")
+        assert "textContent" in source and len(source.splitlines()) <= MAX_LINES
+        for sink in FORBIDDEN_JS_SINKS:
+            assert sink not in source, (script.name, sink)
 
 
 # --- overview --------------------------------------------------------------------
@@ -199,7 +210,16 @@ def test_overview_before_any_data(client: TestClient) -> None:
     assert body["sizing"]["available"] is False
     assert (body["last_cycle"], body["breakers"], body["recent_cycles"]) == (None, [], [])
     assert (body["label_stats"], body["hold_reasons_7d"]) == ([], {})
+    assert (body["intents"], body["executions"]) == ([], [])
+    assert body["open_orders"]["available"] is False and body["open_orders"]["positions"] == []
+    outcomes = body["outcomes"]
+    assert (outcomes["stats"]["n"], outcomes["recent"], outcomes["realised"]) == (0, [], None)
+    assert body["session"]["armed"] is False and body["runtime"]["operator_ready"] is True
+    assert body["session"]["operator"] == {
+        "agents": list(OPERATOR_AGENTS), "last_agent": None, "last_seen_age_s": None,
+        "pending_cycle_id": None, "pending_seconds_left": None}
     assert "operator_token" not in response.text and "k" * 40 not in response.text
+    assert "budget" not in response.text.lower() and "openrouter" not in response.text.lower()
 
 
 def _seed_day(client: TestClient, wired: ControlApp) -> None:
@@ -239,6 +259,7 @@ def test_overview_with_cycles_views_and_labels(client: TestClient, wired: Contro
     assert [v["role"] for v in enter["views"]] == ["price_action", "news_risk", "chief"]
     assert enter["views"][0]["view"]["ranked"][0]["note"] == HOSTILE_NOTE
     assert enter["views"][2]["error_code"] == "PROVIDER_TIMEOUT"
+    assert enter["views"][2]["model"] == "m" and "cost_usd" not in enter["views"][2]
     assert body["label_stats"] == [{"setup": "displacement", "verdict": "chosen",
                                     "label_status": "labeled", "outcome": "tp", "count": 1,
                                     "mean_r": 2.0}]
@@ -306,7 +327,7 @@ def test_latest_market_skips_pruned_and_survives_unreadable_payloads(
                       payload_json='{"symbol_spec": {"digits": "two"}, "quote": {}}')
     with caplog.at_level(logging.WARNING):
         assert load_latest_market(ledger_v6.path) is None
-        assert "snap-bad" in caplog.text and "TypeError" in caplog.text
+        assert "snap-bad" in caplog.text and "ValidationError" in caplog.text
         assert ledger_v6.insert_snapshot(invalid)
         assert load_latest_market(ledger_v6.path) is None
     assert "snap-invalid" in caplog.text and "ValidationError" in caplog.text

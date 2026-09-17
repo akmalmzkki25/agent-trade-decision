@@ -16,7 +16,7 @@
 #include "Persist.mqh"
 #include "Exposure.mqh"
 
-#define V6_EA_VERSION        "6.0.0"
+#define V6_EA_VERSION        "6.1.0"
 #define SHORT_TEXT_MAX       80
 #define SPEC_DIGITS          10
 #define CALENDAR_HORIZON_S   86400
@@ -35,12 +35,25 @@
 #define SNAP_BARS_H1   8
 #define SNAP_BARS_D1   3
 
+// What the EA reports about itself in ea_state and in the poll (contract §8.2).
+struct EaStatus
+{
+   bool              execute_enabled;   // would act on a signed intent (halts aside)
+   bool              halted;            // QlipV6_HALT or AutoTrading off
+   bool              breaker_tripped;   // local daily breaker
+   int               outbox_pending;
+   string            last_intent_id;    // newest processed intent, "" if none
+};
+
 //--- account and symbol --------------------------------------------
 
 // Anything that is not explicitly demo or contest is reported as REAL, the
-// most restricted mode on the adapter side.
+// most restricted mode on the adapter side. Account data that is not loaded
+// yet reads as mode 0 (DEMO), so an unknown login is reported as REAL too.
 string TradeModeName(void)
 {
+   if(AccountInfoInteger(ACCOUNT_LOGIN) <= 0)
+      return "REAL";
    ENUM_ACCOUNT_TRADE_MODE mode = (ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE);
    if(mode == ACCOUNT_TRADE_MODE_DEMO)
       return "DEMO";
@@ -225,17 +238,15 @@ string ProbeJson(const MqlTick &tick, const int offset_s)
    return o.Text();
 }
 
-// Data-only phase: nothing can be executed, so the breaker, outbox and last
-// intent are always at their idle values.
-string EaStateJson(const bool halted)
+string EaStateJson(const EaStatus &status)
 {
    CJsonObject o;
    o.AddStr("ea_version", V6_EA_VERSION);
-   o.AddBool("execute_enabled", false);
-   o.AddBool("halted", halted);
-   o.AddStr("local_breaker", "none");
-   o.AddInt("outbox_pending", PersistOutboxPending());
-   o.AddStr("last_intent_id", "");
+   o.AddBool("execute_enabled", status.execute_enabled);
+   o.AddBool("halted", status.halted);
+   o.AddStr("local_breaker", status.breaker_tripped ? "daily" : "none");
+   o.AddInt("outbox_pending", status.outbox_pending);
+   o.AddStr("last_intent_id", status.last_intent_id);
    return o.Text();
 }
 
@@ -255,7 +266,7 @@ string SnapshotBarsJson(const datetime close_server, const int offset_s)
 // Snapshot for the M15 bar that opened at `bar_open_server` and has closed.
 // Returns "" when there is no quote to report.
 string BuildSnapshotJson(const long magic, const datetime bar_open_server,
-                         const bool with_probe, const bool halted)
+                         const bool with_probe, const EaStatus &status)
 {
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick) || tick.bid <= 0.0 || tick.ask <= 0.0)
@@ -289,12 +300,12 @@ string BuildSnapshotJson(const long magic, const datetime bar_open_server,
       o.AddRaw("probe", ProbeJson(tick, offset));
    else
       o.AddNull("probe");
-   o.AddRaw("ea_state", EaStateJson(halted));
+   o.AddRaw("ea_state", EaStateJson(status));
    return o.Text();
 }
 
 // Heartbeat for /v6/intent/poll. Returns "" when there is no quote.
-string BuildPollJson(const long magic, const bool halted)
+string BuildPollJson(const long magic, const EaStatus &status)
 {
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick) || tick.bid <= 0.0 || tick.ask <= 0.0)
@@ -318,8 +329,8 @@ string BuildPollJson(const long magic, const bool halted)
    o.AddInt("open_v6_positions", MathMin(positions, V6_MAX_ROWS));
    o.AddInt("pending_v6_orders", MathMin(orders, V6_MAX_ROWS));
    o.AddNum("floating_pnl_v6", floating, d);
-   o.AddStr("last_intent_id", "");
-   o.AddBool("local_halt", halted);
+   o.AddStr("last_intent_id", status.last_intent_id);
+   o.AddBool("local_halt", status.halted);
    return o.Text();
 }
 

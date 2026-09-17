@@ -7,9 +7,10 @@ snapshot; the week and month anchors come from the first per-minute account mark
 (`v6_account_marks`, written by the poll route) inside the period. When the
 adapter started after the period began, that mark is the best anchor it has.
 
-Realised V6 P&L is only known for today (the EA's DayBlock). Phase 2 places no
-orders, so it is zero in practice; Phase 5 must feed weekly and monthly realised
-V6 results (basket_results with version "v6").
+Realised V6 P&L per period comes from the V6 basket results (`basket_results`
+with version "v6", `runtime.realised_pnl`), merged with the EA's own realised
+figure for today (same login, same UTC day) so a close still waiting in the EA
+outbox already counts. An unreadable result in the window fails closed.
 
 Account equity includes every strategy on the account, so a V5 loss on the same
 demo account trips the V6 equity breaker too, by design.
@@ -25,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
@@ -38,6 +39,7 @@ from ..risk.breakers import (
     inputs_from_context, period_start_epoch, refresh_breakers,
 )
 from ..schemas.intent import PollRequest
+from .realised_pnl import RealisedPnlReader
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,7 @@ class MarksReader:
     """Read-only access to v6_account_marks over a short-lived connection."""
 
     def __init__(self, db_path: str) -> None:
+        self.db_path = str(db_path)
         self._uri = Path(db_path).resolve().as_uri() + "?mode=ro"
 
     @staticmethod
@@ -135,23 +138,38 @@ def _unavailable(ledger: LedgerCycles, detail: str) -> BreakerStatus:
 
 
 class BreakerFeed:
-    """Builds the BreakerStatus a cycle or the watchdog acts on, persisting new trips."""
+    """Builds the BreakerStatus a cycle or the watchdog acts on, persisting new trips.
+
+    `realised` reads the V6 basket results; by default from the marks' database.
+    """
 
     def __init__(self, *, ledger: LedgerCycles, marks: MarksReader, settings: V6Settings,
-                 clock: Clock) -> None:
+                 clock: Clock, realised: RealisedPnlReader | None = None) -> None:
         self._ledger = ledger
         self._marks = marks
         self._settings = settings
         self._clock = clock
+        self._realised = realised if realised is not None else RealisedPnlReader(marks.db_path)
 
     def _refresh(self, inputs: BreakerInputs) -> BreakerStatus:
         return refresh_breakers(self._ledger, inputs, self._settings, self._clock.now_epoch())
 
+    def _periods(self, login: str, as_of: int, anchors: PeriodAnchors, daily_start: float,
+                 ea_realized_today: float | None) -> tuple[PeriodInput, ...]:
+        """Realised V6 P&L per period; ValueError (fail closed) for an unreadable result."""
+        weekly = _first_known(anchors.weekly, daily_start)
+        monthly = _first_known(anchors.monthly, daily_start)
+        pnl = self._realised.read(login, as_of)
+        return pnl.period_inputs(daily_start=daily_start, weekly_start=weekly,
+                                 monthly_start=monthly, ea_realized_today=ea_realized_today)
+
     def _context_inputs(self, context: MarketContext) -> BreakerInputs:
-        anchors = self._marks.anchors(context.as_of_epoch, context.account.login)
-        day = context.day
+        as_of, login, day = context.as_of_epoch, context.account.login, context.day
+        anchors = self._marks.anchors(as_of, login)
         weekly, monthly = _longer_periods(anchors, day.day_start_equity, day.realized_today)
-        return inputs_from_context(context, weekly=weekly, monthly=monthly)
+        base = inputs_from_context(context, weekly=weekly, monthly=monthly)  # checks the account
+        periods = self._periods(login, as_of, anchors, day.day_start_equity, day.realized_today)
+        return replace(base, periods=periods)
 
     def context_status(self, context: MarketContext) -> BreakerStatus:
         """Blocking: daily figures from the snapshot, week and month from the marks."""
@@ -171,8 +189,9 @@ class BreakerFeed:
                     day: DayFacts | None) -> BreakerStatus | None:
         """Blocking: the status from the newest poll; None when no day anchor is known.
 
-        A poll without usable equity or login fails closed without persisting a
-        trip. Raises sqlite3.Error when the marks cannot be read (the watchdog logs it).
+        A poll without usable equity or login, or an unreadable V6 result, fails
+        closed without persisting a trip. Raises sqlite3.Error when the marks or the
+        results cannot be read (the watchdog logs it).
         """
         if not account_usable(poll.login, poll.equity):
             logger.debug("v6 breaker poll inputs unusable (login or equity missing)")
@@ -184,12 +203,14 @@ class BreakerFeed:
                                    anchors.daily)
         if daily_start <= 0:
             return None
-        realized = 0.0 if today is None else today.realized_today
-        weekly, monthly = _longer_periods(anchors, daily_start, realized)
-        daily = PeriodInput(scope="daily", start_equity=daily_start, realized_v6=realized)
+        ea_today = None if today is None else today.realized_today
+        try:
+            periods = self._periods(poll.login, as_of, anchors, daily_start, ea_today)
+        except ValueError as exc:
+            logger.warning("v6 breaker poll inputs unusable: %s", exc)
+            return _unavailable(self._ledger, INPUTS_UNUSABLE)
         return self._refresh(BreakerInputs(as_of_epoch=as_of, equity=poll.equity,
-                                           floating_v6=poll.floating_pnl_v6,
-                                           periods=(daily, weekly, monthly)))
+                                           floating_v6=poll.floating_pnl_v6, periods=periods))
 
     async def for_poll(self, poll: PollRequest, now: float,
                        day: DayFacts | None) -> BreakerStatus | None:

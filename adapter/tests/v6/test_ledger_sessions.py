@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from app.v6.ledger_cycles import LedgerCycles
+from app.v6.ledger_cycles_schema import apply_schema
 
 DAY = "2026-09-16"
 
@@ -93,7 +94,7 @@ def test_breaker_input_validation(ledger: LedgerCycles, scope: str, period: str,
 def test_session_start_is_idempotent_and_single(ledger: LedgerCycles) -> None:
     first = ledger.start_session(trading_day=DAY, backend="rules", mode="shadow",
                                  started_at=10.0)
-    again = ledger.start_session(trading_day="2026-09-17", backend="openrouter",
+    again = ledger.start_session(trading_day="2026-09-17", backend="operator",
                                  mode="shadow", started_at=20.0)
 
     assert first.created and not again.created
@@ -106,13 +107,14 @@ def test_session_start_is_idempotent_and_single(ledger: LedgerCycles) -> None:
 
 
 def test_session_stop_arm_and_list(ledger: LedgerCycles) -> None:
-    session = ledger.start_session(trading_day=DAY, backend="rules", mode="shadow",
+    session = ledger.start_session(trading_day=DAY, backend="operator", mode="execute",
                                    started_at=10.0, armed=True).session
-    assert session.armed
-    assert ledger.set_session_armed(session.session_id, True)
+    assert (session.armed, session.armed_at, session.disarmed_at) == (True, 10.0, None)
+    assert ledger.set_session_armed(session.session_id, True, at=20.0)
+    assert ledger.active_session().armed_at == 10.0, "re-arming keeps the first arm time"
     assert ledger.stop_session(session.session_id, stopped_at=30.0, reason="user_stop")
     assert not ledger.stop_session(session.session_id, stopped_at=31.0, reason="user_stop")
-    assert not ledger.set_session_armed(session.session_id, True)
+    assert not ledger.set_session_armed(session.session_id, True, at=32.0)
     assert ledger.active_session() is None
 
     later = ledger.start_session(trading_day=DAY, backend="rules", mode="shadow",
@@ -120,9 +122,56 @@ def test_session_stop_arm_and_list(ledger: LedgerCycles) -> None:
     listed = ledger.sessions_for_day(DAY)
 
     assert [s.session_id for s in listed] == [session.session_id, later.session_id]
-    assert (listed[0].stopped_at, listed[0].stop_reason, listed[0].armed) == \
-        (30.0, "user_stop", False)
+    first = listed[0]
+    assert (first.stopped_at, first.stop_reason, first.armed) == (30.0, "user_stop", False)
+    assert (first.armed_at, first.disarmed_at, first.disarm_reason) == (10.0, 30.0, "user_stop")
+    assert (later.armed_at, later.disarmed_at, later.disarm_reason) == (None, None, None)
     assert ledger.sessions_for_day("2026-09-17") == ()
+
+
+def test_arm_and_disarm_record_their_times(ledger: LedgerCycles) -> None:
+    session_id = ledger.start_session(trading_day=DAY, backend="operator", mode="execute",
+                                      started_at=10.0).session.session_id
+    assert ledger.set_session_armed(session_id, False, at=11.0, reason="noop")
+    assert ledger.active_session().disarmed_at is None, "an unarmed session records nothing"
+    assert ledger.set_session_armed(session_id, True, at=12.0)
+    assert ledger.set_session_armed(session_id, False, at=13.0, reason="BREAKER")
+    armed_again = ledger.set_session_armed(session_id, True, at=14.0)
+
+    active = ledger.active_session()
+    assert armed_again and active.armed
+    assert (active.armed_at, active.disarmed_at, active.disarm_reason) == (14.0, 13.0, "BREAKER")
+    with pytest.raises(ValueError):
+        ledger.set_session_armed(session_id, False, at=15.0, reason="")
+    assert ledger.stop_session(session_id, stopped_at=16.0, reason="rollover_auto_close")
+    stopped = ledger.sessions_for_day(DAY)[0]
+    assert (stopped.armed, stopped.disarmed_at, stopped.disarm_reason) == (
+        False, 16.0, "rollover_auto_close")
+
+
+def test_phase2_sessions_table_gains_the_arm_columns(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE v6_sessions (session_id TEXT NOT NULL PRIMARY KEY,"
+                     " trading_day TEXT NOT NULL, backend TEXT NOT NULL, mode TEXT NOT NULL,"
+                     " started_at REAL NOT NULL, stopped_at REAL, stop_reason TEXT,"
+                     " armed INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("INSERT INTO v6_sessions VALUES ('old', ?, 'rules', 'shadow', 1.0,"
+                     " NULL, NULL, 0)", (DAY,))
+    led = LedgerCycles(db_path)
+    try:
+        session = led.active_session()
+        assert session is not None and session.session_id == "old"
+        assert (session.armed_at, session.disarmed_at, session.disarm_reason) == (None, None, None)
+        assert led.set_session_armed("old", True, at=2.0)
+    finally:
+        led.close()
+    LedgerCycles(db_path).close()  # a second open finds the columns already there
+
+
+def test_a_failing_migration_surfaces(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            apply_schema(conn, (), ("ALTER TABLE missing_table ADD COLUMN x REAL",))
 
 
 def test_active_session_survives_restart(db_path: Path) -> None:

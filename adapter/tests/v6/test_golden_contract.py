@@ -38,6 +38,7 @@ MAX_PROBE_LINES: Final[int] = 800
 TRADING_CALLS: Final[tuple[str, ...]] = (
     "OrderSend", "OrderSendAsync", "CTrade", "Trade.mqh", "PositionClose", "OrderModify",
 )
+ORDERS_MODULE: Final[str] = "Orders.mqh"
 
 
 def _read_golden(name: str) -> str:
@@ -345,14 +346,18 @@ def test_ea_reads_the_poll_response_fields() -> None:
         assert re.search(rf'JsonGet\w+\([^;]*"{field}"', source), field
 
 
-def test_ea_contains_no_trading_calls() -> None:
-    """Phase 1 is data-only: nothing in the EA may place or change an order."""
+def test_ea_trading_calls_live_only_in_the_orders_module() -> None:
+    """Phase 5 executes on demo: only Orders.mqh sends orders (synchronous OrderSend);
+    nothing uses the async, CTrade, close-by-helper or modify paths, and the probe
+    script stays data-only."""
     sources = {path.name: path.read_text(encoding="utf-8") for path in
                [EA_MAIN, PROBE_SCRIPT, *sorted(EA_INCLUDE_DIR.glob("*.mqh"))]}
 
     offenders = [(name, call) for name, text in sources.items() for call in TRADING_CALLS
-                 if re.search(rf"\b{re.escape(call)}\b", text)]
+                 if re.search(rf"\b{re.escape(call)}\b", text)
+                 and (name, call) != (ORDERS_MODULE, "OrderSend")]
     assert offenders == []
+    assert re.search(r"\bOrderSend\b", sources[ORDERS_MODULE])
 
 
 def test_ea_files_stay_within_size_limits() -> None:

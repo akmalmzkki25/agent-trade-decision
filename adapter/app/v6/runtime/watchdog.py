@@ -4,10 +4,12 @@ The V6 watchdog (plan section 4): a short periodic check while the runtime runs.
 Every WATCHDOG_INTERVAL_S it
 - classifies the runtime (HALTED / BREAKER / STALE / WAITING_EA / RUNNING) from the
   halt file, the breakers and the EA and snapshot ages, logging each transition;
-- evaluates the drawdown breakers from the newest EA poll and the account marks,
-  persisting new trips and queueing CANCEL_PENDING for the EA when one trips
-  (FLATTEN arrives with execution in Phase 5);
+- evaluates the drawdown breakers from the newest EA poll, the account marks and
+  the realised V6 results, persisting new trips and queueing FLATTEN for the EA
+  when one trips (plan section 6: HALTED + FLATTEN + CANCEL_PENDING);
 - closes a daily session that reached the rollover block or outlived its day;
+- lets the execution desk expire undelivered intents and disarm an armed session
+  whose arming checks fail (halt, breaker, stale or non-DEMO EA; never re-arms);
 - and, every LABEL_INTERVAL_S, labels the candidates whose barrier has resolved.
 
 Each step is isolated: a failing step is logged (with its traceback when a
@@ -24,7 +26,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, TypeVar
+from typing import Final, Protocol, TypeVar
 
 from ..clock import Clock
 from ..config import V6Settings
@@ -34,6 +36,7 @@ from ..learning.label_job import label_pending
 from ..learning.labeler import LabelerConfig
 from ..market.bar_store import BarStore
 from ..risk.breakers import BREAKER_UNAVAILABLE, BreakerStatus
+from .arming import BreakerView
 from .breaker_feed import BreakerFeed
 from .ea_state import EaState, EaStateView
 from .service import CarryOver
@@ -51,6 +54,7 @@ BREAKER_TRIP_REASON: Final[str] = "breaker_trip"
 STEP_HALT: Final[str] = "halt"
 STEP_BREAKERS: Final[str] = "breakers"
 STEP_SESSIONS: Final[str] = "sessions"
+STEP_SUPERVISE: Final[str] = "supervise"
 STEP_LABELER: Final[str] = "labeler"
 # Three ticks (15 s) of failed breaker evaluation: stop trusting the last summary.
 BREAKER_FAIL_CLOSED_AFTER: Final[int] = 3
@@ -131,6 +135,13 @@ def next_streaks(previous: Mapping[str, int], ran: Iterable[str],
     return MappingProxyType(streaks)
 
 
+class Supervisor(Protocol):
+    """The execution desk's watchdog hook (`runtime.desk.ExecutionDesk.supervise`)."""
+
+    async def supervise(self, now: float, *, halted: bool,
+                        breakers: BreakerView | None) -> object: ...
+
+
 @dataclass(frozen=True)
 class WatchdogDeps:
     settings: V6Settings
@@ -144,6 +155,7 @@ class WatchdogDeps:
     commands: CommandBoard
     carry: Callable[[], CarryOver]
     is_active: Callable[[], bool]
+    desk: Supervisor | None = None
 
 
 class Watchdog:
@@ -182,18 +194,25 @@ class Watchdog:
         deps, previous = self._deps, self._state
         now = deps.clock.now_epoch()
         view = deps.ea_state.view()
-        ran, errors = [STEP_HALT, STEP_BREAKERS, STEP_SESSIONS], []
+        errors: list[str] = []
         halted = await self._step(STEP_HALT, self._halted, True, errors)
         breaker = await self._step(STEP_BREAKERS, lambda: self._breakers(view, now),
                                    self._good_breaker, errors)
+        self._streaks = next_streaks(self._streaks, (STEP_HALT, STEP_BREAKERS), errors)
+        breaker = self._trusted(breaker)
+        later = [STEP_SESSIONS]
         await self._step(STEP_SESSIONS, lambda: deps.sessions.auto_close_if_rollover(now),
                          None, errors)
+        desk = deps.desk
+        if desk is not None:
+            later.append(STEP_SUPERVISE)
+            await self._step(STEP_SUPERVISE, lambda: desk.supervise(
+                now, halted=halted, breakers=breaker), None, errors)
         written: int | None = None
         if self._label_due(now):
-            ran.append(STEP_LABELER)
+            later.append(STEP_LABELER)
             written = await self._step(STEP_LABELER, lambda: self._label(now), 0, errors)
-        self._streaks = next_streaks(self._streaks, ran, errors)
-        breaker = self._trusted(breaker)
+        self._streaks = next_streaks(self._streaks, later, errors)
         state = self._compose(previous, now, view, halted, breaker, written, len(errors))
         self._log_transition(previous, state)
         self._state = state
@@ -242,9 +261,9 @@ class Watchdog:
         new = summary.active_keys - self._state.breaker.active_keys
         if not new:
             return
-        self._deps.commands.request_cancel_pending(BREAKER_TRIP_REASON, now)
+        self._deps.commands.request_flatten(BREAKER_TRIP_REASON, now)
         logger.warning("v6 breaker tripped (%s): no new entries until a manual reset; "
-                       "CANCEL_PENDING queued", ", ".join(sorted(new)))
+                       "FLATTEN queued", ", ".join(sorted(new)))
 
     def _label_due(self, now: float) -> bool:
         last = self._state.last_label_at

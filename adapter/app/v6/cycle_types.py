@@ -2,9 +2,9 @@
 Immutable records for one deliberation cycle (one closed M15 bar).
 
 Flow: snapshot -> MarketContext -> gates / candidates -> DeliberationInput -> views ->
-ProtocolInput -> ProtocolDecision -> exits / sizing -> CycleResult. Phase 2 is shadow
-only: an approved trade becomes a ShadowIntent and is never published. The code sets
-in `cycle_codes` are re-exported here.
+ProtocolInput -> ProtocolDecision -> exits / sizing -> CycleResult. An approved trade
+becomes a ShadowIntent (the sized order); only the runtime publishes it (execute mode,
+recorded as `CycleResult.intent_id`). `cycle_codes` is re-exported here.
 """
 
 from __future__ import annotations
@@ -21,7 +21,8 @@ from pydantic import BaseModel
 
 from .cycle_codes import *  # noqa: F403 - re-export the shared code sets
 from .cycle_codes import (
-    MAX_OFFERED_CANDIDATES, VETO_CODES, CandidateVerdictLabel, CycleStatus, HoldReason,
+    ENTER_STATUSES, MAX_OFFERED_CANDIDATES, VETO_CODES, CandidateVerdictLabel, CycleStatus,
+    HoldReason,
 )
 from .market.sessions import SessionState
 from .providers.base import MS_PER_SECOND, ProviderResult
@@ -43,10 +44,9 @@ Importance = Literal["NONE", "LOW", "MODERATE", "HIGH"]
 ShadowOrderType = Literal["BUY_LIMIT", "SELL_LIMIT", "BUY", "SELL"]
 StructureVetoMode = Literal["log", "enforce"]
 # In-process providers (rules, scripted) read the typed input under PACKET_INPUT_KEY;
-# Phase 3 adds the JSON-safe role packet under PACKET_JSON_KEY, the only entry a
-# network provider may send.
+# an operator agent receives a `schemas.operator.OperatorPacket` instead.
 PACKET_INPUT_KEY: Final[str] = "deliberation_input"
-PACKET_JSON_KEY: Final[str] = "llm_packet"
+PUBLISHED_STATUS: Final[CycleStatus] = "ENTER"     # the intent went out to the EA
 
 
 @dataclass(frozen=True)
@@ -264,7 +264,7 @@ class ProtocolInput:
     decision: ChiefDecision | None         # None: Chief missing or invalid
     pa_min_conviction: float
     structure_veto: StructureVetoMode
-    withdrawn_ids: frozenset[str] = frozenset()   # PA withdrawals in R2 (Phase 3)
+    withdrawn_ids: frozenset[str] = frozenset()   # PA withdrawals in R2 (operator rebuttal)
 
 
 @dataclass(frozen=True)
@@ -294,7 +294,7 @@ class ProtocolDecision:
 
 @dataclass(frozen=True)
 class ShadowIntent:
-    """The order Phase 2 would have sent. Never published to the EA."""
+    """The sized order of an ENTER decision; the runtime alone may publish it (execute)."""
 
     cycle_id: str
     candidate_id: str
@@ -362,15 +362,17 @@ class CycleResult:
     sizing: SizingResult | None = None
     refusal: Refusal | None = None
     shadow_intent: ShadowIntent | None = None
+    intent_id: str | None = None       # the published intent (status ENTER only)
 
     def __post_init__(self) -> None:
-        if self.status == "ENTER_SHADOW":
+        if self.status in ENTER_STATUSES:
             if self.shadow_intent is None or self.hold_reason is not None:
-                raise ValueError("ENTER_SHADOW needs a shadow_intent and no hold_reason")
+                raise ValueError(f"{self.status} needs a shadow_intent and no hold_reason")
         elif self.shadow_intent is not None or self.hold_reason is None:
             raise ValueError(f"{self.status} needs a hold_reason and no shadow_intent")
-        ids = [item.candidate.candidate_id for item in self.candidates]
-        if len(set(ids)) != len(ids):
+        if self.intent_id is not None and self.status != PUBLISHED_STATUS:
+            raise ValueError("only an ENTER cycle names a published intent")
+        if len({item.candidate.candidate_id for item in self.candidates}) != len(self.candidates):
             raise ValueError("candidate ids must be unique within a cycle")
 
     @property

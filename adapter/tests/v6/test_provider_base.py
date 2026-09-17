@@ -39,7 +39,7 @@ class _Provider:
             return ProviderResult.success(chief_decision(), model="m", latency_ms=12,
                                           tokens_in=100, tokens_out=20, cost_usd=0.0004)
         if self.behaviour == "raise":
-            raise RuntimeError("sk-or-v1-secret must not be logged")
+            raise RuntimeError("canary-secret must not be logged")
         if self.behaviour == "slow":
             await anyio.sleep(10)
         return {"not": "a result"}
@@ -81,8 +81,9 @@ def test_malformed_results_are_refused(kwargs: dict[str, Any]) -> None:
 
 def test_status_and_error_sets_are_consistent() -> None:
     assert base.ERR_NONE not in base.ERROR_CODES
-    assert base.PROVIDER_STATUS_BACKEND_NOT_BUILT == "backend_not_built"
-    assert base.PROVIDER_STATUS_BACKEND_NOT_BUILT in base.PROVIDER_STATUSES
+    assert base.PROVIDER_STATUSES == {"ok", "partial", "failed", "skipped"}
+    assert (base.RULES_PROVIDER_NAME, base.OPERATOR_PROVIDER_NAME) == ("rules", "operator")
+    assert base.ERR_UNAVAILABLE in base.ERROR_CODES
 
 
 def test_scripted_provider_satisfies_the_protocol() -> None:
@@ -111,7 +112,7 @@ async def test_ask_safely_contains_exceptions_without_logging_the_message(
 
     assert result.error_code == base.ERR_INTERNAL
     assert "RuntimeError" in caplog.text
-    assert "sk-or-" not in caplog.text
+    assert "canary-secret" not in caplog.text
 
 
 @pytest.mark.anyio

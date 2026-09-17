@@ -104,11 +104,17 @@ def test_a_wildcard_bind_needs_an_explicit_host_list(monkeypatch: pytest.MonkeyP
 # --- validation errors never print the raw settings ----------------------------------
 def test_v6_settings_errors_hide_the_operator_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("V6_ENABLED", "true")
-    monkeypatch.setenv("V6_BACKEND", "openrouter")
+    monkeypatch.setenv("V6_BACKEND", "operator")
+    monkeypatch.setenv("V6_MODE", "execute")
     monkeypatch.setenv("V6_OPERATOR_TOKEN", FAKE_TOKEN)
     with pytest.raises(ValidationError) as caught:
         V6Settings(_env_file=None)
     assert TOKEN_TAIL not in str(caught.value) and "input_value" not in str(caught.value)
+
+    monkeypatch.setenv("V6_EA_HMAC_KEY", f"bad key {TOKEN_TAIL}")
+    with pytest.raises(ValidationError, match="V6_EA_HMAC_KEY") as bad_key:
+        V6Settings(_env_file=None)
+    assert TOKEN_TAIL not in str(bad_key.value) and "input_value" not in str(bad_key.value)
 
     monkeypatch.setenv("V6_ENABLED", "false")
     monkeypatch.setenv("V6_RISK_PCT", "5")

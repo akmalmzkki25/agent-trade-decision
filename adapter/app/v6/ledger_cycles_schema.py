@@ -6,9 +6,13 @@ Every record's field order is the SELECT column order used by the ledger.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+import logging
+import sqlite3
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Final
+
+logger = logging.getLogger(__name__)
 
 # Every statement is repeatable; the ledger runs them all on open.
 CYCLE_SCHEMA_DDL: Final[tuple[str, ...]] = (
@@ -45,12 +49,41 @@ CYCLE_SCHEMA_DDL: Final[tuple[str, ...]] = (
     """CREATE TABLE IF NOT EXISTS v6_sessions (
         session_id TEXT NOT NULL PRIMARY KEY, trading_day TEXT NOT NULL,
         backend TEXT NOT NULL, mode TEXT NOT NULL, started_at REAL NOT NULL,
-        stopped_at REAL, stop_reason TEXT, armed INTEGER NOT NULL DEFAULT 0)""",
+        stopped_at REAL, stop_reason TEXT, armed INTEGER NOT NULL DEFAULT 0,
+        armed_at REAL, disarmed_at REAL, disarm_reason TEXT)""",
     # At most one open session, enforced by the database itself.
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_v6_sessions_one_active"
     " ON v6_sessions((stopped_at IS NULL)) WHERE stopped_at IS NULL",
     "CREATE INDEX IF NOT EXISTS idx_v6_sessions_day ON v6_sessions(trading_day)",
 )
+SESSION_COLUMNS: Final[str] = (
+    "session_id, trading_day, backend, mode, started_at, stopped_at, stop_reason, armed,"
+    " armed_at, disarmed_at, disarm_reason")
+# UPDATE right-hand sides see the row before the update: `armed = 1` means "was armed".
+DISARM_SET: Final[str] = (
+    "disarmed_at = CASE WHEN armed = 1 THEN ? ELSE disarmed_at END,"
+    " disarm_reason = CASE WHEN armed = 1 THEN ? ELSE disarm_reason END, armed = 0")
+# Columns added after Phase 2 databases were created; "duplicate column" is expected.
+CYCLE_COLUMN_MIGRATIONS: Final[tuple[str, ...]] = (
+    "ALTER TABLE v6_sessions ADD COLUMN armed_at REAL",
+    "ALTER TABLE v6_sessions ADD COLUMN disarmed_at REAL",
+    "ALTER TABLE v6_sessions ADD COLUMN disarm_reason TEXT",
+)
+
+
+def apply_schema(conn: sqlite3.Connection, ddl: Iterable[str],
+                 migrations: Iterable[str] = ()) -> None:
+    """Run repeatable DDL, then ADD COLUMN migrations. Only "duplicate column" is
+    tolerated: a locked database or a DDL typo must surface, not half-migrate."""
+    for statement in ddl:
+        conn.execute(statement)
+    for statement in migrations:
+        try:
+            conn.execute(statement)
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.error("ledger_cycles migration failed: %s (%s)", statement, exc)
+                raise
 
 
 @dataclass(frozen=True)
@@ -103,6 +136,7 @@ class CycleSummary:
     by_status: Mapping[str, int]
     by_hold_reason: Mapping[str, int]
     shadow_entries: int
+    entries: int = 0                     # cycles whose intent was published (ENTER)
 
 
 @dataclass(frozen=True)
@@ -156,6 +190,8 @@ class BreakerRecord:
 
 @dataclass(frozen=True)
 class SessionRecord:
+    """One daily session. `armed_at` / `disarmed_at` are the latest arm and disarm."""
+
     session_id: str
     trading_day: str
     backend: str
@@ -164,6 +200,9 @@ class SessionRecord:
     stopped_at: float | None
     stop_reason: str | None
     armed: bool
+    armed_at: float | None = None
+    disarmed_at: float | None = None
+    disarm_reason: str | None = None
 
     @property
     def is_active(self) -> bool:
@@ -171,8 +210,8 @@ class SessionRecord:
 
     @classmethod
     def from_row(cls, row: tuple) -> "SessionRecord":
-        *head, armed = row
-        return cls(*head, armed=bool(armed))
+        head, armed, tail = row[:7], row[7], row[8:]
+        return cls(*head, bool(armed), *tail)
 
 
 @dataclass(frozen=True)

@@ -23,6 +23,19 @@ from .models import (
     V5BurstResponse,
 )
 
+_BASKET_VALUE_COLUMNS = (
+    "version", "symbol", "side", "opened_at_utc", "closed_at_utc", "close_reason", "bursts",
+    "positions", "gross_profit", "gross_loss", "net_pnl", "max_floating_dd",
+    "avg_slippage_points", "avg_spread_points", "decision_latency_ms", "equity_at_open",
+    "equity_at_close", "created_at",
+)
+# Fixed text built from the literals above; a stored V6 row is never overwritten.
+_BASKET_UPSERT = (
+    " ON CONFLICT(basket_id) DO UPDATE SET "
+    + ", ".join(f"{name} = excluded.{name}" for name in _BASKET_VALUE_COLUMNS)
+    + " WHERE basket_results.version IS NOT 'v6'"
+)
+
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -395,16 +408,18 @@ class Ledger:
                 )
 
     def write_basket_result(self, event: BasketResultEvent) -> None:
+        """Insert or replace a result, but never replace a stored V6 result (the V6
+        breakers read those, and only the signed V6 route may write them)."""
         with self._lock:
             self.conn.execute(
                 """
-                INSERT OR REPLACE INTO basket_results
+                INSERT INTO basket_results
                 (basket_id, version, symbol, side, opened_at_utc, closed_at_utc,
                  close_reason, bursts, positions, gross_profit, gross_loss, net_pnl,
                  max_floating_dd, avg_slippage_points, avg_spread_points,
                  decision_latency_ms, equity_at_open, equity_at_close, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                """ + _BASKET_UPSERT,
                 (
                     event.basket_id,
                     event.version,

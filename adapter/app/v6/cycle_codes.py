@@ -19,11 +19,11 @@ from .schemas.agents import ID_PATTERN
 from .types import GateResult, Side
 
 __all__ = [
-    "CycleStatus", "CYCLE_STATUSES", "HoldReason",
+    "CycleStatus", "CYCLE_STATUSES", "ENTER_STATUSES", "HoldReason",
     "GATE_HALTED", "GATE_WARMUP", "GATE_ACCOUNT_POLICY", "GATE_SNAPSHOT_AGE",
     "GATE_CLOCK_SKEW", "GATE_SPEC", "GATE_SPREAD", "GATE_SESSION", "GATE_NEWS",
     "GATE_FRICTION", "GATE_ATR", "GATE_OCCUPANCY", "GATE_TRADES_TODAY", "GATE_BREAKER",
-    "GATE_LLM_BUDGET", "GATE_CODES", "GATE_HOLD_REASONS", "hold_reason_for_gates",
+    "GATE_CODES", "GATE_HOLD_REASONS", "hold_reason_for_gates",
     "VETO_CALENDAR", "VETO_NEWS", "VETO_LIQUIDITY", "VETO_STRUCTURE", "VETO_STRUCTURE_LOGGED",
     "VETO_CODES", "MIN_COMBINED_MULTIPLIER", "REDUCED_TIER_FACTOR",
     "CAL_PRE_EVENT", "CAL_POST_EVENT", "CAL_POST_SURPRISE", "CAL_US_DATA_BAR", "CAL_STALE",
@@ -36,9 +36,12 @@ __all__ = [
 ]
 
 # --- cycle status -------------------------------------------------------------
-CycleStatus = Literal["HOLD", "ENTER_SHADOW", "LATE", "ABORTED", "ERROR"]
+# ENTER: the intent was published to the EA (execute mode, armed session).
+# ENTER_SHADOW: the same decision, recorded only (shadow mode, or not published).
+CycleStatus = Literal["HOLD", "ENTER", "ENTER_SHADOW", "LATE", "ABORTED", "ERROR"]
 CYCLE_STATUSES: Final[tuple[CycleStatus, ...]] = (
-    "HOLD", "ENTER_SHADOW", "LATE", "ABORTED", "ERROR")
+    "HOLD", "ENTER", "ENTER_SHADOW", "LATE", "ABORTED", "ERROR")
+ENTER_STATUSES: Final[frozenset[str]] = frozenset({"ENTER", "ENTER_SHADOW"})
 
 
 class HoldReason(StrEnum):
@@ -60,7 +63,7 @@ class HoldReason(StrEnum):
     NO_SESSION = "APP-V6-NO-SESSION"          # no active daily session: tier 0 only
     STALE = "APP-V6-STALE"
     LATE = "APP-V6-LATE"                      # decision after bar close + deadline
-    BUDGET = "APP-V6-BUDGET"
+    OPERATOR_TIMEOUT = "APP-V6-OPERATOR-TIMEOUT"  # no operator decision by the deadline
     ABORTED = "APP-V6-ABORTED"
     ERROR = "APP-V6-ERROR"
 
@@ -80,16 +83,15 @@ GATE_ATR: Final[str] = "ATR_M5"                     # ATR(14, M5) >= limit point
 GATE_OCCUPANCY: Final[str] = "OCCUPANCY"            # no V6 position or pending order
 GATE_TRADES_TODAY: Final[str] = "TRADES_TODAY"
 GATE_BREAKER: Final[str] = "BREAKER"                # any active breaker
-GATE_LLM_BUDGET: Final[str] = "LLM_BUDGET"          # always passes for the rules backend
 GATE_CODES: Final[tuple[str, ...]] = (
     GATE_HALTED, GATE_WARMUP, GATE_ACCOUNT_POLICY, GATE_SNAPSHOT_AGE, GATE_CLOCK_SKEW,
     GATE_SPEC, GATE_SPREAD, GATE_SESSION, GATE_NEWS, GATE_FRICTION, GATE_ATR,
-    GATE_OCCUPANCY, GATE_TRADES_TODAY, GATE_BREAKER, GATE_LLM_BUDGET,
+    GATE_OCCUPANCY, GATE_TRADES_TODAY, GATE_BREAKER,
 )
 GATE_HOLD_REASONS: Final[Mapping[str, HoldReason]] = MappingProxyType({
     GATE_HALTED: HoldReason.HALTED, GATE_WARMUP: HoldReason.WARMUP,
     GATE_SNAPSHOT_AGE: HoldReason.STALE, GATE_CLOCK_SKEW: HoldReason.STALE,
-    GATE_BREAKER: HoldReason.BREAKER, GATE_LLM_BUDGET: HoldReason.BUDGET,
+    GATE_BREAKER: HoldReason.BREAKER,
 })
 
 

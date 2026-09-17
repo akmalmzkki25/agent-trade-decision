@@ -213,14 +213,14 @@ async def test_provider_refuses_bad_requests(role: Any, packet: Any, schema: str
 async def test_provider_contains_internal_errors_without_leaking_messages(
         monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     def boom(*_: object, **__: object) -> None:
-        raise RuntimeError("sk-or-v1-must-not-leak")
+        raise RuntimeError("canary-secret-must-not-leak")
 
     monkeypatch.setattr(offline, "price_action_view", boom)
     with caplog.at_level(logging.ERROR):
         result = await ask(OfflineProvider(clock=StepClock()), "price_action",
                            rules_packet(inputs(views=DeskViews())))
     assert result.error_code == base.ERR_INTERNAL and result.latency_ms == 250
-    assert "RuntimeError" in caplog.text and "sk-or-" not in caplog.text
+    assert "RuntimeError" in caplog.text and "canary-secret" not in caplog.text
 
 
 @pytest.mark.anyio

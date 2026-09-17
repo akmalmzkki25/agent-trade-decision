@@ -8,9 +8,10 @@ import pytest
 
 from app.v6 import cycle_codes, cycle_types
 from app.v6.cycle_codes import (
-    CANDIDATE_VERDICTS, CYCLE_STATUSES, FEATURE_KEYS, GATE_BREAKER, GATE_CLOCK_SKEW, GATE_CODES,
-    GATE_HALTED, GATE_HOLD_REASONS, GATE_LLM_BUDGET, GATE_NEWS, GATE_SNAPSHOT_AGE, GATE_SPREAD,
-    GATE_WARMUP, SETUP_NAMES, VETO_CODES, HoldReason, candidate_id_for, hold_reason_for_gates,
+    CANDIDATE_VERDICTS, CYCLE_STATUSES, ENTER_STATUSES, FEATURE_KEYS, GATE_BREAKER,
+    GATE_CLOCK_SKEW, GATE_CODES, GATE_HALTED, GATE_HOLD_REASONS, GATE_NEWS, GATE_SNAPSHOT_AGE,
+    GATE_SPREAD, GATE_WARMUP, SETUP_NAMES, VETO_CODES, HoldReason, candidate_id_for,
+    hold_reason_for_gates,
 )
 from app.v6.schemas.agents import ID_PATTERN
 from app.v6.types import GateResult
@@ -28,6 +29,14 @@ def test_code_sets_are_unique_and_non_empty() -> None:
     assert set(GATE_HOLD_REASONS) <= set(GATE_CODES)
     assert len(VETO_CODES) == 5
     assert all(reason.value.startswith("APP-V6-") for reason in HoldReason)
+    assert ENTER_STATUSES == {"ENTER", "ENTER_SHADOW"} and ENTER_STATUSES <= set(CYCLE_STATUSES)
+    assert HoldReason.OPERATOR_TIMEOUT.value == "APP-V6-OPERATOR-TIMEOUT"
+
+
+def test_no_gate_depends_on_a_spend_budget() -> None:
+    assert len(GATE_CODES) == 14
+    assert not any("BUDGET" in code for code in GATE_CODES)
+    assert not any("BUDGET" in reason.value for reason in HoldReason)
 
 
 def test_every_public_code_is_re_exported_by_cycle_types() -> None:
@@ -48,7 +57,6 @@ def test_all_gates_passing_gives_no_hold_reason() -> None:
         (GATE_SNAPSHOT_AGE, HoldReason.STALE),
         (GATE_CLOCK_SKEW, HoldReason.STALE),
         (GATE_BREAKER, HoldReason.BREAKER),
-        (GATE_LLM_BUDGET, HoldReason.BUDGET),
         (GATE_SPREAD, HoldReason.GATE),
         (GATE_NEWS, HoldReason.GATE),
         ("SOMETHING_NEW", HoldReason.GATE),

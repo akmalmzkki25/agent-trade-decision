@@ -2,6 +2,35 @@
 {% block title %}V6 Desk · Qlip Adapter{% endblock %}
 
 {% block content %}
+{#- One table shell; rows come from static/v6.js (textContent only). -#}
+{% macro data_table(body_id, headers, empty_text) -%}
+<div class="overflow-x-auto">
+  <table class="min-w-full text-sm">
+    <thead>
+      <tr class="text-left text-[11px] uppercase tracking-wider text-slate-500">
+        {%- for label, align in headers %}
+        <th scope="col" class="{{ 'pl-5' if loop.first else 'pl-3' }} pr-3 py-2 font-medium whitespace-nowrap {{ align }}">{{ label }}</th>
+        {%- endfor %}
+      </tr>
+    </thead>
+    <tbody id="{{ body_id }}" class="divide-y divide-slate-800/60">
+      <tr><td colspan="{{ headers|length }}" class="px-5 py-8 text-center text-xs text-slate-500">{{ empty_text }}</td></tr>
+    </tbody>
+  </table>
+</div>
+{%- endmacro %}
+{% macro card_head(title, subtitle, aside_id='') -%}
+<div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-5 py-3">
+  <div>
+    <h3 class="text-sm font-semibold text-slate-100">{{ title }}</h3>
+    <p class="text-xs text-slate-500">{{ subtitle }}</p>
+  </div>
+  {%- if aside_id %}
+  <span id="{{ aside_id }}" class="font-mono text-[11px] text-slate-500">—</span>
+  {%- endif %}
+</div>
+{%- endmacro %}
+{% set R = 'text-right' %}
 <section id="v6-root" class="space-y-8"
          data-csrf="{{ csrf_nonce }}"
          data-poll-ms="{{ poll_interval_ms }}"
@@ -13,11 +42,13 @@
     <div class="pointer-events-none absolute -right-24 -top-24 h-64 w-64 rounded-full bg-emerald-500/5 blur-3xl"></div>
     <div class="relative flex flex-wrap items-start justify-between gap-6">
       <div class="max-w-2xl">
-        <p class="font-mono text-[11px] uppercase tracking-[0.2em] text-emerald-400/80">V6 · XAUUSD · M15 · <span id="v6-mode">{{ v6_mode }}</span></p>
+        <p class="font-mono text-[11px] uppercase tracking-[0.2em] text-emerald-400/80">V6 · XAUUSD · M15 · <span id="v6-mode">{{ v6_mode }}</span>
+          <span class="ml-2 rounded border border-amber-400/40 px-1.5 py-0.5 text-[10px] tracking-[0.15em] text-amber-300">demo only</span></p>
         <h1 class="mt-2 text-3xl font-semibold tracking-tight text-slate-50">Deliberation desk</h1>
         <p class="mt-2 text-sm leading-relaxed text-slate-400">
-          Every closed M15 bar is analysed and recorded. In shadow mode nothing is sent to the EA:
-          approved trades appear here as shadow intents only.
+          Every closed M15 bar is analysed and recorded. In shadow mode nothing reaches the EA.
+          In execute mode an armed session sends approved trades to the demo account as signed
+          intents, and each position runs to its broker-side SL, TP or the time barrier.
         </p>
       </div>
       <div class="flex flex-col items-end gap-3">
@@ -56,89 +87,100 @@
     {% endfor %}
   </div>
 
-  <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
-    <!-- Gate table of the newest cycle -->
-    <section class="rounded-xl border border-slate-800 bg-slate-900/40 lg:col-span-2">
-      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-5 py-3">
-        <div>
-          <h2 class="text-sm font-semibold text-slate-100">Hard gates · last cycle</h2>
-          <p class="text-xs text-slate-500">Evaluated in order before any agent is asked. One failure holds the bar.</p>
-        </div>
-        <span id="v6-last-cycle" class="font-mono text-[11px] text-slate-500">—</span>
-      </div>
-      <div class="overflow-x-auto">
-        <table class="min-w-full text-sm">
-          <thead>
-            <tr class="text-left text-[11px] uppercase tracking-wider text-slate-500">
-              <th class="px-5 py-2 font-medium">Gate</th>
-              <th class="px-3 py-2 font-medium">Result</th>
-              <th class="px-3 py-2 text-right font-medium">Value</th>
-              <th class="px-3 py-2 text-right font-medium">Limit</th>
-              <th class="px-3 py-2 font-medium">Detail</th>
-            </tr>
-          </thead>
-          <tbody id="v6-gates" class="divide-y divide-slate-800/60">
-            <tr><td colspan="5" class="px-5 py-8 text-center text-xs text-slate-500">No cycle recorded yet.</td></tr>
-          </tbody>
-        </table>
-      </div>
+  <!-- Trading: what the operator decided, what the EA did, what it earned -->
+  <section class="space-y-4" aria-labelledby="v6-trading-heading">
+    <div class="flex flex-wrap items-end justify-between gap-2 border-b border-slate-800 pb-2">
+      <h2 id="v6-trading-heading" class="text-lg font-semibold tracking-tight text-slate-50">Trading</h2>
+      <p class="text-[11px] text-slate-500">Demo account only · one position · no layering · SL and TP at the broker</p>
+    </div>
+
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+      <section class="rounded-xl border border-slate-800 bg-slate-900/40">
+        {{ card_head('Session & operator', 'Who may decide, and what is waiting for a decision.') }}
+        <div id="v6-operator" class="px-5 py-4"></div>
+      </section>
+      <section class="rounded-xl border border-slate-800 bg-slate-900/40 lg:col-span-2">
+        {{ card_head('Outcomes', 'Realised results against the budgeted risk; n is shown with every figure.', 'v6-outcome-window') }}
+        <div id="v6-outcome-stats" class="grid grid-cols-2 gap-px bg-slate-800/60 md:grid-cols-3"></div>
+        <p id="v6-outcome-note" class="px-5 py-3 text-[11px] leading-relaxed text-slate-500"></p>
+      </section>
+    </div>
+
+    <section class="rounded-xl border border-slate-800 bg-slate-900/40">
+      {{ card_head('Intents', 'Every order the adapter published, through its lifecycle.') }}
+      {{ data_table('v6-intents', [('Created', ''), ('Intent', ''), ('Order', ''), ('Entry', R), ('SL', R), ('TP', R), ('Lots', R), ('Risk', R), ('Status', ''), ('Lifecycle', ''), ('Ticket', R), ('P&L', R)], 'No intent published yet. Shadow mode never publishes one.') }}
     </section>
 
-    <div class="space-y-6">
-      <section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-        <h2 class="text-sm font-semibold text-slate-100">Circuit breakers</h2>
-        <p class="text-xs text-slate-500">Survive restarts; reset is manual.</p>
-        <div id="v6-breakers" class="mt-3"></div>
+    <div class="grid grid-cols-1 gap-6 xl:grid-cols-2">
+      <section class="rounded-xl border border-slate-800 bg-slate-900/40">
+        {{ card_head('Executions', 'What the EA reported doing with each intent.') }}
+        {{ data_table('v6-executions', [('Received', ''), ('Intent', ''), ('Status', ''), ('Reason', ''), ('Ticket', R), ('Fill', R), ('Slip', R), ('Spread', R), ('Latency', R)], 'No execution report yet.') }}
       </section>
-      <section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-        <div class="flex items-baseline justify-between">
-          <h2 class="text-sm font-semibold text-slate-100">Why the desk held</h2>
-          <span class="text-[11px] text-slate-500">last 7 days</span>
+      <section class="rounded-xl border border-slate-800 bg-slate-900/40">
+        {{ card_head('Open V6 orders', 'Positions and pending orders in the newest snapshot.', 'v6-orders-asof') }}
+        {{ data_table('v6-positions', [('Ticket', ''), ('Intent', ''), ('Side', ''), ('Lots', R), ('Open', R), ('SL', R), ('TP', R), ('P&L', R), ('MAE/MFE', R), ('Opened', '')], 'No open V6 position.') }}
+        <div class="border-t border-slate-800">
+          {{ data_table('v6-orders', [('Ticket', ''), ('Intent', ''), ('Type', ''), ('Price', R), ('SL', R), ('TP', R), ('Lots', R), ('Expires', '')], 'No pending V6 order.') }}
         </div>
-        <div id="v6-hold-reasons" class="mt-3"></div>
       </section>
     </div>
-  </div>
 
-  <!-- Discussion transcript -->
-  <section class="space-y-3">
-    <div class="flex items-end justify-between gap-4">
-      <div>
-        <h2 class="text-sm font-semibold text-slate-100">Discussion transcript</h2>
-        <p class="text-xs text-slate-500">Newest cycles first. Agent notes are untrusted text and are shown in quotes.</p>
-      </div>
-      <span class="text-[11px] text-slate-500">Direction always comes from a detected candidate.</span>
-    </div>
-    <div id="v6-cycles" class="space-y-4"></div>
+    <section class="rounded-xl border border-slate-800 bg-slate-900/40">
+      {{ card_head('Closed positions', 'Realised R beside the counterfactual label of the chosen candidate.') }}
+      {{ data_table('v6-outcomes', [('Closed', ''), ('Intent', ''), ('Agent', ''), ('Side', ''), ('Exit', ''), ('Net P&L', R), ('R', R), ('Label', ''), ('Gap', R)], 'No V6 position has closed yet.') }}
+    </section>
   </section>
 
-  <!-- Counterfactual labels -->
-  <section class="rounded-xl border border-slate-800 bg-slate-900/40">
-    <div class="border-b border-slate-800 px-5 py-3">
-      <h2 class="text-sm font-semibold text-slate-100">Candidate labels · 30 days</h2>
-      <p class="text-xs text-slate-500">Triple-barrier outcome of every detected candidate, taken or not.</p>
+  <!-- Deliberation: gates, breakers, holds, transcript, labels -->
+  <section class="space-y-6" aria-labelledby="v6-deliberation-heading">
+    <div class="flex flex-wrap items-end justify-between gap-2 border-b border-slate-800 pb-2">
+      <h2 id="v6-deliberation-heading" class="text-lg font-semibold tracking-tight text-slate-50">Deliberation</h2>
+      <p class="text-[11px] text-slate-500">Direction always comes from a detected candidate.</p>
     </div>
-    <div class="overflow-x-auto">
-      <table class="min-w-full text-sm">
-        <thead>
-          <tr class="text-left text-[11px] uppercase tracking-wider text-slate-500">
-            <th class="px-5 py-2 font-medium">Setup</th>
-            <th class="px-3 py-2 font-medium">Verdict</th>
-            <th class="px-3 py-2 font-medium">Label</th>
-            <th class="px-3 py-2 font-medium">Outcome</th>
-            <th class="px-3 py-2 text-right font-medium">n</th>
-            <th class="px-3 py-2 text-right font-medium">Mean R</th>
-          </tr>
-        </thead>
-        <tbody id="v6-labels" class="divide-y divide-slate-800/60">
-          <tr><td colspan="6" class="px-5 py-8 text-center text-xs text-slate-500">No candidates yet.</td></tr>
-        </tbody>
-      </table>
+
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+      <!-- Gate table of the newest cycle -->
+      <section class="rounded-xl border border-slate-800 bg-slate-900/40 lg:col-span-2">
+        {{ card_head('Hard gates · last cycle', 'Evaluated in order before any agent is asked. One failure holds the bar.', 'v6-last-cycle') }}
+        {{ data_table('v6-gates', [('Gate', ''), ('Result', ''), ('Value', R), ('Limit', R), ('Detail', '')], 'No cycle recorded yet.') }}
+      </section>
+
+      <div class="space-y-6">
+        <section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+          <h3 class="text-sm font-semibold text-slate-100">Circuit breakers</h3>
+          <p class="text-xs text-slate-500">Survive restarts; reset is manual.</p>
+          <div id="v6-breakers" class="mt-3"></div>
+          <div id="v6-realised" class="mt-4 border-t border-slate-800 pt-3"></div>
+        </section>
+        <section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+          <div class="flex items-baseline justify-between">
+            <h3 class="text-sm font-semibold text-slate-100">Why the desk held</h3>
+            <span class="text-[11px] text-slate-500">last 7 days</span>
+          </div>
+          <div id="v6-hold-reasons" class="mt-3"></div>
+        </section>
+      </div>
     </div>
+
+    <!-- Discussion transcript -->
+    <section class="space-y-3">
+      <div>
+        <h3 class="text-sm font-semibold text-slate-100">Discussion transcript</h3>
+        <p class="text-xs text-slate-500">Newest cycles first. Agent notes are untrusted text and are shown in quotes.</p>
+      </div>
+      <div id="v6-cycles" class="space-y-4"></div>
+    </section>
+
+    <!-- Counterfactual labels -->
+    <section class="rounded-xl border border-slate-800 bg-slate-900/40">
+      {{ card_head('Candidate labels · 30 days', 'Triple-barrier outcome of every detected candidate, taken or not.') }}
+      {{ data_table('v6-labels', [('Setup', ''), ('Verdict', ''), ('Label', ''), ('Outcome', ''), ('n', R), ('Mean R', R)], 'No candidates yet.') }}
+    </section>
   </section>
 </section>
 {% endblock %}
 
 {% block scripts %}
+<script src="/v6/static/v6_render.js" defer></script>
 <script src="/v6/static/v6.js" defer></script>
 {% endblock %}

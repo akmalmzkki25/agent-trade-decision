@@ -1,9 +1,10 @@
 """
-Phase 2 persistence: cycles, agent views, candidates, breakers and sessions.
+Runtime persistence: cycles, agent views, candidates, breakers, sessions and intents.
 
 Same SQLite file as `LedgerV6`, own connection (WAL, busy_timeout), one lock,
 bound parameters only. Records returned here are frozen; JSON columns refuse
-credential-shaped keys exactly like the V6 control log does.
+credential-shaped keys exactly like the V6 control log does. Published intents
+live in `self.intents` (`ledger_intents.IntentStore`, same connection and lock).
 """
 
 from __future__ import annotations
@@ -23,9 +24,12 @@ from typing import Final, Literal
 
 from .cycle_types import CandidateAssessment, CycleResult, ViewRecord
 from .ledger_cycles_schema import (
-    CYCLE_SCHEMA_DDL, AgentViewRecord, BreakerRecord, CandidateRecord, CycleRecord, CycleSummary,
-    CycleWithViews, LabelStat, SessionRecord, SessionStart,
+    CYCLE_COLUMN_MIGRATIONS, CYCLE_SCHEMA_DDL, DISARM_SET as _DISARM_SET,
+    SESSION_COLUMNS as _SESSION_COLS, AgentViewRecord, BreakerRecord, CandidateRecord,
+    CycleRecord, CycleSummary, CycleWithViews, LabelStat, SessionRecord, SessionStart,
+    apply_schema,
 )
+from .ledger_intents import INTENT_SCHEMA_DDL, IntentStore
 from .ledger_v6 import BUSY_TIMEOUT_MS, _find_secret_key  # shared credential-key rule
 
 logger = logging.getLogger(__name__)
@@ -60,8 +64,6 @@ _CANDIDATE_COLS: Final[str] = (
     " features_json, verdict, label_status, outcome, outcome_r, labeled_at, available_from")
 _BREAKER_COLS: Final[str] = (
     "scope, period_key, tripped, reason, tripped_at, reset_at, reset_by")
-_SESSION_COLS: Final[str] = (
-    "session_id, trading_day, backend, mode, started_at, stopped_at, stop_reason, armed")
 
 
 def encode_json(value: Mapping[str, object], max_chars: int) -> str:
@@ -139,12 +141,13 @@ class LedgerCycles:
             self._conn.execute("PRAGMA journal_mode=WAL")
             # PRAGMA values cannot be bound; this one is a module constant.
             self._conn.execute(f"PRAGMA busy_timeout={int(BUSY_TIMEOUT_MS)}")
-            for ddl in CYCLE_SCHEMA_DDL:
-                self._conn.execute(ddl)
+            apply_schema(self._conn, (*CYCLE_SCHEMA_DDL, *INTENT_SCHEMA_DDL),
+                         CYCLE_COLUMN_MIGRATIONS)
         except sqlite3.Error:
             logger.error("ledger_cycles: schema initialisation failed for %s", self.path)
             self._conn.close()
             raise
+        self.intents = IntentStore(self._write, self._fetchall)
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
@@ -236,7 +239,7 @@ class LedgerCycles:
         return CycleSummary(
             total=sum(by_status.values()), by_status=MappingProxyType(by_status),
             by_hold_reason=MappingProxyType(by_reason),
-            shadow_entries=by_status.get("ENTER_SHADOW", 0))
+            shadow_entries=by_status.get("ENTER_SHADOW", 0), entries=by_status.get("ENTER", 0))
 
     def hold_reason_histogram(self, since_bar_epoch: int) -> Mapping[str, int]:
         return self.cycle_summary(since_bar_epoch).by_hold_reason
@@ -328,10 +331,11 @@ class LedgerCycles:
             raise ValueError("trading_day must be YYYY-MM-DD")
         session_id = secrets.token_hex(SESSION_ID_BYTES)
         params = (session_id, trading_day, _key("backend", backend), _key("mode", mode),
-                  started_at, int(armed))
+                  started_at, int(armed), started_at if armed else None)
         with self._write() as conn:
             created = conn.execute(
-                f"INSERT INTO v6_sessions ({_SESSION_COLS}) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)"
+                f"INSERT INTO v6_sessions ({_SESSION_COLS})"
+                " VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, NULL)"
                 " ON CONFLICT DO NOTHING", params).rowcount == 1
         active = self.active_session()
         if active is None:
@@ -342,15 +346,26 @@ class LedgerCycles:
 
     def stop_session(self, session_id: str, *, stopped_at: float, reason: str) -> bool:
         """Close an active session (also disarms it); False if not active."""
+        reason = _key("reason", reason)
         return self._execute(
-            "UPDATE v6_sessions SET stopped_at = ?, stop_reason = ?, armed = 0"
+            f"UPDATE v6_sessions SET stopped_at = ?, stop_reason = ?, {_DISARM_SET}"
             " WHERE session_id = ? AND stopped_at IS NULL",
-            (stopped_at, _key("reason", reason), session_id)) == 1
+            (stopped_at, reason, stopped_at, reason, session_id)) == 1
 
-    def set_session_armed(self, session_id: str, armed: bool) -> bool:
+    def set_session_armed(self, session_id: str, armed: bool, *, at: float,
+                          reason: str = "operator") -> bool:
+        """Arm or disarm an active session; False if it is not active.
+
+        Arming keeps the first `armed_at` while the session stays armed; disarming
+        records `disarmed_at` and `reason` only when the session was armed.
+        """
+        if armed:
+            return self._execute(
+                "UPDATE v6_sessions SET armed_at = CASE WHEN armed = 1 THEN armed_at ELSE ? END,"
+                " armed = 1 WHERE session_id = ? AND stopped_at IS NULL", (at, session_id)) == 1
         return self._execute(
-            "UPDATE v6_sessions SET armed = ? WHERE session_id = ? AND stopped_at IS NULL",
-            (int(armed), session_id)) == 1
+            f"UPDATE v6_sessions SET {_DISARM_SET} WHERE session_id = ? AND stopped_at IS NULL",
+            (at, _key("reason", reason), session_id)) == 1
 
     def active_session(self) -> SessionRecord | None:
         rows = self._fetchall(

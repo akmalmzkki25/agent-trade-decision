@@ -7,10 +7,14 @@ single-instance lock, hydrates the bar cache and keeps the lock alive with a
 heartbeat. Until that succeeds, and again after the lock is lost, every
 `/v6/*` route answers 404 through `require_active_container`.
 
-Phase 2 adds the runtime parts (`runtime.wiring`): the cycle ledger, the control
-plane, the deliberation worker and the watchdog. `start_runtime` starts the
-worker and the watchdog beside the heartbeat, and only once the lock is held, so
-a second process on the same database never runs a worker.
+The runtime parts (`runtime.wiring`) are the cycle ledger, the control plane,
+the operator queue, the intent book and execution desk, the deliberation worker
+and the watchdog. `start_runtime` reconciles the intent ledger (a restart loses
+the in-memory intent drafts), then starts the worker and the watchdog beside the
+heartbeat, and only once the lock is held, so a second process on the same
+database never runs a worker. A lock left behind by another holder means that
+runtime crashed: an armed session is then disarmed before anything starts
+(plan section 4: execution starts DISARMED unless the last stop was clean).
 
 A container serves one app lifespan: shutdown closes its ledger connections.
 """
@@ -22,7 +26,7 @@ import logging
 import os
 import socket
 import sqlite3
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from os import PathLike
@@ -38,6 +42,7 @@ from .ledger_cycles import LedgerCycles
 from .ledger_v6 import LedgerV6
 from .market.bar_store import BarStore
 from .runtime.ea_state import EaState
+from .runtime.recovery import disarm_after_unclean_stop, recover_intents
 from .runtime.watchdog import WATCHDOG_INTERVAL_S
 from .runtime.wiring import CoreParts, RuntimeParts, build_runtime_parts
 
@@ -194,8 +199,10 @@ async def _audit(container: V6Container, action: str) -> None:
         logger.exception("v6 control log write failed for %s", action)
 
 
-async def _acquire(container: V6Container) -> bool:
+async def _acquire(container: V6Container) -> tuple[bool, bool]:
+    """(the lock is ours, a crashed runtime had left its lock behind)."""
     ledger = container.ledger_v6
+    previous = await asyncio.to_thread(ledger.read_lock)
     acquired = await asyncio.to_thread(
         ledger.acquire_lock, container.holder, os.getpid(),
         container.clock.now_epoch(), LOCK_STALE_AFTER_S)
@@ -203,7 +210,27 @@ async def _acquire(container: V6Container) -> bool:
         current = await asyncio.to_thread(ledger.read_lock)
         owner = "unknown" if current is None else f"{current.holder} (pid {current.pid})"
         logger.error("v6 runtime lock is held by %s; V6 stays disabled in this process", owner)
-    return acquired
+    crashed = previous is not None and previous.holder != container.holder
+    return acquired, acquired and crashed
+
+
+async def _prepare(container: V6Container, crashed: bool) -> Mapping[str, int] | None:
+    """Hydrate the bar cache and, after a crash, disarm the session.
+
+    None (the lock released, V6 off) when storage fails: the runtime never starts
+    with a session that should have been disarmed.
+    """
+    try:
+        counts = await asyncio.to_thread(container.bar_store.warm)
+        if crashed:
+            await disarm_after_unclean_stop(container.parts.ledger_cycles,
+                                            container.clock.now_epoch())
+    except sqlite3.Error:
+        logger.exception("v6 runtime preparation failed (bar cache or session); "
+                         "V6 stays disabled")
+        await _release(container)
+        return None
+    return counts
 
 
 async def _release(container: V6Container) -> None:
@@ -228,22 +255,23 @@ def _runtime_tasks(container: V6Container) -> tuple[asyncio.Task[None], ...]:
 
 
 async def start_runtime(container: V6Container) -> bool:
-    """Take the lock, hydrate the bar cache, start heartbeat, worker and watchdog.
+    """Take the lock, hydrate the bar cache, disarm after a crash, recover the intents,
+    then start heartbeat, worker and watchdog.
 
     False leaves V6 off in this process (no task is started).
     """
     try:
-        if not await _acquire(container):
-            return False
+        acquired, crashed = await _acquire(container)
     except sqlite3.Error:
         logger.exception("v6 runtime lock could not be taken; V6 stays disabled")
         return False
-    try:
-        counts = await asyncio.to_thread(container.bar_store.warm)
-    except sqlite3.Error:
-        logger.exception("v6 bar cache hydration failed; V6 stays disabled")
-        await _release(container)
+    if not acquired:
         return False
+    counts = await _prepare(container, crashed)
+    if counts is None:
+        return False
+    await recover_intents(container.parts.intent_book, container.ledger_v6.path,
+                          container.clock.now_epoch(), magic=container.settings.magic)
     container.switch.turn_on(*_runtime_tasks(container))
     await _audit(container, "runtime_start")
     logger.info("v6 runtime started (holder=%s mode=%s backend=%s cached_bars=%s tasks=%s)",

@@ -16,14 +16,14 @@ from app.v6.deliberation.context_builder import (
 )
 from app.v6.deliberation.cycle_draft import CycleDraft
 from app.v6.deliberation.engine import rules_provider_for
-from app.v6.deliberation.panel import rules_baseline, run_panel
+from app.v6.deliberation.panel import Baseline, rules_baseline, run_panel, unavailable_panel
 from app.v6.deliberation.shadow import shadow_order
-from app.v6.providers.base import PROVIDER_STATUS_FAILED, PROVIDER_STATUS_OK
+from app.v6.providers.base import ERR_UNAVAILABLE, PROVIDER_STATUS_FAILED, PROVIDER_STATUS_OK
 from app.v6.schemas.agents import StructureView
 from app.v6.schemas.snapshot import ProbeBlock
 
 from . import engine_fixtures_v6 as ef
-from .cycle_fixtures_v6 import protocol_decision, structure_payload
+from .cycle_fixtures_v6 import protocol_decision, shadow_intent, structure_payload
 
 PROBE = {"book_depth": 0, "trade_ticks_count": 0, "real_volume_count": 0,
          "dom_synthetic": False, "gmt_offset_s": 10800, "dst_active": True,
@@ -152,3 +152,21 @@ def test_a_draft_clamps_a_backwards_clock() -> None:
     assert len(outcome.result.hold_detail) == 300
     assert outcome.calendar is None and outcome.context is None
     assert replace(draft).bare() == draft
+
+
+@pytest.mark.parametrize(("status", "kept"), [("ENTER", True), ("ENTER_SHADOW", True),
+                                              ("LATE", False)])
+def test_a_draft_keeps_the_sized_order_only_for_entries(status: str, kept: bool) -> None:
+    intent = shadow_intent()
+    draft = CycleDraft(request=ef.request(), backend="operator", started_at=ef.RECEIVED)
+    reason = None if kept else HoldReason.LATE
+    result = draft.update(shadow_intent=intent).finish(status, reason, "", ef.RECEIVED).result
+    assert (result.shadow_intent is intent) is kept and result.status == status
+
+
+def test_the_unavailable_panel_names_the_operator() -> None:
+    panel = unavailable_panel(Baseline(views=DeskViews(), records=()))
+    assert (panel.provider, panel.status, panel.decision) == (
+        "operator", PROVIDER_STATUS_FAILED, None)
+    assert [(r.role, r.source, r.error_code) for r in panel.records] == [
+        ("chief", "operator", ERR_UNAVAILABLE)]

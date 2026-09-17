@@ -141,7 +141,7 @@ async def test_an_unreadable_halt_file_fails_closed(container: V6Container,
 
 # --- breakers -------------------------------------------------------------------------------
 @pytest.mark.anyio
-async def test_a_breaker_trip_queues_cancel_pending_once(
+async def test_a_breaker_trip_queues_flatten_once(
         container: V6Container, clock: FakeClock, caplog: pytest.LogCaptureFixture) -> None:
     dog = watchdog(container)
     mark(container, DAY_START + 60, 2000.0)
@@ -150,7 +150,7 @@ async def test_a_breaker_trip_queues_cancel_pending_once(
         state = await dog.tick()
     assert (state.status, state.breaker.tripped) == ("BREAKER", True)
     pending = container.parts.control.commands.current(clock.epoch)
-    assert (pending.command, pending.reason) == ("CANCEL_PENDING", "breaker_trip")
+    assert (pending.command, pending.reason) == ("FLATTEN", "breaker_trip")
     assert "breaker tripped" in caplog.text
     first_request = pending.requested_at
     clock.advance(5)

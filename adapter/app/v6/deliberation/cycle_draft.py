@@ -10,10 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Final
 
-from ..cycle_codes import CycleStatus, HoldReason
+from ..cycle_codes import ENTER_STATUSES, CycleStatus, HoldReason
 from ..cycle_types import (
-    CalendarAssessment, CalendarEvent, CandidateAssessment, CycleResult, CycleTimings,
-    DeskViews, MarketContext, ProtocolDecision, ShadowIntent, ViewRecord,
+    PUBLISHED_STATUS, CalendarAssessment, CalendarEvent, CandidateAssessment, CycleResult,
+    CycleTimings, DeskViews, MarketContext, ProtocolDecision, ShadowIntent, ViewRecord,
 )
 from ..providers.base import MS_PER_SECOND, PROVIDER_STATUS_SKIPPED, RULES_PROVIDER_NAME
 from ..risk.gates import RuntimeGateState
@@ -35,6 +35,7 @@ class CycleRequest:
     session_id: str | None = None
     carried_events: tuple[CalendarEvent, ...] = ()
     probe: ProbeBlock | None = None
+    session_armed: bool = False          # the active session may publish (execute mode)
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ class CycleDraft:
     sizing: SizingResult | None = None
     refusal: Refusal | None = None
     shadow_intent: ShadowIntent | None = None
+    intent_id: str | None = None
 
     def update(self, **changes: object) -> "CycleDraft":
         return replace(self, **changes)  # type: ignore[arg-type]
@@ -89,7 +91,8 @@ class CycleDraft:
             gates=self.gates, candidates=self.candidates, views=self.views,
             view_records=self.view_records, decision=self.decision, protocol=self.protocol,
             exit_plan=self.exit_plan, sizing=self.sizing, refusal=self.refusal,
-            shadow_intent=self.shadow_intent if status == "ENTER_SHADOW" else None,
+            shadow_intent=self.shadow_intent if status in ENTER_STATUSES else None,
+            intent_id=self.intent_id if status == PUBLISHED_STATUS else None,
         )
         calendar = None if self.context is None else self.context.calendar
         return CycleOutcome(result=result, calendar=calendar, context=self.context)

@@ -29,7 +29,7 @@ def test_hold_reason_values_are_stable_codes() -> None:
     assert str(HoldReason.LATE) == "APP-V6-LATE"
     assert all(reason.value.startswith("APP-V6-") for reason in HoldReason)
     assert len({reason.value for reason in HoldReason}) == len(HoldReason)
-    assert CYCLE_STATUSES == ("HOLD", "ENTER_SHADOW", "LATE", "ABORTED", "ERROR")
+    assert CYCLE_STATUSES == ("HOLD", "ENTER", "ENTER_SHADOW", "LATE", "ABORTED", "ERROR")
 
 
 @pytest.mark.parametrize("status", ["HOLD", "LATE", "ABORTED", "ERROR"])
@@ -43,10 +43,11 @@ def test_non_entry_status_needs_a_hold_reason(status: str) -> None:
         replace(result, shadow_intent=shadow_intent())
 
 
-def test_enter_shadow_needs_an_intent_and_no_hold_reason() -> None:
-    result = enter_result()
+@pytest.mark.parametrize("status", ["ENTER_SHADOW", "ENTER"])
+def test_entry_statuses_need_an_intent_and_no_hold_reason(status: str) -> None:
+    result = replace(enter_result(), status=status)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=status):
         replace(result, shadow_intent=None)
     with pytest.raises(ValueError):
         replace(result, hold_reason=HoldReason.VETO)
@@ -136,8 +137,8 @@ def test_view_record_from_provider_result() -> None:
                                 tokens_out=3, cost_usd=0.01)
     failed = ProviderResult.failure(ERR_TIMEOUT, latency_ms=20_000)
 
-    record = ViewRecord.from_result("chief", "openrouter", ok)
-    failure = ViewRecord.from_result("news_risk", "openrouter", failed)
+    record = ViewRecord.from_result("chief", "operator", ok)
+    failure = ViewRecord.from_result("news_risk", "operator", failed)
 
     assert (record.view, record.model, record.tokens_in, record.cost_usd) == \
         (ok.view, "m", 7, 0.01)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import io
 import json
 import socket
@@ -13,7 +12,6 @@ import urllib.parse
 from collections.abc import Iterator, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
@@ -22,24 +20,12 @@ from fastapi.testclient import TestClient
 from app.routes import v6_ea
 from app.v6.clock import FakeClock
 
+from .operator_cli_fixtures_v6 import OPERATOR_SCRIPT as SCRIPT
+from .operator_cli_fixtures_v6 import cli
 from .payloads_v6 import RECEIVED_AT
 from .test_v6_dashboard import (
     LOOPBACK, TOKEN, ControlApp, build_control_app, control_settings, record_demo_poll,
 )
-
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "v6_operator.py"
-
-
-def _load_cli() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("v6_operator_cli", SCRIPT)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module  # dataclasses resolve annotations through sys.modules
-    spec.loader.exec_module(module)
-    return module
-
-
-cli = _load_cli()
 
 
 class ClientTransport:

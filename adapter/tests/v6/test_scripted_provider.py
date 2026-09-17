@@ -79,7 +79,7 @@ def assert_inert(view: BaseModel) -> None:
 
 def test_provider_satisfies_the_protocol() -> None:
     assert isinstance(ScriptedProvider(), AgentProvider)
-    assert ScriptedProvider(name="openrouter-fake").name == "openrouter-fake"
+    assert ScriptedProvider(name="panel-fake").name == "panel-fake"
 
 
 @pytest.mark.anyio
@@ -102,7 +102,7 @@ async def test_valid_json_becomes_a_view_with_usage(role: str) -> None:
     (ScriptedOutcome.json_payload({**VALID["chief"], "confidence": float("nan")}), INVALID),
     (ScriptedOutcome.json_payload({**VALID["chief"], "lots": 10}), INVALID),
     (ScriptedOutcome.json_payload(chief_payload(candidate_id="x-1")), UNKNOWN),
-    (ScriptedOutcome.error(base.ERR_RATE_LIMITED), base.ERR_RATE_LIMITED),
+    (ScriptedOutcome.error(base.ERR_UNAVAILABLE), base.ERR_UNAVAILABLE),
     (ScriptedOutcome.timeout(), base.ERR_TIMEOUT),
     (ScriptedOutcome.timeout(0.01), base.ERR_TIMEOUT),
 ])
@@ -129,7 +129,7 @@ async def test_a_hanging_call_is_cut_by_ask_safely() -> None:
 @pytest.mark.anyio
 async def test_exception_outcome_raises_and_ask_safely_contains_it(
         caplog: pytest.LogCaptureFixture) -> None:
-    secret = "sk-or-v1-scripted-secret"
+    secret = "canary-secret-scripted-provider"
     provider = ScriptedProvider({"chief": [ScriptedOutcome.exception(secret)] * 2})
     with pytest.raises(ScriptedProviderError):
         await ask(provider)
@@ -154,12 +154,12 @@ async def test_rules_outcome_and_exhausted_fallback_use_the_offline_provider() -
 
 @pytest.mark.anyio
 async def test_queues_drain_in_order_and_record_calls() -> None:
-    provider = ScriptedProvider({"chief": [ScriptedOutcome.error(base.ERR_AUTH),
+    provider = ScriptedProvider({"chief": [ScriptedOutcome.error(base.ERR_DISABLED),
                                            ScriptedOutcome.json_payload(VALID["chief"])]})
     provider.enqueue("chief", ScriptedOutcome.timeout())
     assert provider.remaining("chief") == 3 and provider.remaining("trader") == 0
     codes = [(await ask(provider, deadline=77.0)).error_code for _ in range(4)]
-    assert codes == [base.ERR_AUTH, base.ERR_NONE, base.ERR_TIMEOUT, base.ERR_EMPTY]
+    assert codes == [base.ERR_DISABLED, base.ERR_NONE, base.ERR_TIMEOUT, base.ERR_EMPTY]
     assert provider.remaining("chief") == 0
     assert [(c.role, c.schema_name, c.deadline_epoch) for c in provider.calls] == [
         ("chief", "ChiefDecision", 77.0)] * 4

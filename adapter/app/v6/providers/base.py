@@ -5,6 +5,10 @@ A provider turns one role packet into one validated view. Every failure is
 reported as an `error_code` on the result; a provider must never raise into the
 orchestrator. `ask_safely` enforces that at the call site as well, so a buggy
 provider degrades to a HOLD instead of killing the cycle.
+
+Backends: `rules` (OfflineProvider, always the R0 baseline) and `operator` (an
+operator agent's submitted decision; its views are recorded with source
+OPERATOR_PROVIDER_NAME and the agent name in the view record's `model`).
 """
 
 from __future__ import annotations
@@ -30,23 +34,15 @@ ERR_INVALID_OUTPUT: Final[str] = "PROVIDER_INVALID_OUTPUT"
 ERR_OUTPUT_TOO_LARGE: Final[str] = "PROVIDER_OUTPUT_TOO_LARGE"
 ERR_UNKNOWN_ID: Final[str] = "PROVIDER_UNKNOWN_ID"
 ERR_EMPTY: Final[str] = "PROVIDER_EMPTY"
-ERR_TRUNCATED: Final[str] = "PROVIDER_TRUNCATED"
 ERR_BAD_REQUEST: Final[str] = "PROVIDER_BAD_REQUEST"
-ERR_AUTH: Final[str] = "PROVIDER_AUTH"
-ERR_PAYMENT: Final[str] = "PROVIDER_PAYMENT"
-ERR_RATE_LIMITED: Final[str] = "PROVIDER_RATE_LIMITED"
-ERR_UNAVAILABLE: Final[str] = "PROVIDER_UNAVAILABLE"
-ERR_TRANSPORT: Final[str] = "PROVIDER_TRANSPORT"
-ERR_BUDGET_EXHAUSTED: Final[str] = "PROVIDER_BUDGET_EXHAUSTED"
+ERR_UNAVAILABLE: Final[str] = "PROVIDER_UNAVAILABLE"      # no decision channel (no operator)
 ERR_UNSUPPORTED_ROLE: Final[str] = "PROVIDER_UNSUPPORTED_ROLE"
 ERR_DISABLED: Final[str] = "PROVIDER_DISABLED"
-ERR_NOT_BUILT: Final[str] = "PROVIDER_NOT_BUILT"
 ERR_INTERNAL: Final[str] = "PROVIDER_INTERNAL"
 ERROR_CODES: Final[frozenset[str]] = frozenset({
     ERR_TIMEOUT, ERR_DEADLINE_PASSED, ERR_INVALID_OUTPUT, ERR_OUTPUT_TOO_LARGE,
-    ERR_UNKNOWN_ID, ERR_EMPTY, ERR_TRUNCATED, ERR_BAD_REQUEST, ERR_AUTH, ERR_PAYMENT,
-    ERR_RATE_LIMITED, ERR_UNAVAILABLE, ERR_TRANSPORT, ERR_BUDGET_EXHAUSTED,
-    ERR_UNSUPPORTED_ROLE, ERR_DISABLED, ERR_NOT_BUILT, ERR_INTERNAL,
+    ERR_UNKNOWN_ID, ERR_EMPTY, ERR_BAD_REQUEST, ERR_UNAVAILABLE, ERR_UNSUPPORTED_ROLE,
+    ERR_DISABLED, ERR_INTERNAL,
 })
 
 # --- CycleResult.provider_status values -------------------------------------
@@ -54,13 +50,13 @@ PROVIDER_STATUS_OK: Final[str] = "ok"
 PROVIDER_STATUS_PARTIAL: Final[str] = "partial"          # some roles fell back to rules
 PROVIDER_STATUS_FAILED: Final[str] = "failed"            # PA or Chief unusable
 PROVIDER_STATUS_SKIPPED: Final[str] = "skipped"          # tier 0 held; no provider call
-PROVIDER_STATUS_BACKEND_NOT_BUILT: Final[str] = "backend_not_built"
 PROVIDER_STATUSES: Final[frozenset[str]] = frozenset({
     PROVIDER_STATUS_OK, PROVIDER_STATUS_PARTIAL, PROVIDER_STATUS_FAILED,
-    PROVIDER_STATUS_SKIPPED, PROVIDER_STATUS_BACKEND_NOT_BUILT,
+    PROVIDER_STATUS_SKIPPED,
 })
 
 RULES_PROVIDER_NAME: Final[str] = "rules"
+OPERATOR_PROVIDER_NAME: Final[str] = "operator"
 MS_PER_SECOND: Final[int] = 1000
 
 

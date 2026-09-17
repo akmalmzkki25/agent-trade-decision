@@ -1,4 +1,4 @@
-"""The engine with an injected (Phase 3 style) panel: fallbacks, failures and vetoes."""
+"""The engine with an injected panel: fallbacks, failures and vetoes."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def scripted(name: str = "openrouter", **overrides: ScriptedOutcome) -> ScriptedProvider:
+def scripted(name: str = "operator", **overrides: ScriptedOutcome) -> ScriptedProvider:
     script = {role: [overrides.get(role, ScriptedOutcome.json_payload(payload))]
               for role, payload in PAYLOADS.items()}
     return ScriptedProvider(script, name=name)
@@ -56,12 +56,12 @@ async def test_a_healthy_panel_decides_and_is_recorded_beside_the_baseline() -> 
     panel = scripted()
     result = (await make_engine(panel).run(ef.request())).result
     assert result.status == "ENTER_SHADOW"
-    assert (result.provider, result.provider_status) == ("openrouter", PROVIDER_STATUS_OK)
-    assert result.shadow_intent.source == "openrouter"
+    assert (result.provider, result.provider_status) == ("operator", PROVIDER_STATUS_OK)
+    assert result.shadow_intent.source == "operator"
     sources = [(r.role, r.source) for r in result.view_records]
     assert sources[:4] == [(role, "rules") for role in
                            ("price_action", "news_risk", "liquidity", "structure")]
-    assert sources[4:] == [(role, "openrouter") for role in
+    assert sources[4:] == [(role, "operator") for role in
                            ("price_action", "news_risk", "liquidity", "structure", "chief")]
     assert result.views.structure.regime == "TREND_UP", "the panel's view is the effective one"
     desk_calls = [call for call in panel.calls if call.role != "chief"]

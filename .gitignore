@@ -18,6 +18,8 @@ replay_tapes/
 .coverage.*
 htmlcov/
 V6_HALT
+# V6 operator working files (packet.json, decision.json); written by scripts/v6_operator.py
+adapter/.v6_operator/
 dist/
 build/
 *.log
