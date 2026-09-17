@@ -2,13 +2,17 @@
 The operator packet for one cycle (plan section 3.3; docs/v6-wire-contract.md section 9).
 
 Built from what tier 0 already computed: the market context, the gates, the
-offered candidates with their exit plans, the rules desk views and the breaker
-allowance. A candidate is offered only when it has an exit plan AND sizes at the
-standard tier (multiplier 1); the rules views are trimmed to what is offered, so
-the decision template is itself an acceptable decision.
+detector suggestions with their exit plans, the rules desk views and the breaker
+allowance, plus the analysis blocks of `packet_extras` (closed bars M1-D1,
+reference levels, the limits of an agent-designed entry). A suggestion is
+offered only when it has an exit plan AND sizes at the standard tier; a packet
+is served on every bar that reaches tier 1, with or without suggestions,
+because the agent may design its own entry (user decision 2026-09-17). The rules
+views are trimmed to what is offered, so the decision template (HOLD) is itself
+an acceptable decision.
 
-The agent sees an equity band, never the balance, the login or an order it
-could place: direction, prices and lots stay with `risk/`. Text is cleaned of
+The agent sees an equity band, never the balance or the login, and never sets
+lots: an agent entry is validated and sized by `risk/`. Text is cleaned of
 control characters and cut to its bound before the strict schema checks the
 whole packet again. Packets exist only for the operator backend and DEMO
 accounts; anything else is a `PacketRefusal`, never a packet.
@@ -38,12 +42,12 @@ from ..risk.policy import (
 )
 from ..schemas.agents import NewsRiskView, PriceActionView
 from ..schemas.operator import (
-    MAX_CODES, MAX_EVENTS, MAX_FEATURES, MAX_GATES, MAX_PACKET_H1_BARS, MAX_PACKET_M15_BARS,
-    PACKET_SCHEMA, OperatorPacket, OperatorPacketBody, allowed_values, canonical_json,
-    equity_band, seal_packet,
+    MAX_CODES, MAX_EVENTS, MAX_FEATURES, MAX_GATES, PACKET_SCHEMA, OperatorPacket,
+    OperatorPacketBody, allowed_values, canonical_json, equity_band, seal_packet,
 )
 from ..schemas.operator_parts import MAX_DETAIL_CHARS, MAX_SERVER_CHARS
-from ..types import Bar, GateResult, Refusal
+from ..types import GateResult, Refusal
+from .packet_extras import bars_block, levels_block, limits_block
 from .shadow import size_for
 
 logger = logging.getLogger(__name__)
@@ -61,12 +65,10 @@ FEATURE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"[a-z0-9_]{1,40}")
 REFUSE_POLICY: Final[str] = "PACKET_POLICY"
 REFUSE_NO_SESSION: Final[str] = "PACKET_NO_SESSION"
 REFUSE_DEADLINE: Final[str] = "PACKET_DEADLINE_PASSED"
-REFUSE_NO_SIZED_CANDIDATE: Final[str] = "PACKET_NO_SIZED_CANDIDATE"
 REFUSE_INVALID: Final[str] = "PACKET_INVALID"
 REFUSAL_HOLD_REASONS: Final[Mapping[str, HoldReason]] = MappingProxyType({
     REFUSE_POLICY: HoldReason.GATE, REFUSE_NO_SESSION: HoldReason.NO_SESSION,
-    REFUSE_DEADLINE: HoldReason.LATE, REFUSE_NO_SIZED_CANDIDATE: HoldReason.SIZE,
-    REFUSE_INVALID: HoldReason.ERROR,
+    REFUSE_DEADLINE: HoldReason.LATE, REFUSE_INVALID: HoldReason.ERROR,
 })
 
 
@@ -113,8 +115,9 @@ def build_packet(request: PacketRequest, settings: V6Settings) -> OperatorPacket
 
     Checks, in order: operator backend in shadow/execute and the settings
     policy, an active session, the account policy for the operator source
-    (DEMO only), a creation time before the deadline, at least one sized
-    candidate, and finally the full schema.
+    (DEMO only), a creation time before the deadline, and finally the full
+    schema. Suggestions that do not size at the standard tier are left out; a
+    packet without suggestions still offers the agent's own entry.
     """
     refusal = _policy_refusal(request, settings)
     if refusal is not None:
@@ -123,10 +126,9 @@ def build_packet(request: PacketRequest, settings: V6Settings) -> OperatorPacket
     if isinstance(window, PacketRefusal):
         return window
     candidates, skipped = _sized_candidates(request, settings)
-    if not candidates:
-        return PacketRefusal(REFUSE_NO_SIZED_CANDIDATE,
-                             "no offered candidate sizes at the standard tier: "
-                             + (",".join(skipped) or "none offered"))
+    if skipped:
+        logger.info("v6 operator packet %s: suggestions left out (%s)",
+                    request.context.cycle_id, ",".join(skipped))
     try:
         return seal_packet(_body(request, settings, window, candidates))
     except (ValueError, TypeError) as exc:  # pydantic's ValidationError is a ValueError
@@ -208,7 +210,9 @@ def _body(request: PacketRequest, settings: V6Settings, window: tuple[int, int],
     events = context.calendar.events[:MAX_EVENTS]
     ids = tuple(str(document["candidate_id"]) for document in candidates)
     event_ids = tuple(event.event_id for event in events)
-    allowed = allowed_values(operator_agents=settings.operator_agents, candidate_ids=ids,
+    limits = limits_block(context, settings, request.remaining_loss_usd)
+    allowed = allowed_values(operator_agents=settings.operator_agents,
+                             candidate_ids=ids + (str(limits["agent_entry_id"]),),
                              event_ids=event_ids, pa_min_conviction=settings.pa_min_conviction)
     document: Document = {
         "schema_version": PACKET_SCHEMA, "cycle_id": context.cycle_id,
@@ -220,8 +224,9 @@ def _body(request: PacketRequest, settings: V6Settings, window: tuple[int, int],
                     "equity_band": equity_band(context.account.equity)},
         "market": _market(context),
         "session": _session(context, request.armed),
-        "bars": {"M15": _bars(context.bars.get("M15", ()), MAX_PACKET_M15_BARS),
-                 "H1": _bars(context.bars.get("H1", ()), MAX_PACKET_H1_BARS)},
+        "bars": bars_block(context),
+        "levels": levels_block(context),
+        "limits": limits,
         "gates": [_gate(gate) for gate in request.gates[:MAX_GATES]],
         "calendar": _calendar(context.calendar, events),
         "candidates": list(candidates),
@@ -245,13 +250,8 @@ def _session(context: MarketContext, armed: bool) -> Document:
     return {"phase": state.phase, "main_window_third": state.main_window_third,
             "entries_allowed": state.entries_allowed,
             "continuation_allowed": state.continuation_allowed,
-            "block_reasons": _codes(state.block_reasons), "armed": bool(armed)}
-
-
-def _bars(bars: Sequence[Bar], limit: int) -> list[list[int | float]]:
-    rows = [[int(bar.t), float(bar.o), float(bar.h), float(bar.l), float(bar.c)]
-            for bar in bars if all(map(_finite, (bar.o, bar.h, bar.l, bar.c)))]
-    return rows[-limit:]
+            "block_reasons": _codes(state.block_reasons), "armed": bool(armed),
+            "quality": state.quality, "in_main_window": bool(state.in_main_window)}
 
 
 def _gate(gate: GateResult) -> Document:

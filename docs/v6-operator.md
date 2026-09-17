@@ -8,10 +8,13 @@
 > selalu dijalankan di foreground.
 > **"Sudah cukup hari ini"** berarti `session stop`: disarm, `CANCEL_PENDING`, posisi
 > terbuka dibiarkan sampai SL/TP/time barrier, lalu laporkan hasil hari itu.
-> **"status trading"** hanya melaporkan status. Agen **tidak pernah** menentukan arah,
-> harga, atau lot: Price Action hanya memeringkat kandidat yang ditawarkan;
-> News/Liquidity/Structure hanya bisa memveto atau mengecilkan (pengali ≤ 1); Chief
-> memilih ENTER/HOLD di antara kandidat TAKE dan hanya bisa menurunkan risiko. Akun
+> **"status trading"** hanya melaporkan status. Paket datang di **setiap bar M15 yang lolos
+> gate keamanan** (sesi London + New York), dengan atau tanpa saran detektor. Agen
+> **menganalisis sendiri** dan boleh **merancang entry sendiri** (`entry_plan`: arah,
+> LIMIT/MARKET, entry, stop, target) di dalam blok `limits`, atau memilih saran, atau HOLD.
+> Agen **tidak pernah** menentukan lot: kode yang memvalidasi dan menghitung lot.
+> News/Liquidity/Structure hanya bisa memveto atau mengecilkan (pengali ≤ 1); Chief hanya
+> bisa menurunkan risiko. Akun
 > **REAL/CONTEST selalu ditolak**: berhenti dan lapor. Selama sesi: jangan edit file
 > (kecuali `decision.json`), jangan browsing untuk keputusan trading, jangan ubah setting.
 
@@ -34,14 +37,17 @@ Setup, kill switches, troubleshooting and the per-tool setup appendix are in
 ## 1. The role in one paragraph
 
 Every closed M15 bar, the adapter runs the deterministic tier 0 (features, 14 hard gates,
-setup detectors, rules desks). When a bar passes every gate and offers 1-3 candidates
-while a daily session is active, the adapter publishes one **packet** and waits for one
-**decision** until `expires_at_epoch`. The operator fills the four desk views and the
-Chief in that decision. Code then applies the resolution rules, plans the exit, sizes the
-trade and, in `V6_MODE=execute` with an armed session on a DEMO account, publishes a
-signed intent that the EA checks again before sending a limit order. The operator never
-touches MT5, never computes a price or a lot, and is not needed for exits: SL and TP sit
-at the broker and the EA enforces the time barrier.
+setup detectors, rules desks). When a bar passes every hard-safety gate while a daily
+session is active and V6 is flat, the adapter publishes one **packet** (with 0-3 detector
+suggestions) and waits for one **decision** until `expires_at_epoch`. The operator
+**analyses the market itself** (user decision 2026-09-17): it fills the four desk views
+and the Chief, and either enters a suggestion, **designs its own entry**
+(`entry_plan`: side, LIMIT or MARKET, entry, stop, optional target, inside the packet's
+`limits`), or holds. Code then validates the plan, applies the resolution rules, plans
+the exit, sizes the trade and, in `V6_MODE=execute` with an armed session on a DEMO
+account, publishes a signed intent that the EA checks again before sending the order.
+The operator never touches MT5, never sets a lot, and is not needed for exits: SL and TP
+sit at the broker and the EA enforces the time barrier.
 
 ## 2. Commands
 
@@ -122,8 +128,9 @@ sent). `wait` retries an unreachable adapter or a 5xx twice, then exits 1.
 
 ## 4. Timing
 
-- A bar closes at :00, :15, :30 and :45 UTC. Tier 0 takes about a second. A bar with a
-  failed gate or no candidate never produces a packet.
+- A bar closes at :00, :15, :30 and :45 UTC. Tier 0 takes about a second. Every bar that
+  passes the hard gates while V6 is flat produces a packet (London + New York hours, about
+  07:00-20:00 UTC in summer); a failed gate or an open V6 position means no packet.
 - `expires_at_epoch` = bar close + `V6_OPERATOR_DEADLINE_S` (300 s by default).
   - A submission after it is refused: 409 `EXPIRED`.
   - No submission at all ends the cycle as HOLD `APP-V6-OPERATOR-TIMEOUT`.
@@ -167,9 +174,10 @@ sent). `wait` retries an unreachable adapter or a 5xx twice, then exits 1.
      packet, and write that reason in `note`.
    - Never be less cautious than the baseline on hard data: a stale calendar, spread at the
      ceiling, a quote gap.
-5. **You never produce a direction, price, lot, SL/TP, expiry or magic.** The decision has
-   no field for any of them. The side comes from the candidate; exits and size come from
-   `adapter/app/v6/risk/`.
+5. **You may design the entry, never the size.** `entry_plan` carries side, order type,
+   entry, stop and target, and must fit `limits` (5.8). Lots, expiry, time barrier and
+   magic always come from `adapter/app/v6/risk/`; a suggestion's side and prices come
+   from the detector.
 6. **Use only listed values.**
    - Ids come from `allowed.candidate_ids` and `allowed.event_ids`.
    - Enum values and size limits come from `allowed.enums` and `allowed.limits`.
@@ -180,12 +188,20 @@ sent). `wait` retries an unreachable adapter or a 5xx twice, then exits 1.
 
 ### 5.1 Price Action: the only directional role
 
-`abstain` + `ranked` (≤ 3 offered ids; `verdict` TAKE|SKIP; `conviction` 0..1; ≤ 5
+`abstain` + `ranked` (≤ 3 ids from `allowed.candidate_ids`, which lists the suggestions
+and then `limits.agent_entry_id`; `verdict` TAKE|SKIP; `conviction` 0..1; ≤ 5
 `reason_codes`; `note` ≤ 200). `abstain: true` requires `ranked: []`, and `abstain:
-false` requires at least one ranked id. PA can only rank what the detectors offered; it
-never proposes a level or a side.
+false` requires at least one ranked id.
 
-**TAKE a candidate only when all of these hold:**
+**Your own read comes first.** Read the M15/H1 bars, `levels` (prior-day high/low,
+confirmed pivots, $10/$50 levels), ATRs, `session.quality` and the structure features.
+When you see a trade, rank `limits.agent_entry_id` TAKE and describe it in
+`entry_plan`: the level you buy or sell at, the structural invalidation behind a swing or
+level (not an arbitrary distance), and a target in front of the next obstacle. Session
+quality (`prime`, `active`, `thin`), the main-window third and `continuation_allowed`
+are information for this judgement, not blocks.
+
+**TAKE a suggestion only when all of these hold:**
 - **The trigger is strong by its own evidence (kn/06).**
   - displacement: `range_vol` ≥ 2.0, `body_ratio` ≥ 0.70, and a confirmed close beyond an
     H1 or D1 level.
@@ -193,10 +209,10 @@ never proposes a level or a side.
   - retest: extension 1.0-1.35 within 8 bars.
 - **The higher timeframe agrees.** Not `HTF_OPPOSED`; `structure_m15` does not point the
   other way.
-- **The timing is right.** Continuation setups (orb, retest) need
-  `session.continuation_allowed` and, preferably, the `early` third of the main window.
-- **Costs and market are acceptable.** `friction_atr_m5` < 0.08 and `er_m15` > 0.20 (not
-  chop).
+- **The timing is right.** Continuation setups (orb, retest) are weaker when
+  `session.continuation_allowed` is false or the session is `thin`.
+- **Costs and market are acceptable.** Prefer `friction_atr_m5` < 0.08 (the gate itself
+  stops at 0.15) and `er_m15` > 0.20 (not chop).
 - **The candidate can be sized.** `sizing` is not null. A candidate with `sizing_refusal`
   can never trade, so SKIP it with `STOP_TOO_WIDE`.
 - **The setup is not measured-only.** `engulfing` carries `SHADOW_WEIGHT`, so SKIP it with
@@ -279,21 +295,23 @@ raises conviction.
 
 Fields: `action` ENTER|HOLD; `candidate_id` (ENTER: a PA TAKE id that was not withdrawn;
 HOLD: `null`); `risk_tier` reduced|standard; `order_style`; `exit_profile` STANDARD;
-`confidence`; `rationale` ≤ 300; `dissent` ≤ 200.
+`confidence`; `rationale` ≤ 300; `dissent` ≤ 200. When the Chief ENTERs
+`limits.agent_entry_id`, the decision must carry `entry_plan` and `order_style` must equal
+`entry_plan.order_type`; with any other pick `entry_plan` must be `null`.
 
 **ENTER only when all of these hold:**
 - every gate passed and `session.entries_allowed` is true;
 - the pick is a TAKE with conviction ≥ 0.60 that was not withdrawn;
 - no enforced veto (news BLOCK, liquidity NO_TRADE, enforced counter-structure);
-- m ≥ 0.25, and the candidate still clears the minimum lot at that m (5.7).
+- m ≥ 0.25 (5.7).
 
 **How to choose:**
-- One position only, no layering. Pick the single best TAKE: highest conviction, then
-  displacement > orb > retest (kn/15 §6).
-- The Chief can only lower risk.
-- `reduced` halves the budget. At the $2,000 basis it can never be sized, so it is a HOLD
-  in practice: answer HOLD instead, so the reason is recorded honestly.
-- Prefer `LIMIT`.
+- One position only, no layering. Pick the single best TAKE: your own entry or a
+  suggestion (for suggestions: highest conviction, then displacement > orb > retest).
+- The Chief can only lower risk; `reduced` halves the budget (the minimum lot still
+  trades, 5.7).
+- Prefer `LIMIT`. MARKET is for a clear reason (a fast break you do not want to miss);
+  a liquidity LIMIT turns an agent MARKET entry into a HOLD.
 - `rationale` is the audit trail: the id, its conviction, the vetoes you weighed and the
   m you expect. `dissent` records the strongest objection.
 
@@ -316,29 +334,54 @@ Resolution rules (`deliberation/protocol.py`, in order):
 - Time barrier 8 × M15.
 
 **Sizer.**
-- Budget = min(equity, balance, $2,000) × 0.5 % × m, capped at half the remaining daily
-  loss allowance.
+- Budget B = min(equity, balance, $5,000) × 0.5 % = **$25**, capped at half the remaining
+  daily loss allowance; the scaled budget is B × m.
 - Loss per 0.01 lot = stop distance + $0.40 friction.
-- Lots are floored to 0.01, with 0.01 as the execute cap. A size below 0.01 holds with
-  `APP-V6-SIZE` (`MIN_LOT_WALL`); it is never rounded up.
+- Lots are floored to 0.01, with 0.01 as the execute cap; a size is never rounded up past
+  B.
+- **Minimum-lot floor.** When only m pushed the scaled budget below the minimum lot while
+  B still pays for it (and m ≥ 0.25), the trade is sized at exactly 0.01 lot, labelled
+  `MIN_LOT_FLOOR`: asking for less risk gives the least risk available, not a refusal.
+- `APP-V6-SIZE` (`MIN_LOT_WALL`) only when B itself cannot pay the stop: a stop wider than
+  about **$24.60** at 0.01 lot.
 
-**The sizing wall** at the $2,000 basis (budget $10 × m):
-
-| m | Budget | Largest stop that still sizes 0.01 lot |
+| m | Scaled budget | Largest stop at 0.01 lot |
 |---|---|---|
-| 1.00 | $10.00 | $9.60 |
-| 0.80 | $8.00 | $7.60 |
-| 0.75 | $7.50 | $7.10 |
-| 0.64 | $6.40 | $6.00 (the stop floor) |
-| < 0.64, including every rules CAUTION (0.5) and the reduced tier | < $6.40 | none: `APP-V6-SIZE` |
+| 1.00 | $25.00 | $24.60 |
+| 0.50 (a CAUTION or the reduced tier) | $12.50 | $24.60 (`MIN_LOT_FLOOR` beyond $12.10) |
+| 0.25 | $6.25 | $24.60 (`MIN_LOT_FLOOR`) |
+| < 0.25 | - | none: `APP-V6-LOW-MULTIPLIER` |
 
-The packet's `sizing.risk_usd` is the loss at m = 1. **The trade survives only if
-m ≥ risk_usd / 10.** Below equity $2,000 (band `1k_2k`, `lt_1k`) the budget is smaller
-still. Shrinking below that m is a veto in disguise: if you mean HOLD, say HOLD.
+The packet's `sizing.risk_usd` is the loss at m = 1 and `limits.risk_budget_usd` is B.
+
+### 5.8 Designing your own entry (`entry_plan`)
+
+Fields: `side` buy|sell; `order_type` LIMIT|MARKET; `entry` (a price for LIMIT, `null`
+for MARKET = the current quote); `stop` (a price); `target` (a price, or `null` for the
+standard 2.0R); `thesis` ≤ 300. Prices are snapped to the tick grid. `submit` refuses a
+plan outside `limits` with `DECISION_ENTRY_PLAN` and codes you can fix while the packet
+is open:
+
+| Code | Rule (from `limits`) |
+|---|---|
+| `LIMIT_NOT_PASSIVE` | a BUY LIMIT at or below `buy_limit_max` (one tick under the ask), a SELL LIMIT at or above `sell_limit_min` |
+| `ENTRY_TOO_FAR` | a LIMIT within `max_entry_distance` of the quote (1.5 × ATR(M15)) |
+| `STOP_WRONG_SIDE` | a buy stop below the entry, a sell stop above it |
+| `STOP_TOO_TIGHT` / `STOP_TOO_WIDE` | stop distance between `stop_floor` and `max_stop_distance` (the budget at 0.01 lot and 3 × ATR(M15), minus room for the exit plan's adjustments) |
+| `TARGET_WRONG_SIDE`, `REWARD_TOO_SMALL`, `REWARD_TOO_LARGE` | a target beyond the entry giving `min_reward_r` to `max_reward_r` (1-5R) |
+| `BUDGET_CANNOT_FUND_MIN_LOT` | `agent_entry_possible` is false: HOLD |
+
+After acceptance the plan becomes a candidate (`setup` `agent`) and takes the same path
+as a suggestion. The exit plan adds the short-side spread buffer, moves a stop that sits
+on a $50 level past it, and pulls a target that lies beyond the next $50 level in front
+of it; a pull below 1R holds with `APP-V6-EXIT`, so keep targets short of the next $50
+level or leave the target `null`. Sizing and the intent builder follow. Write the level
+logic in `thesis` and in the Chief `rationale`.
 
 ## 6. Packet and decision
 
-The packet is `v6.operator.packet.1`. `packet_hash` covers everything except
+The packet is `v6.operator.packet.2` (decisions use `v6.operator.decision.2`; `.1` is
+still accepted for a suggestion pick). `packet_hash` covers everything except
 `packet_hash` and `decision_template`, and the decision must echo it. Its top-level
 fields are:
 
@@ -348,13 +391,15 @@ fields are:
 | `created_at_epoch`, `expires_at_epoch`, `bar_open_epoch`, `bar_close_epoch` | UTC seconds; the bar is the closed M15 bar |
 | `account` | `trade_mode` (always `DEMO`), `server`, `equity_band` (never balance or login) |
 | `market` | bid, ask, spread points, ATR M5/M15/H1, tier-0 `features` |
-| `session` | phase, main-window third, `entries_allowed`, `continuation_allowed`, `block_reasons`, `armed` |
-| `bars` | closed bars `[open_epoch, o, h, l, c]`: M15 ≤ 12, H1 ≤ 8 |
+| `session` | phase, `quality` (prime/active/thin), main-window third and `in_main_window`, `entries_allowed`, `continuation_allowed`, `block_reasons`, `armed` |
+| `bars` | closed bars `[open_epoch, o, h, l, c]`: M1 ≤ 30, M5 ≤ 36, M15 ≤ 32, H1 ≤ 24, D1 ≤ 5 |
+| `levels` | prior full day's high/low, nearest $10 and $50 levels, confirmed M15 and H1 pivots |
+| `limits` | the bounds of your own entry (5.8): `agent_entry_id`, passive LIMIT edges, entry distance, stop range, reward range, budget, lots cap, pending expiry, time barrier |
 | `gates`, `calendar` | gate results; calendar assessment and events (`event_id` for `news_risk.event_ids`) |
-| `candidates` | 1-3: side, entry, invalidation, codes, features, `exit`, and `sizing` (m = 1) or `sizing_refusal` |
+| `candidates` | 0-3 detector suggestions that size at m = 1: side, entry, invalidation, codes, features, `exit`, `sizing` |
 | `baseline_views` | the rules desks' four views (null where a desk failed) |
-| `allowed` | agents, ids, `pa_min_conviction`, every enum and size limit |
-| `decision_template` | the baseline views, a HOLD Chief and the first allowed agent |
+| `allowed` | agents, ids (suggestions, then `limits.agent_entry_id`), `pa_min_conviction`, every enum and size limit |
+| `decision_template` | the baseline views, a HOLD Chief, `entry_plan: null` and the first allowed agent |
 
 The two examples below are exact: `tests/v6/test_v6_operator_docs.py` validates them
 with the adapter's own parser. The prices are illustrative.
@@ -365,7 +410,7 @@ with the adapter's own parser. The prices are illustrative.
 <!-- example:packet -->
 ```json
 {
-  "schema_version": "v6.operator.packet.1",
+  "schema_version": "v6.operator.packet.2",
   "cycle_id": "c-5f0e2a9b4c1d7e36",
   "created_at_epoch": 1789645503,
   "expires_at_epoch": 1789645800,
@@ -373,7 +418,11 @@ with the adapter's own parser. The prices are illustrative.
   "bar_close_epoch": 1789645500,
   "mode": "execute",
   "session_id": "9f3c2a7b1e4d",
-  "account": {"trade_mode": "DEMO", "server": "MetaQuotes-Demo", "equity_band": "2k_5k"},
+  "account": {
+    "trade_mode": "DEMO",
+    "server": "MetaQuotes-Demo",
+    "equity_band": "ge_50k"
+  },
   "market": {
     "bid": 4536.12,
     "ask": 4536.41,
@@ -382,9 +431,18 @@ with the adapter's own parser. The prices are illustrative.
     "atr_m15": 7.85,
     "atr_h1": 16.3,
     "features": {
-      "ac1_m5": 0.06, "adx_h1": 27.5, "atr_m5_points": 710.0, "dom_synthetic": 1.0,
-      "er_m15": 0.46, "friction_atr_m5": 0.056, "round_distance": -13.88, "rv_ratio": 1.2,
-      "spread_pctl_hour": 0.55, "structure_m15": 1.0, "tick_volume_z": 1.8, "vr_m5": 1.12
+      "ac1_m5": 0.06,
+      "adx_h1": 27.5,
+      "atr_m5_points": 710.0,
+      "dom_synthetic": 1.0,
+      "er_m15": 0.46,
+      "friction_atr_m5": 0.056,
+      "round_distance": -13.88,
+      "rv_ratio": 1.2,
+      "spread_pctl_hour": 0.55,
+      "structure_m15": 1.0,
+      "tick_volume_z": 1.8,
+      "vr_m5": 1.12
     }
   },
   "session": {
@@ -393,27 +451,181 @@ with the adapter's own parser. The prices are illustrative.
     "entries_allowed": true,
     "continuation_allowed": true,
     "block_reasons": [],
-    "armed": true
+    "armed": true,
+    "quality": "prime",
+    "in_main_window": true
   },
   "bars": {
+    "M1": [
+      [
+        1789645320,
+        4536.0,
+        4536.5,
+        4535.8,
+        4536.2
+      ],
+      [
+        1789645380,
+        4536.2,
+        4536.6,
+        4536.0,
+        4536.1
+      ],
+      [
+        1789645440,
+        4536.1,
+        4536.4,
+        4535.9,
+        4536.3
+      ]
+    ],
+    "M5": [
+      [
+        1789644600,
+        4528.4,
+        4531.9,
+        4528.1,
+        4531.5
+      ],
+      [
+        1789644900,
+        4531.5,
+        4537.2,
+        4531.2,
+        4535.6
+      ],
+      [
+        1789645200,
+        4535.6,
+        4536.9,
+        4534.8,
+        4536.3
+      ]
+    ],
     "M15": [
-      [1789641900, 4527.6, 4530.2, 4526.9, 4529.8],
-      [1789642800, 4529.8, 4531.0, 4527.4, 4530.1],
-      [1789643700, 4530.1, 4530.4, 4520.9, 4528.4],
-      [1789644600, 4528.4, 4537.2, 4528.1, 4536.3]
+      [
+        1789641900,
+        4527.6,
+        4530.2,
+        4526.9,
+        4529.8
+      ],
+      [
+        1789642800,
+        4529.8,
+        4531.0,
+        4527.4,
+        4530.1
+      ],
+      [
+        1789643700,
+        4530.1,
+        4530.4,
+        4520.9,
+        4528.4
+      ],
+      [
+        1789644600,
+        4528.4,
+        4537.2,
+        4528.1,
+        4536.3
+      ]
     ],
     "H1": [
-      [1789635600, 4519.4, 4526.2, 4517.8, 4525.9],
-      [1789639200, 4525.9, 4531.1, 4522.6, 4527.6]
+      [
+        1789635600,
+        4519.4,
+        4526.2,
+        4517.8,
+        4525.9
+      ],
+      [
+        1789639200,
+        4525.9,
+        4531.1,
+        4522.6,
+        4527.6
+      ]
+    ],
+    "D1": [
+      [
+        1789516800,
+        4488.2,
+        4541.7,
+        4476.3,
+        4519.4
+      ]
     ]
+  },
+  "levels": {
+    "prior_day_high": 4541.7,
+    "prior_day_low": 4476.3,
+    "round_10_below": 4530.0,
+    "round_10_above": 4540.0,
+    "round_50_below": 4500.0,
+    "round_50_above": 4550.0,
+    "pivots_m15": [
+      {
+        "kind": "low",
+        "price": 4520.9,
+        "t": 1789643700
+      }
+    ],
+    "pivots_h1": [
+      {
+        "kind": "high",
+        "price": 4531.1,
+        "t": 1789637400
+      },
+      {
+        "kind": "low",
+        "price": 4517.8,
+        "t": 1789633800
+      }
+    ]
+  },
+  "limits": {
+    "agent_entry_id": "agent-1789644600",
+    "agent_entry_possible": true,
+    "tick_size": 0.01,
+    "digits": 2,
+    "buy_limit_max": 4536.4,
+    "sell_limit_min": 4536.13,
+    "max_entry_distance": 11.77,
+    "stop_floor": 6.0,
+    "max_stop_distance": 22.02,
+    "min_reward_r": 1.0,
+    "max_reward_r": 5.0,
+    "default_reward_r": 2.0,
+    "risk_budget_usd": 25.0,
+    "volume_min": 0.01,
+    "max_lots": 0.01,
+    "pending_expiry_epoch": 1789647300,
+    "time_barrier_s": 7200
   },
   "gates": [
     {
-      "code": "SPREAD", "passed": true, "value": 29.0, "limit": 35.0,
+      "code": "SPREAD",
+      "passed": true,
+      "value": 29.0,
+      "limit": 50.0,
       "detail": "account_type=standard"
     },
-    {"code": "FRICTION_ATR", "passed": true, "value": 0.056, "limit": 0.08, "detail": ""},
-    {"code": "ATR_M5", "passed": true, "value": 710.0, "limit": 250.0, "detail": ""}
+    {
+      "code": "FRICTION_ATR",
+      "passed": true,
+      "value": 0.056,
+      "limit": 0.15,
+      "detail": ""
+    },
+    {
+      "code": "ATR_M5",
+      "passed": true,
+      "value": 710.0,
+      "limit": 250.0,
+      "detail": ""
+    }
   ],
   "calendar": {
     "as_of_epoch": 1789645500,
@@ -424,9 +636,14 @@ with the adapter's own parser. The prices are illustrative.
     "last_event_minutes_ago": null,
     "events": [
       {
-        "event_id": "mt5:840030016", "time_epoch": 1789650000, "currency": "USD",
-        "importance": "HIGH", "code": "initial-jobless-claims", "actual": null,
-        "forecast": 232.0, "previous": 229.0
+        "event_id": "mt5:840030016",
+        "time_epoch": 1789650000,
+        "currency": "USD",
+        "importance": "HIGH",
+        "code": "initial-jobless-claims",
+        "actual": null,
+        "forecast": 232.0,
+        "previous": 229.0
       }
     ]
   },
@@ -438,19 +655,36 @@ with the adapter's own parser. The prices are illustrative.
       "entry": 4532.35,
       "invalidation": 4525.25,
       "reason_codes": [
-        "CONFIRMED_CLOSE", "STRONG_DISPLACEMENT", "LEVEL_H1_PIVOT_HIGH", "VOL_SLOT_TR",
-        "ACTIVITY_HIGH", "HTF_ALIGNED"
+        "CONFIRMED_CLOSE",
+        "STRONG_DISPLACEMENT",
+        "LEVEL_H1_PIVOT_HIGH",
+        "VOL_SLOT_TR",
+        "ACTIVITY_HIGH",
+        "HTF_ALIGNED"
       ],
       "features": {
-        "atr_m5": 7.1, "bar_range": 9.1, "body_ratio": 0.87, "close_beyond": 5.2,
-        "level_price": 4531.1, "range_vol": 2.51, "stop_buffer": 1.07, "tick_volume_z": 1.8,
+        "atr_m5": 7.1,
+        "bar_range": 9.1,
+        "body_ratio": 0.87,
+        "close_beyond": 5.2,
+        "level_price": 4531.1,
+        "range_vol": 2.51,
+        "stop_buffer": 1.07,
+        "tick_volume_z": 1.8,
         "vol_unit_m15": 3.63
       },
       "exit": {
-        "sl": 4525.25, "tp": 4546.55, "stop_distance": 7.1, "reward_r": 2.0,
+        "sl": 4525.25,
+        "tp": 4546.55,
+        "stop_distance": 7.1,
+        "reward_r": 2.0,
         "time_barrier_s": 7200
       },
-      "sizing": {"lots": 0.01, "risk_usd": 7.5, "loss_per_lot": 750.0},
+      "sizing": {
+        "lots": 0.01,
+        "risk_usd": 7.5,
+        "loss_per_lot": 750.0
+      },
       "sizing_refusal": []
     },
     {
@@ -459,17 +693,31 @@ with the adapter's own parser. The prices are illustrative.
       "side": "buy",
       "entry": 4532.35,
       "invalidation": 4519.83,
-      "reason_codes": ["CONFIRMED_CLOSE", "LEVEL_H1_PIVOT_HIGH", "SHADOW_WEIGHT"],
+      "reason_codes": [
+        "CONFIRMED_CLOSE",
+        "LEVEL_H1_PIVOT_HIGH",
+        "SHADOW_WEIGHT"
+      ],
       "features": {
-        "body_ratio": 0.87, "close_beyond": 5.2, "level_price": 4531.1, "range_vol": 2.51,
+        "body_ratio": 0.87,
+        "close_beyond": 5.2,
+        "level_price": 4531.1,
+        "range_vol": 2.51,
         "stop_buffer": 1.07
       },
       "exit": {
-        "sl": 4519.83, "tp": 4549.75, "stop_distance": 12.52, "reward_r": 1.39,
+        "sl": 4519.83,
+        "tp": 4549.75,
+        "stop_distance": 12.52,
+        "reward_r": 1.39,
         "time_barrier_s": 7200
       },
-      "sizing": null,
-      "sizing_refusal": ["MIN_LOT_WALL"]
+      "sizing": {
+        "lots": 0.01,
+        "risk_usd": 12.92,
+        "loss_per_lot": 1292.0
+      },
+      "sizing_refusal": []
     }
   ],
   "baseline_views": {
@@ -481,7 +729,10 @@ with the adapter's own parser. The prices are illustrative.
           "verdict": "TAKE",
           "conviction": 0.75,
           "reason_codes": [
-            "STRONG_DISPLACEMENT", "CONFIRMED_CLOSE", "HTF_ALIGNED", "SESSION_TIMING_GOOD"
+            "STRONG_DISPLACEMENT",
+            "CONFIRMED_CLOSE",
+            "HTF_ALIGNED",
+            "SESSION_TIMING_GOOD"
           ],
           "note": ""
         },
@@ -489,7 +740,9 @@ with the adapter's own parser. The prices are illustrative.
           "candidate_id": "engulfing-buy-1789644600",
           "verdict": "SKIP",
           "conviction": 0.5,
-          "reason_codes": ["STOP_TOO_WIDE", "NO_EDGE"],
+          "reason_codes": [
+            "NO_EDGE"
+          ],
           "note": ""
         }
       ]
@@ -498,15 +751,22 @@ with the adapter's own parser. The prices are illustrative.
       "stance": "CLEAR",
       "size_multiplier": 1.0,
       "regime": "QUIET",
-      "event_ids": ["mt5:840030016"],
-      "reason_codes": ["HIGH_IMPACT_USD"],
+      "event_ids": [
+        "mt5:840030016"
+      ],
+      "reason_codes": [
+        "HIGH_IMPACT_USD"
+      ],
       "note": "CLEAR: next event in 75.0 min, last n/a min ago, rv_ratio 1.2"
     },
     "liquidity": {
       "stance": "OK",
       "size_multiplier": 1.0,
       "order_style": "LIMIT",
-      "reason_codes": ["SPREAD_NORMAL", "DOM_SYNTHETIC"],
+      "reason_codes": [
+        "SPREAD_NORMAL",
+        "DOM_SYNTHETIC"
+      ],
       "note": ""
     },
     "structure": {
@@ -514,69 +774,181 @@ with the adapter's own parser. The prices are illustrative.
       "counter_structure_veto": false,
       "size_multiplier": 1.0,
       "named_patterns": [],
-      "reason_codes": ["HH_HL_SEQUENCE", "EFFICIENT_TREND", "MOMENTUM", "ADX_STRONG"],
+      "reason_codes": [
+        "HH_HL_SEQUENCE",
+        "EFFICIENT_TREND",
+        "MOMENTUM",
+        "ADX_STRONG"
+      ],
       "note": ""
     }
   },
   "allowed": {
-    "agents": ["claude_code", "codex", "antigravity"],
-    "candidate_ids": ["displacement-buy-1789644600", "engulfing-buy-1789644600"],
-    "event_ids": ["mt5:840030016"],
+    "agents": [
+      "claude_code",
+      "codex",
+      "antigravity"
+    ],
+    "candidate_ids": [
+      "displacement-buy-1789644600",
+      "engulfing-buy-1789644600",
+      "agent-1789644600"
+    ],
+    "event_ids": [
+      "mt5:840030016"
+    ],
     "pa_min_conviction": 0.6,
     "enums": {
-      "chief.action": ["ENTER", "HOLD"],
-      "chief.exit_profile": ["STANDARD"],
-      "chief.order_style": ["LIMIT", "MARKET"],
-      "chief.risk_tier": ["reduced", "standard"],
-      "liquidity.order_style": ["LIMIT", "MARKET", "EITHER"],
+      "chief.action": [
+        "ENTER",
+        "HOLD"
+      ],
+      "chief.exit_profile": [
+        "STANDARD"
+      ],
+      "chief.order_style": [
+        "LIMIT",
+        "MARKET"
+      ],
+      "chief.risk_tier": [
+        "reduced",
+        "standard"
+      ],
+      "entry_plan.order_type": [
+        "LIMIT",
+        "MARKET"
+      ],
+      "entry_plan.side": [
+        "buy",
+        "sell"
+      ],
+      "liquidity.order_style": [
+        "LIMIT",
+        "MARKET",
+        "EITHER"
+      ],
       "liquidity.reason_codes": [
-        "SPREAD_NORMAL", "SPREAD_WIDE", "FRICTION_HIGH", "QUOTES_THIN", "QUOTE_GAP",
-        "SLIPPAGE_HIGH", "DOM_SYNTHETIC", "ACTIVITY_HIGH", "ACTIVITY_LOW", "ROLLOVER_NEAR",
+        "SPREAD_NORMAL",
+        "SPREAD_WIDE",
+        "FRICTION_HIGH",
+        "QUOTES_THIN",
+        "QUOTE_GAP",
+        "SLIPPAGE_HIGH",
+        "DOM_SYNTHETIC",
+        "ACTIVITY_HIGH",
+        "ACTIVITY_LOW",
+        "ROLLOVER_NEAR",
         "DATA_MISSING"
       ],
-      "liquidity.stance": ["OK", "CAUTION", "NO_TRADE"],
+      "liquidity.stance": [
+        "OK",
+        "CAUTION",
+        "NO_TRADE"
+      ],
       "news_risk.reason_codes": [
-        "NO_EVENTS", "EVENT_IMMINENT", "EVENT_RECENT", "HIGH_IMPACT_USD", "SURPRISE_LARGE",
-        "VOL_ELEVATED", "SAFE_HAVEN_FLOW", "CALENDAR_STALE", "HEADLINE_RISK",
+        "NO_EVENTS",
+        "EVENT_IMMINENT",
+        "EVENT_RECENT",
+        "HIGH_IMPACT_USD",
+        "SURPRISE_LARGE",
+        "VOL_ELEVATED",
+        "SAFE_HAVEN_FLOW",
+        "CALENDAR_STALE",
+        "HEADLINE_RISK",
         "DATA_MISSING"
       ],
       "news_risk.regime": [
-        "QUIET", "EVENT_RISK", "RISK_OFF", "RISK_ON", "USD_DRIVEN", "UNCLEAR"
+        "QUIET",
+        "EVENT_RISK",
+        "RISK_OFF",
+        "RISK_ON",
+        "USD_DRIVEN",
+        "UNCLEAR"
       ],
-      "news_risk.stance": ["CLEAR", "CAUTION", "BLOCK"],
+      "news_risk.stance": [
+        "CLEAR",
+        "CAUTION",
+        "BLOCK"
+      ],
       "price_action.ranked.reason_codes": [
-        "LEVEL_CONFLUENCE", "HTF_ALIGNED", "HTF_OPPOSED", "STRONG_DISPLACEMENT",
-        "WEAK_DISPLACEMENT", "CLEAN_RETEST", "EXTENDED_MOVE", "CONFIRMED_CLOSE",
-        "CHOPPY_CONTEXT", "POOR_REWARD_ROOM", "SESSION_TIMING_GOOD", "SESSION_TIMING_POOR",
-        "FRICTION_HIGH", "STOP_TOO_WIDE", "NO_EDGE"
+        "LEVEL_CONFLUENCE",
+        "HTF_ALIGNED",
+        "HTF_OPPOSED",
+        "STRONG_DISPLACEMENT",
+        "WEAK_DISPLACEMENT",
+        "CLEAN_RETEST",
+        "EXTENDED_MOVE",
+        "CONFIRMED_CLOSE",
+        "CHOPPY_CONTEXT",
+        "POOR_REWARD_ROOM",
+        "SESSION_TIMING_GOOD",
+        "SESSION_TIMING_POOR",
+        "FRICTION_HIGH",
+        "STOP_TOO_WIDE",
+        "NO_EDGE"
       ],
-      "price_action.ranked.verdict": ["TAKE", "SKIP"],
-      "rebuttal": ["maintain", "withdraw"],
+      "price_action.ranked.verdict": [
+        "TAKE",
+        "SKIP"
+      ],
+      "rebuttal": [
+        "maintain",
+        "withdraw"
+      ],
       "structure.named_patterns": [
-        "DOUBLE_TOP", "DOUBLE_BOTTOM", "HEAD_SHOULDERS", "INV_HEAD_SHOULDERS", "TRIANGLE",
-        "FLAG", "WEDGE", "CHANNEL", "RECTANGLE"
+        "DOUBLE_TOP",
+        "DOUBLE_BOTTOM",
+        "HEAD_SHOULDERS",
+        "INV_HEAD_SHOULDERS",
+        "TRIANGLE",
+        "FLAG",
+        "WEDGE",
+        "CHANNEL",
+        "RECTANGLE"
       ],
       "structure.reason_codes": [
-        "HH_HL_SEQUENCE", "LH_LL_SEQUENCE", "RANGE_BOUND", "EFFICIENT_TREND",
-        "INEFFICIENT_CHOP", "MEAN_REVERTING", "MOMENTUM", "ADX_STRONG", "ADX_WEAK",
-        "ATR_EXPANDING", "ATR_CONTRACTING", "NEAR_ROUND_NUMBER", "COUNTER_STRUCTURE",
+        "HH_HL_SEQUENCE",
+        "LH_LL_SEQUENCE",
+        "RANGE_BOUND",
+        "EFFICIENT_TREND",
+        "INEFFICIENT_CHOP",
+        "MEAN_REVERTING",
+        "MOMENTUM",
+        "ADX_STRONG",
+        "ADX_WEAK",
+        "ATR_EXPANDING",
+        "ATR_CONTRACTING",
+        "NEAR_ROUND_NUMBER",
+        "COUNTER_STRUCTURE",
         "DATA_MISSING"
       ],
       "structure.regime": [
-        "TREND_UP", "TREND_DOWN", "RANGE", "TRANSITION", "VOLATILE", "UNCLEAR"
+        "TREND_UP",
+        "TREND_DOWN",
+        "RANGE",
+        "TRANSITION",
+        "VOLATILE",
+        "UNCLEAR"
       ]
     },
     "limits": {
-      "max_decision_bytes": 65536, "max_dissent_chars": 200, "max_event_ids": 10,
-      "max_named_patterns": 5, "max_note_chars": 200, "max_ranked": 3,
-      "max_rationale_chars": 300, "max_reason_codes": 5, "max_view_bytes": 8192
+      "max_decision_bytes": 65536,
+      "max_dissent_chars": 200,
+      "max_event_ids": 10,
+      "max_named_patterns": 5,
+      "max_note_chars": 200,
+      "max_ranked": 3,
+      "max_rationale_chars": 300,
+      "max_reason_codes": 5,
+      "max_thesis_chars": 300,
+      "max_view_bytes": 8192
     }
   },
-  "packet_hash": "e2cb53de1aa8fabc73cb5881247b81c27ba2a9ab8f51e3558cd505730e7641a8",
+  "packet_hash": "f088cf3fbdaf5b103b06a3bcd54e2d69c5c934ed340698fa076abc814651867a",
   "decision_template": {
-    "schema_version": "v6.operator.decision.1",
+    "schema_version": "v6.operator.decision.2",
     "cycle_id": "c-5f0e2a9b4c1d7e36",
-    "packet_hash": "e2cb53de1aa8fabc73cb5881247b81c27ba2a9ab8f51e3558cd505730e7641a8",
+    "packet_hash": "f088cf3fbdaf5b103b06a3bcd54e2d69c5c934ed340698fa076abc814651867a",
     "agent": "claude_code",
     "views": {
       "price_action": {
@@ -587,7 +959,9 @@ with the adapter's own parser. The prices are illustrative.
             "verdict": "TAKE",
             "conviction": 0.75,
             "reason_codes": [
-              "STRONG_DISPLACEMENT", "CONFIRMED_CLOSE", "HTF_ALIGNED",
+              "STRONG_DISPLACEMENT",
+              "CONFIRMED_CLOSE",
+              "HTF_ALIGNED",
               "SESSION_TIMING_GOOD"
             ],
             "note": ""
@@ -596,7 +970,9 @@ with the adapter's own parser. The prices are illustrative.
             "candidate_id": "engulfing-buy-1789644600",
             "verdict": "SKIP",
             "conviction": 0.5,
-            "reason_codes": ["STOP_TOO_WIDE", "NO_EDGE"],
+            "reason_codes": [
+              "NO_EDGE"
+            ],
             "note": ""
           }
         ]
@@ -605,15 +981,22 @@ with the adapter's own parser. The prices are illustrative.
         "stance": "CLEAR",
         "size_multiplier": 1.0,
         "regime": "QUIET",
-        "event_ids": ["mt5:840030016"],
-        "reason_codes": ["HIGH_IMPACT_USD"],
+        "event_ids": [
+          "mt5:840030016"
+        ],
+        "reason_codes": [
+          "HIGH_IMPACT_USD"
+        ],
         "note": "CLEAR: next event in 75.0 min, last n/a min ago, rv_ratio 1.2"
       },
       "liquidity": {
         "stance": "OK",
         "size_multiplier": 1.0,
         "order_style": "LIMIT",
-        "reason_codes": ["SPREAD_NORMAL", "DOM_SYNTHETIC"],
+        "reason_codes": [
+          "SPREAD_NORMAL",
+          "DOM_SYNTHETIC"
+        ],
         "note": ""
       },
       "structure": {
@@ -621,58 +1004,72 @@ with the adapter's own parser. The prices are illustrative.
         "counter_structure_veto": false,
         "size_multiplier": 1.0,
         "named_patterns": [],
-        "reason_codes": ["HH_HL_SEQUENCE", "EFFICIENT_TREND", "MOMENTUM", "ADX_STRONG"],
+        "reason_codes": [
+          "HH_HL_SEQUENCE",
+          "EFFICIENT_TREND",
+          "MOMENTUM",
+          "ADX_STRONG"
+        ],
         "note": ""
       }
     },
     "chief": {
-      "action": "HOLD", "candidate_id": null, "risk_tier": "reduced",
-      "order_style": "LIMIT", "exit_profile": "STANDARD", "confidence": 0.0,
-      "rationale": "", "dissent": ""
+      "action": "HOLD",
+      "candidate_id": null,
+      "risk_tier": "reduced",
+      "order_style": "LIMIT",
+      "exit_profile": "STANDARD",
+      "confidence": 0.0,
+      "rationale": "",
+      "dissent": ""
     },
-    "rebuttal": {}
+    "rebuttal": {},
+    "entry_plan": null
   }
 }
 ```
 
 </details>
 
-In this example the decision below ENTERs the displacement candidate:
+In this example the decision below ENTERs the agent's own entry instead of a suggestion:
 
-- PA agrees with the baseline (0.72, a TAKE) and SKIPs the engulfing candidate, which is
-  measured only and cannot be sized.
-- News tightens the baseline to CAUTION 0.80, because the jobless-claims release falls
-  inside the two-hour barrier.
-- m = 0.80 still affords 0.01 lot: $7.50 at risk against an $8.00 budget.
-
-With a rules-style CAUTION of 0.50, the same trade would hold with `APP-V6-SIZE`.
+- PA reads the chart itself: the displacement close is extended, so it buys the retest of
+  the broken H1 pivot (4531.1) with a LIMIT at 4531.40, a stop under the M15 swing low
+  (7.50 away, inside 6.00-22.02) and a 2R target at 4546.40, short of the 4550 level.
+- News tightens to CAUTION 0.80 (jobless claims inside the two-hour barrier); m = 0.80
+  gives a $20.00 budget, and the plan risks $7.90 at 0.01 lot.
+- With a CAUTION of 0.50 the same plan would still trade at 0.01 lot (`MIN_LOT_FLOOR`).
 
 <!-- example:decision -->
 ```json
 {
-  "schema_version": "v6.operator.decision.1",
+  "schema_version": "v6.operator.decision.2",
   "cycle_id": "c-5f0e2a9b4c1d7e36",
-  "packet_hash": "e2cb53de1aa8fabc73cb5881247b81c27ba2a9ab8f51e3558cd505730e7641a8",
+  "packet_hash": "f088cf3fbdaf5b103b06a3bcd54e2d69c5c934ed340698fa076abc814651867a",
   "agent": "claude_code",
   "views": {
     "price_action": {
       "abstain": false,
       "ranked": [
         {
-          "candidate_id": "displacement-buy-1789644600",
+          "candidate_id": "agent-1789644600",
           "verdict": "TAKE",
-          "conviction": 0.72,
+          "conviction": 0.7,
           "reason_codes": [
-            "STRONG_DISPLACEMENT", "CONFIRMED_CLOSE", "HTF_ALIGNED", "SESSION_TIMING_GOOD"
+            "LEVEL_CONFLUENCE",
+            "CONFIRMED_CLOSE",
+            "HTF_ALIGNED"
           ],
-          "note": "close held 5.2 above the H1 pivot; limit rests at the body midpoint"
+          "note": "buy the retest of the broken H1 pivot 4531.1, not the extended close"
         },
         {
-          "candidate_id": "engulfing-buy-1789644600",
+          "candidate_id": "displacement-buy-1789644600",
           "verdict": "SKIP",
-          "conviction": 0.3,
-          "reason_codes": ["NO_EDGE", "STOP_TOO_WIDE"],
-          "note": "engulfing is measured only; the 12.52 stop cannot be sized"
+          "conviction": 0.55,
+          "reason_codes": [
+            "EXTENDED_MOVE"
+          ],
+          "note": "the detector limit is fine but my own entry rests on the pivot"
         }
       ]
     },
@@ -680,15 +1077,22 @@ With a rules-style CAUTION of 0.50, the same trade would hold with `APP-V6-SIZE`
       "stance": "CAUTION",
       "size_multiplier": 0.8,
       "regime": "EVENT_RISK",
-      "event_ids": ["mt5:840030016"],
-      "reason_codes": ["HIGH_IMPACT_USD"],
+      "event_ids": [
+        "mt5:840030016"
+      ],
+      "reason_codes": [
+        "HIGH_IMPACT_USD"
+      ],
       "note": "jobless claims print in 75 min, inside the 2 h time barrier"
     },
     "liquidity": {
       "stance": "OK",
       "size_multiplier": 1.0,
       "order_style": "LIMIT",
-      "reason_codes": ["SPREAD_NORMAL", "DOM_SYNTHETIC"],
+      "reason_codes": [
+        "SPREAD_NORMAL",
+        "DOM_SYNTHETIC"
+      ],
       "note": ""
     },
     "structure": {
@@ -696,18 +1100,34 @@ With a rules-style CAUTION of 0.50, the same trade would hold with `APP-V6-SIZE`
       "counter_structure_veto": false,
       "size_multiplier": 1.0,
       "named_patterns": [],
-      "reason_codes": ["HH_HL_SEQUENCE", "EFFICIENT_TREND"],
+      "reason_codes": [
+        "HH_HL_SEQUENCE",
+        "EFFICIENT_TREND"
+      ],
       "note": ""
     }
   },
   "chief": {
-    "action": "ENTER", "candidate_id": "displacement-buy-1789644600",
-    "risk_tier": "standard", "order_style": "LIMIT", "exit_profile": "STANDARD",
+    "action": "ENTER",
+    "candidate_id": "agent-1789644600",
+    "risk_tier": "standard",
+    "order_style": "LIMIT",
+    "exit_profile": "STANDARD",
     "confidence": 0.55,
-    "rationale": "PA TAKE 0.72 >= 0.60, no veto; m = 0.80 still buys 0.01 lot (7.50 USD at risk <= 8.00 budget)",
+    "rationale": "own entry: buy limit 4531.40 on the H1 pivot retest, stop 4523.90 under the M15 swing, target 4546.40 (2R) before 4550",
     "dissent": "news: a HIGH USD release falls inside the holding window"
   },
-  "rebuttal": {"displacement-buy-1789644600": "maintain"}
+  "rebuttal": {
+    "agent-1789644600": "maintain"
+  },
+  "entry_plan": {
+    "side": "buy",
+    "order_type": "LIMIT",
+    "entry": 4531.4,
+    "stop": 4523.9,
+    "target": 4546.4,
+    "thesis": "trend up; retest of the broken H1 pivot with the stop under the 4520.9 M15 swing low"
+  }
 }
 ```
 
@@ -723,6 +1143,7 @@ answers 409 with `code`, or 422 with `code: INVALID` and `error`:
 | 422 `INVALID` | `DECISION_SCHEMA` | a missing or unknown field, a wrong type, an out-of-range value, a string too long |
 | 422 `INVALID` | `DECISION_VIEW` | Price Action or Chief is wrong: an unknown id, `abstain` with ranks, ENTER without a candidate, HOLD with one, a duplicate id |
 | 422 `INVALID` | `DECISION_REBUTTAL` | a rebuttal names a candidate PA did not TAKE |
+| 422 `INVALID` | `DECISION_ENTRY_PLAN` | `entry_plan` missing when the Chief enters `agent_entry_id`, present with another pick, malformed, `order_style` not equal to `order_type`, or outside `limits` (the codes of 5.8) |
 | 409 `HASH_MISMATCH` | `DECISION_STALE_PACKET` | `packet_hash` belongs to another packet |
 | 409 `UNKNOWN_CYCLE` | | no pending cycle has this `cycle_id` |
 | 409 `EXPIRED` | `DECISION_EXPIRED` or none | the packet expired, or the cycle closed without a decision |

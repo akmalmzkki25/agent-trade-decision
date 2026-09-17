@@ -138,7 +138,7 @@ def _without_events(document: dict[str, Any]) -> dict[str, Any]:
     (lambda d: d["candidates"][0]["exit"].update(sl=4540.0), "wrong side"),
     (lambda d: d["candidates"][0].update(sizing=None), "sizing"),
     (lambda d: d["candidates"][0].update(sizing_refusal=["MIN_LOT_WALL"]), "sizing"),
-    (lambda d: d["bars"].update(M15=[[1, 1.0, 1.0, 1.0, 1.0]] * 13), "M15"),
+    (lambda d: d["bars"].update(M15=[[1, 1.0, 1.0, 1.0, 1.0]] * 33), "M15"),
     (lambda d: d["allowed"].update(agents=["gpt"]), "agents"),
     (lambda d: d.update(extra=True), "extra"),
 ])
@@ -230,7 +230,7 @@ def test_an_expired_packet_refuses_decisions() -> None:
 
 def test_an_agent_outside_the_packet_is_refused() -> None:
     allowed = op.allowed_values(operator_agents=("claude_code",),
-                                candidate_ids=(of.BUY_ID, of.SELL_ID),
+                                candidate_ids=(of.BUY_ID, of.SELL_ID, of.AGENT_ID),
                                 event_ids=(of.EVENT_ID,), pa_min_conviction=0.6)
     sealed = seal_packet(of.packet_body(allowed=allowed.model_dump(mode="json")))
 

@@ -19,7 +19,7 @@ from pydantic import (
 
 from ..config import OperatorAgent
 from ..cycle_codes import FEATURE_KEYS, MAX_OFFERED_CANDIDATES, SetupName
-from ..market.sessions import MainWindowThird, Phase
+from ..market.sessions import MainWindowThird, Phase, SessionQuality
 from ..types import Side
 from . import agents
 from .agents import _printable as printable  # shared untrusted-text rule
@@ -29,8 +29,13 @@ from .agents import (
 )
 
 MAX_DECISION_BYTES: Final[int] = 64 * 1024
-MAX_PACKET_M15_BARS: Final[int] = 12
-MAX_PACKET_H1_BARS: Final[int] = 8
+MAX_PACKET_M1_BARS: Final[int] = 30
+MAX_PACKET_M5_BARS: Final[int] = 36
+MAX_PACKET_M15_BARS: Final[int] = 32
+MAX_PACKET_H1_BARS: Final[int] = 24
+MAX_PACKET_D1_BARS: Final[int] = 5
+MAX_PACKET_PIVOTS: Final[int] = 6
+MAX_THESIS_CHARS: Final[int] = 300
 MAX_GATES: Final[int] = 32
 MAX_EVENTS: Final[int] = 50
 MAX_CODES: Final[int] = 10
@@ -46,6 +51,7 @@ EQUITY_BANDS: Final[tuple[tuple[float, EquityBand], ...]] = (
 TOP_EQUITY_BAND: Final[EquityBand] = "ge_50k"
 # Same spelling as deliberation.protocol.RebuttalStance (a test keeps them equal).
 RebuttalStance = Literal["maintain", "withdraw"]
+AgentOrderType = Literal["LIMIT", "MARKET"]
 
 Hash = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 Epoch = Annotated[int, Field(ge=0)]
@@ -75,13 +81,15 @@ ENUM_CHOICES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType({
     "chief.order_style": get_args(agents.OrderStyle),
     "chief.exit_profile": get_args(agents.ExitProfile),
     "rebuttal": get_args(RebuttalStance),
+    "entry_plan.side": ("buy", "sell"),
+    "entry_plan.order_type": get_args(AgentOrderType),
 })
 LIMIT_VALUES: Final[Mapping[str, int]] = MappingProxyType({
     "max_ranked": MAX_RANKED, "max_reason_codes": agents.MAX_REASON_CODES,
     "max_event_ids": MAX_EVENT_IDS, "max_named_patterns": agents.MAX_NAMED_PATTERNS,
     "max_note_chars": agents.MAX_NOTE_CHARS, "max_rationale_chars": agents.MAX_RATIONALE_CHARS,
     "max_dissent_chars": agents.MAX_DISSENT_CHARS, "max_view_bytes": agents.MAX_VIEW_JSON_BYTES,
-    "max_decision_bytes": MAX_DECISION_BYTES,
+    "max_decision_bytes": MAX_DECISION_BYTES, "max_thesis_chars": MAX_THESIS_CHARS,
 })
 
 
@@ -136,11 +144,64 @@ class PacketSession(Frozen):
     continuation_allowed: bool
     block_reasons: tuple[Code, ...] = Field(max_length=MAX_CODES)
     armed: bool
+    quality: SessionQuality
+    in_main_window: bool
 
 
 class PacketBars(Frozen):
+    """Closed bars, oldest first, as [open epoch, o, h, l, c]."""
+
+    M1: tuple[CompactBar, ...] = Field(max_length=MAX_PACKET_M1_BARS)
+    M5: tuple[CompactBar, ...] = Field(max_length=MAX_PACKET_M5_BARS)
     M15: tuple[CompactBar, ...] = Field(max_length=MAX_PACKET_M15_BARS)
     H1: tuple[CompactBar, ...] = Field(max_length=MAX_PACKET_H1_BARS)
+    D1: tuple[CompactBar, ...] = Field(max_length=MAX_PACKET_D1_BARS)
+
+
+class PacketPivot(Frozen):
+    kind: Literal["high", "low"]
+    price: Price
+    t: Epoch
+
+
+class PacketLevels(Frozen):
+    """Reference levels known at the bar close (confirmed pivots only)."""
+
+    prior_day_high: Price | None
+    prior_day_low: Price | None
+    round_10_below: Price
+    round_10_above: Price
+    round_50_below: Price
+    round_50_above: Price
+    pivots_m15: tuple[PacketPivot, ...] = Field(max_length=MAX_PACKET_PIVOTS)
+    pivots_h1: tuple[PacketPivot, ...] = Field(max_length=MAX_PACKET_PIVOTS)
+
+
+class PacketLimits(Frozen):
+    """The bounds an agent-designed entry must respect (deliberation.agent_entry).
+
+    Distances are in price units. `max_stop_distance` already leaves room for the
+    exit plan's spread buffer and round-level shift; `agent_entry_possible` is False
+    when even the stop floor cannot be funded at the minimum lot.
+    """
+
+    agent_entry_id: ItemId
+    agent_entry_possible: bool
+    tick_size: Price
+    digits: int = Field(ge=0, le=8)
+    buy_limit_max: Price
+    sell_limit_min: Price
+    max_entry_distance: Price
+    stop_floor: Price
+    max_stop_distance: float = Field(ge=0)
+    min_reward_r: Price
+    max_reward_r: Price
+    default_reward_r: Price
+    risk_budget_usd: float = Field(ge=0)
+    volume_min: Price
+    max_lots: Price
+    pending_expiry_epoch: Epoch
+    time_barrier_s: int = Field(gt=0)
 
 
 class PacketGate(Frozen):
@@ -210,6 +271,26 @@ class PacketCandidate(Frozen):
         return self
 
 
+class AgentEntryPlan(Frozen):
+    """An entry the operator agent designed. Code validates it, sizes it and may refuse it;
+    the agent never sets lots. LIMIT needs `entry`; MARKET leaves it null (current quote).
+    `target` null means the standard target (`limits.default_reward_r`)."""
+
+    side: Side
+    order_type: AgentOrderType
+    entry: Price | None = None
+    stop: Price
+    target: Price | None = None
+    thesis: Annotated[str, StringConstraints(max_length=MAX_THESIS_CHARS),
+                      AfterValidator(printable)] = ""
+
+    @model_validator(mode="after")
+    def _check(self) -> "AgentEntryPlan":
+        if (self.order_type == "LIMIT") != (self.entry is not None):
+            raise ValueError("a LIMIT needs an entry price; a MARKET entry must be null")
+        return self
+
+
 class BaselineViews(Frozen):
     """The rules desks' views of this cycle (None where a rules desk failed)."""
 
@@ -223,7 +304,9 @@ class AllowedValues(Frozen):
     """What a decision may contain: agents, ids, enum values and size limits."""
 
     agents: tuple[OperatorAgent, ...] = Field(min_length=1)
-    candidate_ids: tuple[ItemId, ...] = Field(min_length=1, max_length=MAX_OFFERED_CANDIDATES)
+    # The offered suggestions, then the agent's own entry id (always last).
+    candidate_ids: tuple[ItemId, ...] = Field(min_length=1,
+                                              max_length=MAX_OFFERED_CANDIDATES + 1)
     event_ids: tuple[ItemId, ...] = Field(max_length=MAX_EVENTS)
     pa_min_conviction: float = Field(ge=0.0, le=1.0)
     enums: dict[str, tuple[str, ...]]

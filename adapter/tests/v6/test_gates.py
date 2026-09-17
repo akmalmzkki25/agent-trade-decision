@@ -140,7 +140,7 @@ SINGLE_FAILURES: dict[str, tuple[Case, str, object]] = {
                        -9.0),
     "spec-unknown": (lambda: {"context": _context(spec=_spec(calc_loss_per_price=0.0))},
                      "SPEC", SPEC_UNKNOWN),
-    "spread": (lambda: {"context": _with(quote={"spread_points": 36})}, "SPREAD", 36),
+    "spread": (lambda: {"context": _with(quote={"spread_points": 51})}, "SPREAD", 51),
     "us-data-bar": (lambda: {"context": _context(session=session_state(AS_OF))}, "SESSION",
                     "US_DATA_BAR"),
     "blackout": (lambda: {"cal": calendar(blackout=True)}, "NEWS", "BLACKOUT"),
@@ -151,8 +151,8 @@ SINGLE_FAILURES: dict[str, tuple[Case, str, object]] = {
                          "NEWS", "CAL_STALE"),
     "calendar-other-bar": (lambda: {"cal": replace(calendar(), as_of_epoch=AS_OF - M15 - 1)},
                            "NEWS", CAL_ASOF_MISMATCH),
-    "friction": (lambda: {"context": _context({**GOOD_FEATURES, F_FRICTION_ATR: 0.08})},
-                 "FRICTION_ATR", 0.08),
+    "friction": (lambda: {"context": _context({**GOOD_FEATURES, F_FRICTION_ATR: 0.15})},
+                 "FRICTION_ATR", 0.15),
     "friction-missing": (lambda: {"context": _context({F_ATR_M5_POINTS: 310.0})},
                          "FRICTION_ATR", VALUE_MISSING),
     "friction-zero-atr": (lambda: {"context": _context(
@@ -194,8 +194,8 @@ def test_each_gate_fails_on_its_own(case: str) -> None:
         {"context": _closing_at(int(NOW) + 5)},
         {"context": _context(sent_at_epoch=AS_OF - 4)},
         {"context": _context(sent_at_epoch=AS_OF + 6)},
-        {"context": _with(quote={"spread_points": 35})},
-        {"context": _context({**GOOD_FEATURES, F_FRICTION_ATR: 0.0799})},
+        {"context": _with(quote={"spread_points": 50})},
+        {"context": _context({**GOOD_FEATURES, F_FRICTION_ATR: 0.1499})},
         {"context": _context({**GOOD_FEATURES, F_ATR_M5_POINTS: 250.0})},
         {"context": _with(day={"trades_today": 3})},
         {"cal": replace(calendar(), as_of_epoch=AS_OF + M15)},
@@ -203,8 +203,8 @@ def test_each_gate_fails_on_its_own(case: str) -> None:
         {"context": _context(spec=_spec(calc_loss_per_price=98.0))},
         {"settings": _settings(backend="operator")},
     ],
-    ids=["age-20s", "age-0s", "close-5s-ahead", "skew+5s", "skew-5s", "spread-35",
-         "friction-0.0799", "atr-250", "trades-3", "calendar-900s", "tick-value+2%",
+    ids=["age-20s", "age-0s", "close-5s-ahead", "skew+5s", "skew-5s", "spread-50",
+         "friction-0.1499", "atr-250", "trades-3", "calendar-900s", "tick-value+2%",
          "tick-loss-2%", "operator-on-demo"],
 )
 def test_boundaries_pass(kwargs: dict[str, Any]) -> None:
@@ -214,7 +214,7 @@ def test_boundaries_pass(kwargs: dict[str, Any]) -> None:
 
 
 def test_several_failures_are_all_reported_and_the_first_decides() -> None:
-    context = _with(quote={"spread_points": 50}, ea_state={"halted": True})
+    context = _with(quote={"spread_points": 51}, ea_state={"halted": True})
 
     gates = _evaluate(context, runtime=RuntimeGateState(warmed_up=False), now=NOW + 60)
 
@@ -302,7 +302,7 @@ def test_friction_ratio_falls_back_to_price_over_atr() -> None:
 
     gate = _gate(_evaluate(_context(features)), "FRICTION_ATR")
 
-    assert (gate.passed, gate.value, gate.limit) == (True, 0.05, 0.08)
+    assert (gate.passed, gate.value, gate.limit) == (True, 0.05, 0.15)
 
 
 def test_atr_points_fall_back_to_price_over_point() -> None:
@@ -383,3 +383,4 @@ def test_runtime_gate_state_is_frozen_and_keyword_only() -> None:
 def test_a_future_bar_close_names_the_problem() -> None:
     gate = _gate(_evaluate(_closing_at(int(NOW) + 600)), "SNAPSHOT_AGE")
     assert (gate.passed, gate.detail) == (False, "bar close is in the future")
+

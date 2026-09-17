@@ -5,18 +5,30 @@ Money and lot arithmetic runs in `decimal.Decimal`, built from each float's
 shortest repr, so sizes such as 0.29, 0.57 and 1.15 lots survive flooring to a
 0.01 step (in binary floats 0.29 / 0.01 is 28.999999999999996). Rounding always
 leans against the trade: losses and exposure round up, allowances and lot counts
-round down. A size that does not fit is refused with a reason code and is never
-rounded up to `volume_min` (kn/14 found exactly that bug in V1-V5).
+round down.
+
+Two budgets, both floored to cents: the full budget B is the `risk_pct` share of
+the sizing equity, capped at half of the remaining daily loss allowance; the
+scaled budget is the same with the equity share times `size_multiplier` (so it
+never exceeds B). Lots come from the scaled budget. A size that does not fit is
+refused with a reason code and is never rounded up to `volume_min` (kn/14 found
+exactly that bug in V1-V5), with one bounded exception, the minimum-lot floor:
+when only the multiplier pushed the scaled budget below the minimum lot, while B
+affords that lot and every cap allows it, the result is exactly the minimum lot,
+checked against B and labelled MIN_LOT_FLOOR. An agent that asks for less risk
+gets the least risk available instead of a refusal. The floor never applies to a
+multiplier below `limits.MIN_SIZE_MULTIPLIER`.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, DecimalException, localcontext
 from typing import Callable, Final
 
 from ..types import Refusal, SizingRequest, SizingResult, SymbolSpec
-from .limits import MAX_MARGIN_USE, MAX_NOTIONAL_RATIO, MAX_RISK_PCT_CEILING
+from .limits import MAX_MARGIN_USE, MAX_NOTIONAL_RATIO, MAX_RISK_PCT_CEILING, MIN_SIZE_MULTIPLIER
 
 BAD_INPUT: Final[str] = "BAD_INPUT"
 ZERO_MULTIPLIER: Final[str] = "ZERO_MULTIPLIER"
@@ -25,12 +37,16 @@ MARGIN_UNKNOWN: Final[str] = "MARGIN_UNKNOWN"
 MIN_LOT_WALL: Final[str] = "MIN_LOT_WALL"
 CAPACITY: Final[str] = "CAPACITY"
 ROUNDING_OVER_BUDGET: Final[str] = "ROUNDING_OVER_BUDGET"
+# SizingResult label: the scaled budget missed the minimum lot, the full budget pays it.
+MIN_LOT_FLOOR: Final[str] = "MIN_LOT_FLOOR"
 
 # Wide enough that products of two float-derived values stay exact; anything
 # that still does not fit is refused rather than approximated.
 _PRECISION: Final[int] = 50
 _CENT: Final[Decimal] = Decimal("0.01")
 _PERCENT: Final[Decimal] = Decimal(100)
+_UNSCALED: Final[Decimal] = Decimal(1)
+_FLOOR_MIN_MULTIPLIER: Final[Decimal] = Decimal(repr(MIN_SIZE_MULTIPLIER))
 # One trade may spend at most half of what is left of the daily loss allowance.
 _DAILY_LOSS_SHARE: Final[Decimal] = Decimal("0.5")
 _MARGIN_USE: Final[Decimal] = Decimal(repr(MAX_MARGIN_USE))
@@ -154,11 +170,16 @@ def _loss_per_lot(stop_distance: float, friction_price: float, spec: SymbolSpec)
         return stop_loss + friction_loss
 
 
+def _min_lot(spec: SymbolSpec) -> Decimal:
+    """The smallest size the sizer can return: the first step multiple at or above volume_min."""
+    return _ceil_to_step(_dec(spec.volume_min), _dec(spec.volume_step))
+
+
 # --- sizing ---------------------------------------------------------------------
 
-def _risk_budget(req: SizingRequest, basis: Decimal) -> Decimal:
+def _risk_budget(req: SizingRequest, basis: Decimal, multiplier: Decimal) -> Decimal:
     with localcontext(prec=_PRECISION, rounding=ROUND_FLOOR):
-        by_equity = basis * _dec(req.risk_pct) / _PERCENT * _dec(req.size_multiplier)
+        by_equity = basis * _dec(req.risk_pct) / _PERCENT * multiplier
         by_daily_loss = _DAILY_LOSS_SHARE * _dec(req.remaining_daily_loss_usd)
     return _cents(min(by_equity, by_daily_loss), ROUND_FLOOR)
 
@@ -181,23 +202,47 @@ def _caps(
     )
 
 
-def _below_minimum(
-    budget_lots: Decimal, caps: _Caps, volume_min: Decimal, budget: Decimal,
-    loss_per_lot: Decimal,
-) -> Refusal:
-    if budget_lots < volume_min:
-        return Refusal(
-            (MIN_LOT_WALL,),
-            f"budget {budget:.2f} USD at {loss_per_lot:.2f} USD/lot affords "
-            f"{_fmt(budget_lots)} lots, below volume_min {_fmt(volume_min)}",
-        )
-    binding = ", ".join(f"{name}={_fmt(value)}" for name, value in caps if value < volume_min)
+@dataclass(frozen=True)
+class _Plan:
+    """What every sizing branch reads: the request, both budgets, the loss and the caps."""
+
+    req: SizingRequest
+    full_budget: Decimal
+    budget: Decimal
+    loss_per_lot: Decimal
+    caps: _Caps
+
+    @property
+    def volume_min(self) -> Decimal:
+        return _dec(self.req.spec.volume_min)
+
+    def affordable(self, budget: Decimal) -> Decimal:
+        """Lots `budget` pays for at the stop, floored to the volume step."""
+        with localcontext(prec=_PRECISION, rounding=ROUND_FLOOR):
+            return _floor_to_step(budget / self.loss_per_lot, _dec(self.req.spec.volume_step))
+
+    def caps_below(self, lots: Decimal) -> tuple[tuple[str, Decimal], ...]:
+        return tuple((name, value) for name, value in self.caps if value < lots)
+
+
+def _wall(plan: _Plan, budget: Decimal, note: str = "") -> Refusal:
+    return Refusal(
+        (MIN_LOT_WALL,),
+        f"budget {budget:.2f} USD at {plan.loss_per_lot:.2f} USD/lot affords "
+        f"{_fmt(plan.affordable(budget))} lots, below volume_min {_fmt(plan.volume_min)}{note}",
+    )
+
+
+def _capacity(plan: _Plan) -> Refusal:
+    volume_min = plan.volume_min
+    binding = ", ".join(f"{name}={_fmt(value)}" for name, value in plan.caps_below(volume_min))
     return Refusal((CAPACITY,), f"caps below volume_min {_fmt(volume_min)}: {binding}")
 
 
 def _result(
-    req: SizingRequest, lots: Decimal, risk: Decimal, budget: Decimal, loss_per_lot: Decimal
+    plan: _Plan, lots: Decimal, risk: Decimal, budget: Decimal, labels: tuple[str, ...]
 ) -> SizingResult:
+    req = plan.req
     with localcontext(prec=_PRECISION, rounding=ROUND_CEILING):
         notional = lots * _dec(req.price) * _dec(req.spec.contract_size)
         margin = lots * _dec(req.margin_per_lot)
@@ -205,38 +250,63 @@ def _result(
         lots=float(lots),
         risk_usd=_usd_up(risk),
         risk_budget_usd=float(budget),
-        loss_per_lot=_usd_up(loss_per_lot),
+        loss_per_lot=_usd_up(plan.loss_per_lot),
         notional_usd=_usd_up(notional),
         margin_usd=_usd_up(margin),
+        labels=labels,
     )
 
 
-def _size(
-    req: SizingRequest, basis_cap: Decimal, max_lots: Decimal, notional_ratio_max: Decimal
+def _checked(
+    plan: _Plan, lots: Decimal, budget: Decimal, labels: tuple[str, ...] = ()
 ) -> SizingResult | Refusal:
-    spec = req.spec
-    basis = min(_dec(req.equity), _dec(req.balance), basis_cap)
-    budget = _risk_budget(req, basis)
-    if budget <= 0:
-        return Refusal((NO_RISK_BUDGET,), f"risk budget rounds to {budget:.2f} USD")
-    loss_per_lot = _loss_per_lot(req.stop_distance, req.friction_price, spec)
-    with localcontext(prec=_PRECISION, rounding=ROUND_FLOOR):
-        budget_lots = _floor_to_step(budget / loss_per_lot, _dec(spec.volume_step))
-    if req.margin_per_lot == 0:
-        return Refusal((MARGIN_UNKNOWN,), "margin_per_lot is 0; margin must be known to size")
-    caps = _caps(req, basis, max_lots, notional_ratio_max)
-    lots = min(budget_lots, *(value for _, value in caps))
-    volume_min = _dec(spec.volume_min)
-    if lots < volume_min:
-        return _below_minimum(budget_lots, caps, volume_min, budget, loss_per_lot)
+    """`lots` as a result, unless its loss at the stop exceeds `budget`."""
     with localcontext(prec=_PRECISION, rounding=ROUND_CEILING):
-        risk = lots * loss_per_lot
+        risk = lots * plan.loss_per_lot
     if risk > budget + _ROUNDING_EPSILON_USD:
         return Refusal(
             (ROUNDING_OVER_BUDGET,),
             f"{_fmt(lots)} lots risk {risk:.2f} USD against a {budget:.2f} USD budget",
         )
-    return _result(req, lots, risk, budget, loss_per_lot)
+    return _result(plan, lots, risk, budget, labels)
+
+
+def _below_minimum(plan: _Plan) -> SizingResult | Refusal:
+    """The scaled budget and the caps leave less than volume_min: floor, wall or capacity."""
+    volume_min = plan.volume_min
+    if plan.affordable(plan.budget) >= volume_min:
+        return _capacity(plan)
+    if plan.affordable(plan.full_budget) < volume_min:
+        return _wall(plan, plan.full_budget)
+    if _dec(plan.req.size_multiplier) < _FLOOR_MIN_MULTIPLIER:
+        return _wall(plan, plan.budget,
+                     f"; no minimum-lot floor below size_multiplier {MIN_SIZE_MULTIPLIER}")
+    if plan.caps_below(volume_min):
+        return _capacity(plan)
+    # Every cap is a step multiple >= volume_min, so each allows the minimum lot, and the
+    # full budget affords a step multiple >= volume_min, so the minimum lot fits it too.
+    return _checked(plan, _min_lot(plan.req.spec), plan.full_budget, (MIN_LOT_FLOOR,))
+
+
+def _size(
+    req: SizingRequest, basis_cap: Decimal, max_lots: Decimal, notional_ratio_max: Decimal
+) -> SizingResult | Refusal:
+    basis = min(_dec(req.equity), _dec(req.balance), basis_cap)
+    full_budget = _risk_budget(req, basis, _UNSCALED)
+    if full_budget <= 0:
+        return Refusal((NO_RISK_BUDGET,), f"risk budget rounds to {full_budget:.2f} USD")
+    if req.margin_per_lot == 0:
+        return Refusal((MARGIN_UNKNOWN,), "margin_per_lot is 0; margin must be known to size")
+    plan = _Plan(
+        req=req, full_budget=full_budget,
+        budget=_risk_budget(req, basis, _dec(req.size_multiplier)),
+        loss_per_lot=_loss_per_lot(req.stop_distance, req.friction_price, req.spec),
+        caps=_caps(req, basis, max_lots, notional_ratio_max),
+    )
+    lots = min(plan.affordable(plan.budget), *(value for _, value in plan.caps))
+    if lots < plan.volume_min:
+        return _below_minimum(plan)
+    return _checked(plan, lots, plan.budget)
 
 
 def size_position(
@@ -244,10 +314,16 @@ def size_position(
 ) -> SizingResult | Refusal:
     """Size one position from the risk budget, or say exactly why it cannot be sized.
 
-    The sizing equity is min(equity, balance, equity_basis_usd); the budget is the
-    smaller of its `risk_pct` share (scaled by `size_multiplier`) and half of the
-    remaining daily loss allowance. Lots are floored to `volume_step` and then
-    reduced by `volume_max`, `max_lots`, the notional cap and the margin cap.
+    The sizing equity is min(equity, balance, equity_basis_usd). The full budget B is
+    the smaller of its `risk_pct` share and half of the remaining daily loss allowance;
+    the scaled budget is the same with the share scaled by `size_multiplier`. Lots are
+    the scaled budget's lots floored to `volume_step`, then reduced by `volume_max`,
+    `max_lots`, the notional cap and the margin cap. When the multiplier alone leaves
+    less than the minimum lot while B pays for it and every cap allows it, the result
+    is the minimum lot, checked against B and labelled MIN_LOT_FLOOR (never below a
+    multiplier of `limits.MIN_SIZE_MULTIPLIER`). Refusals: BAD_INPUT, ZERO_MULTIPLIER,
+    NO_RISK_BUDGET (B is zero), MARGIN_UNKNOWN, MIN_LOT_WALL (the budget cannot pay the
+    minimum lot), CAPACITY (a cap is below it), ROUNDING_OVER_BUDGET.
     """
     invalid = _invalid_fields(
         _request_checks(req, equity_basis_usd, max_lots, notional_ratio_max)
@@ -269,7 +345,7 @@ def _min_equity(
 ) -> float:
     # The sizer floors lots to the step, so the smallest size it can return is
     # the first step multiple at or above volume_min.
-    min_lot = _ceil_to_step(_dec(spec.volume_min), _dec(spec.volume_step))
+    min_lot = _min_lot(spec)
     loss_per_lot = _loss_per_lot(stop_distance, friction_price, spec)
     with localcontext(prec=_PRECISION, rounding=ROUND_CEILING):
         # The sizer floors its budget to cents, so the minimum lot needs a

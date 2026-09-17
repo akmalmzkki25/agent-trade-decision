@@ -61,7 +61,8 @@ def test_expired_stale_and_partial_packets() -> None:
     document["session"] = None
     lines = render(document, now=float(EXPIRES + 1))
     assert "(EXPIRED)" in lines[1]
-    assert lines[3] == "session phase -, third -, entries -, continuation -, armed -, blocks -"
+    assert lines[3] == ("session phase -, quality -, third -, entries -, continuation -, "
+                        "armed -, blocks -")
     assert lines[5] == "calendar: STALE feed (fail closed) | 1 event(s)"
     assert "baseline: PA none |" in lines[-2]
 
@@ -77,7 +78,9 @@ def test_calendar_codes_without_blackout_and_ranked_views() -> None:
     document["candidates"][0]["exit"]["time_barrier_s"] = None
     lines = render(document)
     assert lines[5].startswith("calendar: codes CAL_US_DATA_BAR | next HIGH USD cpi-yy")
-    assert f"[1] {BUY_ID} BUY displacement" in lines[7] and "barrier - min" in lines[7]
+    assert f"[1] {BUY_ID} BUY displacement" in lines[10] and "barrier - min" in lines[10]
+    assert lines[6].startswith("M15 last 1:") and lines[7].startswith("levels: PDH 4550.00")
+    assert lines[8].startswith(f"agent entry id agent-") and "lots by code" in lines[8]
     assert f"PA TAKE {BUY_ID} 0.70" in lines[-2]
 
 

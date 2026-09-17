@@ -44,7 +44,7 @@ from .transport import HttpReply, TransportError
 
 WAIT_PATH: Final[str] = "/v6/operator/wait"
 STATUS_PATH: Final[str] = "/v6/status"
-PACKET_SCHEMA: Final[str] = "v6.operator.packet.1"
+PACKET_SCHEMA: Final[str] = "v6.operator.packet.2"
 PACKET_KEYS: Final[tuple[str, ...]] = ("pending", "packet")
 WAIT_POLL_S: Final[float] = 25.0            # the route's MAX_WAIT_S
 HTTP_MARGIN_S: Final[float] = 10.0

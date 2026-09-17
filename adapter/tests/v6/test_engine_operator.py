@@ -152,12 +152,99 @@ async def test_a_withdrawn_packet_holds_as_an_operator_timeout() -> None:
 
 # --- no packet ------------------------------------------------------------------------------
 @pytest.mark.anyio
-async def test_a_candidate_the_budget_cannot_size_holds_without_asking() -> None:
+async def test_an_unsizable_suggestion_is_left_out_but_the_agent_is_still_asked() -> None:
     setup = rig(ef.candidate(invalidation=ef.PRICE - 23.0))
-    result = (await setup.engine.run(ef.request())).result
-    assert (result.status, result.hold_reason) == ("HOLD", HoldReason.SIZE)
-    assert result.hold_detail.startswith("PACKET_NO_SIZED_CANDIDATE: ")
-    assert setup.queue.status().counts.offered == 0
+    offered: list[dict[str, Any]] = []
+
+    async def capture() -> None:
+        for _ in range(WAIT_STEPS):
+            if setup.queue.pending is not None:
+                offered.append(setup.queue.pending.packet.model_dump(mode="json"))
+                setup.queue.withdraw(setup.clock.now_epoch())
+                return
+            await asyncio.sleep(WAIT_STEP_S)
+
+    outcome, _ = await asyncio.gather(setup.engine.run(ef.request()), capture())
+    packet = offered[0]
+    assert packet["candidates"] == []
+    assert packet["allowed"]["candidate_ids"] == [packet["limits"]["agent_entry_id"]]
+    assert outcome.result.hold_reason == HoldReason.OPERATOR_TIMEOUT
+
+
+# --- agent-designed entries ---------------------------------------------------------------
+def agent_plan(packet: dict[str, Any]) -> dict[str, Any]:
+    """A sell LIMIT 10 above the bid whose 1.5R target stays in front of the $4300 level
+    (a target beyond a $50 level would be pulled in front of it)."""
+    distance = round(packet["limits"]["stop_floor"] + 0.5, 2)
+    entry = round(packet["market"]["bid"] + 10.0, 2)
+    return {"side": "sell", "order_type": "LIMIT", "entry": entry,
+            "stop": round(entry + distance, 2),
+            "target": round(entry - 1.5 * distance, 2), "thesis": "fade into resistance"}
+
+
+def agent_decision(plan: Callable[[dict[str, Any]], dict[str, Any]] = agent_plan
+                   ) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """A decide() for `run`: Price Action takes the agent entry and the Chief enters it."""
+    def decide(_: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
+        entry_id = packet["limits"]["agent_entry_id"]
+        decision = json.loads(json.dumps(packet["decision_template"]))
+        decision.update(agent="claude_code", schema_version="v6.operator.decision.2",
+                        entry_plan=plan(packet), rebuttal={})
+        decision["views"]["price_action"] = {"abstain": False, "ranked": [{
+            "candidate_id": entry_id, "verdict": "TAKE", "conviction": 0.8,
+            "reason_codes": ["LEVEL_CONFLUENCE"], "note": "own read"}]}
+        decision["chief"] = {"action": "ENTER", "candidate_id": entry_id,
+                             "risk_tier": "standard", "order_style": "LIMIT",
+                             "exit_profile": "STANDARD", "confidence": 0.7,
+                             "rationale": "agent entry", "dissent": ""}
+        return decision
+    return decide
+
+
+async def run_agent(setup: Rig, decide: Callable[[dict[str, Any], dict[str, Any]],
+                                                 dict[str, Any]]) -> CycleResult:
+    async def answer_with_packet() -> None:
+        for _ in range(WAIT_STEPS):
+            if setup.queue.pending is not None:
+                break
+            await asyncio.sleep(WAIT_STEP_S)
+        packet = setup.queue.pending.packet.model_dump(mode="json")
+        body = json.dumps(decide({}, packet)).encode("utf-8")
+        result = setup.queue.submit(body, setup.clock.now_epoch())
+        assert result.accepted, result
+
+    outcome, _ = await asyncio.gather(setup.engine.run(ef.request()), answer_with_packet())
+    return outcome.result
+
+
+@pytest.mark.anyio
+async def test_an_agent_entry_without_suggestions_is_published() -> None:
+    publisher = FakePublisher(PublishOutcome(intent_id=INTENT_ID, code="BOOK_PUBLISHED"))
+    setup = rig(publisher=publisher)
+    result = await run_agent(setup, agent_decision())
+    assert (result.status, result.intent_id) == ("ENTER", INTENT_ID)
+    request = publisher.requests[0]
+    assert (request.candidate.setup, request.candidate.side) == ("agent", "sell")
+    assert request.candidate.candidate_id == f"agent-{ef.T_BAR}"
+    assert request.sizing.lots == 0.01 and request.exit_plan.reward_r >= 1.0
+    chosen = [item for item in result.candidates if item.candidate.setup == "agent"]
+    assert [item.verdict for item in chosen] == ["chosen"]
+
+
+@pytest.mark.anyio
+async def test_an_agent_entry_the_exit_plan_refuses_holds() -> None:
+    """A target just past a $50 level is pulled in front of it, under 1R: refused."""
+    def near_round(packet: dict[str, Any]) -> dict[str, Any]:
+        entry = 4299.0
+        distance = round(packet["limits"]["stop_floor"] + 0.5, 2)
+        return {"side": "buy", "order_type": "LIMIT", "entry": entry,
+                "stop": round(entry - distance, 2),
+                "target": round(entry + 1.1 * distance, 2)}
+
+    setup = rig(publisher=FakePublisher(PublishOutcome(intent_id=INTENT_ID, code="BOOK_PUBLISHED")))
+    result = await run_agent(setup, agent_decision(near_round))
+    assert (result.status, result.hold_reason) == ("HOLD", HoldReason.EXIT)
+    assert result.hold_detail.startswith("the agent entry was refused by the exit plan")
 
 
 @pytest.mark.anyio
@@ -168,3 +255,21 @@ async def test_a_packet_at_the_deadline_is_late() -> None:
     result = (await setup.engine.run(ef.request(snapshot, received_at=at_deadline))).result
     assert (result.status, result.hold_reason) == ("LATE", HoldReason.LATE)
     assert result.hold_detail.startswith("PACKET_DEADLINE_PASSED: ")
+
+
+@pytest.mark.anyio
+async def test_the_operator_path_holds_without_a_session_and_asks_nobody() -> None:
+    setup = rig()
+    result = (await setup.engine.run(ef.request(session_id=None))).result
+    assert (result.status, result.hold_reason) == ("HOLD", HoldReason.NO_SESSION)
+    assert setup.queue.status().counts.offered == 0
+
+
+@pytest.mark.anyio
+async def test_the_operator_path_is_late_past_the_deadline() -> None:
+    late = float(ef.AS_OF + 301)
+    setup = rig(clock=FakeClock(epoch=late))
+    snapshot = ef.engine_snapshot(sent_at_epoch=int(late))
+    result = (await setup.engine.run(ef.request(snapshot, received_at=late))).result
+    assert (result.status, result.hold_reason) == ("LATE", HoldReason.LATE)
+    assert setup.queue.status().counts.offered == 0

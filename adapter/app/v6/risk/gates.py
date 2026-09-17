@@ -42,6 +42,7 @@ from ..cycle_codes import (
     GATE_WARMUP,
 )
 from ..cycle_types import CalendarAssessment, MarketContext
+from ..market.broker_hours import entry_block
 from ..types import TIMEFRAME_SECONDS, GateResult, SymbolSpec
 from . import limits
 from .breakers import BreakerStatus
@@ -221,12 +222,17 @@ def _spread_gate(context: MarketContext, settings: V6Settings) -> GateResult:
                       detail=f"account_type={settings.account_type}")
 
 
-def _session_gate(context: MarketContext) -> GateResult:
+def _session_gate(context: MarketContext, settings: V6Settings) -> GateResult:
+    """Hard session blocks, plus the broker quote gap: an order placed now must not be
+    able to rest into the gap (it could fill while nobody can manage it)."""
     session = context.session
-    reasons = session.block_reasons
+    lifetime_s = settings.pending_expiry_bars * TIMEFRAME_SECONDS["M15"]
+    reasons = session.block_reasons + entry_block(
+        context.as_of_epoch, settings.quote_gap, lifetime_s)
     return GateResult(code=GATE_SESSION, passed=session.entries_allowed and not reasons,
                       value=",".join(reasons) or VALUE_OK,
-                      detail=f"phase={session.phase} third={session.main_window_third}")
+                      detail=f"phase={session.phase} quality={session.quality} "
+                             f"third={session.main_window_third}")
 
 
 def _news_gate(context: MarketContext, calendar: CalendarAssessment) -> GateResult:
@@ -339,7 +345,7 @@ def evaluate_gates(context: MarketContext, calendar_assessment: CalendarAssessme
         (GATE_CLOCK_SKEW, lambda: _clock_skew_gate(context, settings)),
         (GATE_SPEC, lambda: _spec_gate(context.spec)),
         (GATE_SPREAD, lambda: _spread_gate(context, settings)),
-        (GATE_SESSION, lambda: _session_gate(context)),
+        (GATE_SESSION, lambda: _session_gate(context, settings)),
         (GATE_NEWS, lambda: _news_gate(context, calendar_assessment)),
         (GATE_FRICTION, lambda: _friction_gate(context, settings)),
         (GATE_ATR, lambda: _atr_gate(context, settings)),

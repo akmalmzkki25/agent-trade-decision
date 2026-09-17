@@ -145,7 +145,11 @@ async def test_a_skip_is_not_taken() -> None:
 async def test_the_reduced_tier_halves_the_budget() -> None:
     panel = scripted(chief=json_of("chief", risk_tier="reduced", order_style="MARKET"))
     result = (await make_engine(panel).run(ef.request())).result
-    assert result.hold_reason == HoldReason.SIZE
+    # Half the budget cannot fund the minimum lot here, the full one can: the sizer
+    # floors at the minimum lot instead of refusing (MIN_LOT_FLOOR).
+    assert result.hold_reason is None
+    assert result.shadow_intent is not None
+    assert "MIN_LOT_FLOOR" in result.shadow_intent.labels
     assert result.protocol.size_multiplier == 0.5
     assert result.protocol.order_style == "LIMIT", "liquidity LIMIT overrides MARKET"
 

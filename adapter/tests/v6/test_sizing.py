@@ -1,16 +1,15 @@
 """
-Tests for the V6 position sizer (`app.v6.risk.sizing`): Decimal-exact examples plus
-a seeded random sweep checked against an independent Decimal oracle.
+Tests for the V6 position sizer (`app.v6.risk.sizing`): Decimal-exact examples. The
+seeded random sweep is in test_sizing_sweep.py, the minimum-lot floor in
+test_sizing_floor.py.
 """
 
 from __future__ import annotations
 
 import math
-import random
 import re
-from collections import Counter
 from dataclasses import replace
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING
 
 import pytest
 
@@ -312,89 +311,3 @@ def test_min_tradeable_equity_agrees_with_sizer(stop, friction, risk_pct, spec) 
 def test_min_tradeable_equity_rejects_bad_input(stop, friction, risk_pct, spec) -> None:
     with pytest.raises(ValueError):
         min_tradeable_equity(stop, friction, risk_pct, spec)
-
-
-# --- seeded property sweep -----------------------------------------------------
-SWEEP_SEED = 20260916
-SWEEP_CASES = 3000
-STEPS = ("0.01", "0.1", "1", "0.05", "0.001")
-TICKS = ("0.01", "0.001", "0.1", "0.05", "0.25")   # all terminate, so the oracle is exact
-
-
-def _d(value: float) -> Decimal:
-    return Decimal(repr(value))
-
-
-def _random_case(rng: random.Random) -> tuple[SizingRequest, dict[str, float]]:
-    step, tick = Decimal(rng.choice(STEPS)), Decimal(rng.choice(TICKS))
-    vol_min = step * rng.randint(1, 5)
-    contract = rng.choice((1.0, 10.0, 100.0))
-    spec = SymbolSpec(
-        digits=2, point=float(tick), tick_size=float(tick), tick_value=float(tick) * contract,
-        tick_value_loss=round(float(tick) * contract * rng.uniform(0.9, 1.1), 6),
-        contract_size=contract, volume_min=float(vol_min), volume_step=float(step),
-        volume_max=float(vol_min + step * rng.randint(0, 5000)),
-    )
-    req = SizingRequest(
-        equity=round(rng.uniform(50, 200_000), 2), balance=round(rng.uniform(50, 200_000), 2),
-        free_margin=round(rng.uniform(0, 100_000), 2), price=round(rng.uniform(1, 5000), 2),
-        stop_distance=round(rng.uniform(0.05, 50), 2), risk_pct=round(rng.uniform(0.01, 1.0), 3),
-        size_multiplier=rng.choice((1.0, 0.5, round(rng.uniform(0.01, 1.0), 2))),
-        remaining_daily_loss_usd=0.0 if rng.random() < 0.03 else round(rng.uniform(0, 500), 2),
-        margin_per_lot=round(rng.uniform(1, 5000), 2),
-        friction_price=round(rng.uniform(0, 1), 2), spec=spec,
-    )
-    caps = {"equity_basis_usd": round(rng.uniform(100, 50_000), 2),
-            "max_lots": float(step * rng.randint(1, 2000)),
-            "notional_ratio_max": round(rng.uniform(0.5, 10.0), 2)}
-    return req, caps
-
-
-def _oracle(req: SizingRequest, caps: dict[str, float]) -> dict[str, Decimal]:
-    """The contract restated with exact Decimal integer division."""
-    spec, step = req.spec, _d(req.spec.volume_step)
-    basis = min(_d(req.equity), _d(req.balance), _d(caps["equity_basis_usd"]))
-    by_equity = basis * _d(req.risk_pct) / 100 * _d(req.size_multiplier)
-    budget = min(by_equity, _d(req.remaining_daily_loss_usd) / 2)
-    budget = budget.quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
-    loss_per_lot = ((_d(req.stop_distance) + _d(req.friction_price))
-                    / _d(spec.tick_size) * _d(spec.tick_value_loss))
-    return {"basis": basis, "budget": budget, "loss_per_lot": loss_per_lot,
-            "budget_lots": budget // (loss_per_lot * step) * step}
-
-
-def _assert_sized_correctly(req, caps, res: SizingResult, oracle: dict[str, Decimal]) -> None:
-    step, lots, budget = _d(req.spec.volume_step), _d(res.lots), _d(res.risk_budget_usd)
-    assert budget == oracle["budget"]
-    assert lots % step == 0 and lots >= _d(req.spec.volume_min)
-    assert res.risk_usd <= res.risk_budget_usd
-
-    def within(size: Decimal) -> bool:
-        return (size * oracle["loss_per_lot"] <= budget
-                and size <= _d(req.spec.volume_max) and size <= _d(caps["max_lots"])
-                and size * _d(req.price) * _d(req.spec.contract_size)
-                <= _d(caps["notional_ratio_max"]) * oracle["basis"]
-                and size * _d(req.margin_per_lot) <= Decimal("0.25") * _d(req.free_margin))
-
-    assert within(lots)
-    assert not within(lots + step)   # never undersized by a whole step
-
-
-def test_seeded_sweep_upholds_invariants() -> None:
-    rng = random.Random(SWEEP_SEED)
-    outcomes: Counter[str] = Counter()
-    for _ in range(SWEEP_CASES):
-        req, caps = _random_case(rng)
-        result, oracle = size_position(req, **caps), _oracle(req, caps)
-        if isinstance(result, Refusal):
-            wall = oracle["budget_lots"] < _d(req.spec.volume_min)
-            code = "NO_RISK_BUDGET" if oracle["budget"] <= 0 else (
-                "MIN_LOT_WALL" if wall else "CAPACITY")
-            assert result.codes == (code,), (req, caps, result)
-            outcomes[code] += 1
-        else:
-            _assert_sized_correctly(req, caps, result, oracle)
-            outcomes["sized"] += 1
-    # Every path must be exercised or the sweep proves nothing.
-    assert set(outcomes) == {"sized", "NO_RISK_BUDGET", "MIN_LOT_WALL", "CAPACITY"}, outcomes
-    assert outcomes["sized"] >= SWEEP_CASES // 10, outcomes

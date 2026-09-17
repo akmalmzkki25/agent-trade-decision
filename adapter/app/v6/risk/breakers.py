@@ -13,7 +13,7 @@ Either of two measures trips a period, both realised plus floating:
   equity   account equity now against the equity at the start of the period
   v6_pnl   V6 P&L realised in the period plus the open V6 P&L now, as a loss against
            the capital V6 sizes on: min(period start equity, V6_SIZING_EQUITY_BASIS_USD).
-           A large demo account must not hide V6 losing 3% of the $2,000 it risks.
+           A large demo account must not hide V6 losing 3% of the $5,000 it sizes on.
 Reaching a limit exactly counts as a breach.
 
 `evaluate_breakers` is pure. Persistence goes through `LedgerCycles`

@@ -342,7 +342,7 @@ def _spec(**overrides: float) -> SymbolSpec:
 
 def test_sizing_floor_uses_the_widest_floor_and_reports_unsizeable_specs(
         tmp_path: Path) -> None:
-    settings = control_settings(tmp_path, risk_pct=0.25)
+    settings = control_settings(tmp_path, risk_pct=0.25, sizing_equity_basis_usd=2000.0)
     wide_spread = LatestMarket("s1", BAR_OPEN, _spec(), spread_price=0.9)
     sized = sizing_floor(wide_spread, settings)
     # floor = max(6.00, 10 x 0.90, 0.40 / 0.10) = 9.00; loss/lot 940 -> $9.40 at 0.25 %

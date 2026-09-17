@@ -113,12 +113,16 @@ class SizingRequest:
 
 @dataclass(frozen=True)
 class SizingResult:
+    """A sized position. `risk_budget_usd` is the budget the size was checked against;
+    `labels` name how it was reached (e.g. `risk.sizing.MIN_LOT_FLOOR`)."""
+
     lots: float
     risk_usd: float
     risk_budget_usd: float
     loss_per_lot: float
     notional_usd: float
     margin_usd: float
+    labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -36,8 +36,8 @@ def utc(*parts: int) -> int:
     return int(datetime(*parts, tzinfo=timezone.utc).timestamp())
 
 
-def _settings(**overrides: Any) -> V6Settings:
-    return V6Settings(_env_file=None, **overrides)
+def _settings(**overrides: Any) -> V6Settings:  # the cases assume a $2,000 sizing basis
+    return V6Settings(_env_file=None, **({"sizing_equity_basis_usd": 2000.0} | overrides))
 
 
 def _inputs(equity: float = 2000.0, floating: float = 0.0, *, start: float = 2000.0,

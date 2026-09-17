@@ -100,7 +100,8 @@ def test_a_packet_carries_tier0_and_a_usable_template() -> None:
     assert packet.market.atr_m5 == pytest.approx(8.0)
     assert set(packet.market.features) <= FEATURE_KEYS
     assert packet.session.armed is False and packet.session.entries_allowed is True
-    assert (len(packet.bars.M15), len(packet.bars.H1)) == (12, 8)
+    assert (len(packet.bars.M15), len(packet.bars.H1)) == (32, 24)
+    assert packet.session.quality in {"prime", "active", "thin"}
     assert packet.bars.M15[-1][0] == ef.T_BAR
     assert [event.code for event in packet.calendar.events] == ["cpi-yy"]
     (candidate,) = packet.candidates
@@ -108,7 +109,7 @@ def test_a_packet_carries_tier0_and_a_usable_template() -> None:
     assert (candidate.entry, candidate.exit.sl, candidate.exit.tp) == (4300.0, 4292.0, 4316.0)
     assert candidate.sizing is not None and candidate.sizing.lots == 0.01
     assert candidate.sizing.risk_usd == pytest.approx(8.4) and candidate.sizing_refusal == ()
-    assert packet.allowed.candidate_ids == (ef.CANDIDATE_ID,)
+    assert packet.allowed.candidate_ids == (ef.CANDIDATE_ID, f"agent-{ef.T_BAR}")
     assert packet.allowed.agents == OPERATOR_AGENTS
     assert packet.baseline_views.price_action == request.baseline.price_action
     body = json.loads(packet.model_dump_json())
@@ -141,7 +142,7 @@ def test_only_sized_candidates_are_offered_and_baselines_follow() -> None:
     assert ranked == {ef.CANDIDATE_ID, WIDE.candidate_id}
 
     packet = built(request)
-    assert packet.allowed.candidate_ids == (ef.CANDIDATE_ID,)
+    assert packet.allowed.candidate_ids == (ef.CANDIDATE_ID, packet.limits.agent_entry_id)
     kept = packet.baseline_views.price_action
     assert kept is not None
     assert [item.candidate_id for item in kept.ranked] == [ef.CANDIDATE_ID]
@@ -180,27 +181,44 @@ def test_at_most_three_candidates_are_offered() -> None:
     four = tuple(ef.candidate(variant=name) for name in "abcd")
     packet = built(tier0(*four))
 
-    assert packet.allowed.candidate_ids == tuple(c.candidate_id for c in four[:3])
+    assert packet.allowed.candidate_ids == (
+        *(c.candidate_id for c in four[:3]), packet.limits.agent_entry_id)
 
 
-@pytest.mark.parametrize(("offered", "detail"), [
-    ((WIDE,), "MIN_LOT_WALL"), ((), "none offered"),
-])
-def test_nothing_sizable_refuses(offered: tuple[Candidate, ...], detail: str) -> None:
+@pytest.mark.parametrize("offered", [(WIDE,), ()])
+def test_without_a_sizable_suggestion_only_the_agent_entry_is_offered(
+        offered: tuple[Candidate, ...], caplog: pytest.LogCaptureFixture) -> None:
     request = tier0(WIDE)
     if not offered:
         request = replace(request, offered=())
 
-    result = refusal(request, opk.REFUSE_NO_SIZED_CANDIDATE)
-    assert detail in result.detail and result.hold_reason == HoldReason.SIZE
+    with caplog.at_level(logging.INFO, logger=opk.__name__):
+        packet = built(request)
+    assert packet.candidates == ()
+    assert packet.allowed.candidate_ids == (packet.limits.agent_entry_id,)
+    assert packet.decision_template.chief.action == "HOLD"
+    assert ("MIN_LOT_WALL" in caplog.text) == bool(offered)
 
 
 def test_a_candidate_without_an_exit_plan_is_skipped() -> None:
     request = tier0()
     unplanned = replace(request.offered[0], exit_plan=None)
 
-    result = refusal(replace(request, offered=(unplanned,)), opk.REFUSE_NO_SIZED_CANDIDATE)
-    assert opk.NO_EXIT_PLAN in result.detail
+    packet = built(replace(request, offered=(unplanned,)))
+    assert packet.candidates == ()
+
+
+def test_the_packet_carries_levels_and_the_agent_entry_limits() -> None:
+    packet = built(tier0())
+    limits, levels = packet.limits, packet.levels
+
+    assert limits.agent_entry_id == f"agent-{ef.T_BAR}" and limits.agent_entry_possible
+    assert (limits.buy_limit_max, limits.sell_limit_min) == (4300.19, 4300.01)
+    assert limits.stop_floor == 6.0 and limits.stop_floor <= limits.max_stop_distance
+    assert (limits.min_reward_r, limits.max_reward_r, limits.default_reward_r) == (1.0, 5.0, 2.0)
+    assert limits.pending_expiry_epoch == ef.AS_OF + 1800 and limits.time_barrier_s == 7200
+    assert (levels.round_50_below, levels.round_50_above) == (4300.0, 4350.0)
+    assert levels.prior_day_high is not None and len(packet.bars.D1) <= 5
 
 
 # --- policy and timing -----------------------------------------------------------------------------

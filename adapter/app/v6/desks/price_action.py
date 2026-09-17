@@ -38,7 +38,7 @@ from ..cycle_types import (
     F_ATR_M15, F_ER_M15, F_FRICTION_ATR, F_STRUCTURE_M15, SETUP_NAMES, CandidateAssessment,
     MarketContext,
 )
-from ..risk.limits import MAX_FRICTION_TO_ATR_M5
+from ..risk.limits import PREFERRED_FRICTION_TO_ATR_M5
 from ..schemas.agents import (
     MAX_NOTE_CHARS, MAX_RANKED, MAX_REASON_CODES, PriceActionReason, PriceActionView,
     RankedCandidate,
@@ -213,7 +213,7 @@ def _timing_signal(context: MarketContext, setup: str) -> Graded:
 
 def _cost_signal(context: MarketContext) -> Graded:
     ratio = finite_feature(context.features, F_FRICTION_ATR)
-    if ratio is not None and ratio >= MAX_FRICTION_TO_ATR_M5:
+    if ratio is not None and ratio >= PREFERRED_FRICTION_TO_ATR_M5:
         return -1, ("FRICTION_HIGH",)
     return _NEUTRAL
 

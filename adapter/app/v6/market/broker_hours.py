@@ -7,6 +7,9 @@ server can also stop quoting on its own schedule: the probe of 2026-09-16
 bar forms and the EA sends no snapshot in that gap, so a missing bar there is
 not a data hole. The gap is configurable (V6_BROKER_QUOTE_GAP_UTC) because it
 belongs to the broker; winter hours are not verified yet.
+
+The gap is also hard entry safety: an order that could still be pending when the
+quotes stop could fill with nobody able to manage it (`entry_block`).
 """
 
 from __future__ import annotations
@@ -23,6 +26,8 @@ SECONDS_PER_DAY: Final[int] = 86_400
 DEFAULT_QUOTE_GAP_UTC: Final[str] = "20:00-22:00"
 WINDOW_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"([01][0-9]|2[0-3]):([0-5][0-9])-([01][0-9]|2[0-3]):([0-5][0-9])")
+# SESSION gate block reason: an order placed now could still be alive in the quote gap.
+BLOCK_QUOTE_GAP: Final[str] = "QUOTE_GAP"
 
 
 @dataclass(frozen=True)
@@ -44,6 +49,32 @@ class DailyUtcWindow:
         if self.start_s < self.end_s:
             return self.start_s <= second < self.end_s
         return second >= self.start_s or second < self.end_s
+
+    def next_start(self, epoch: int) -> int:
+        """The first window start at or after `epoch`; `epoch` itself when inside a window."""
+        if self.contains(epoch):
+            return epoch
+        return epoch + (self.start_s - epoch % SECONDS_PER_DAY) % SECONDS_PER_DAY
+
+    def overlaps(self, start: int, end: int) -> bool:
+        """True when some second of [start, end) lies inside the window."""
+        return start < end and self.next_start(start) < end
+
+
+def entry_block(epoch: int, quote_gap: DailyUtcWindow | None,
+                lifetime_s: int) -> tuple[str, ...]:
+    """(BLOCK_QUOTE_GAP,) when an order placed at `epoch` and alive for `lifetime_s`
+    could still be open in the broker's quote gap; () otherwise."""
+    if quote_gap is None or not quote_gap.overlaps(epoch, epoch + max(lifetime_s, 1)):
+        return ()
+    return (BLOCK_QUOTE_GAP,)
+
+
+def minutes_to_gap(epoch: int, quote_gap: DailyUtcWindow | None) -> float | None:
+    """Minutes from `epoch` to the next quote gap (0 inside one); None without a gap."""
+    if quote_gap is None:
+        return None
+    return (quote_gap.next_start(epoch) - epoch) / SECONDS_PER_MINUTE
 
 
 def parse_daily_window(text: str) -> DailyUtcWindow | None:

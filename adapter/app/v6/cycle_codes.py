@@ -15,6 +15,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Final, Literal
 
+from .risk.limits import MIN_SIZE_MULTIPLIER
 from .schemas.agents import ID_PATTERN
 from .types import GateResult, Side
 
@@ -27,8 +28,8 @@ __all__ = [
     "VETO_CALENDAR", "VETO_NEWS", "VETO_LIQUIDITY", "VETO_STRUCTURE", "VETO_STRUCTURE_LOGGED",
     "VETO_CODES", "MIN_COMBINED_MULTIPLIER", "REDUCED_TIER_FACTOR",
     "CAL_PRE_EVENT", "CAL_POST_EVENT", "CAL_POST_SURPRISE", "CAL_US_DATA_BAR", "CAL_STALE",
-    "CALENDAR_CODES", "SetupName", "SETUP_NAMES", "MAX_OFFERED_CANDIDATES",
-    "CandidateVerdictLabel", "CANDIDATE_VERDICTS", "candidate_id_for",
+    "CALENDAR_CODES", "SetupName", "SETUP_NAMES", "AGENT_SETUP", "MAX_OFFERED_CANDIDATES",
+    "CandidateVerdictLabel", "CANDIDATE_VERDICTS", "candidate_id_for", "agent_entry_id",
     "F_ATR_M5", "F_ATR_M5_POINTS", "F_ATR_M15", "F_ATR_H1", "F_SLOT_TR_M15", "F_ATR_RATIO",
     "F_FRICTION_PRICE", "F_FRICTION_ATR", "F_SPREAD_POINTS", "F_SPREAD_PCTL_HOUR", "F_TV_Z",
     "F_QUOTE_GAP_MS", "F_RV_RATIO", "F_ER_M15", "F_VR_M5", "F_AC1_M5", "F_ADX_H1",
@@ -112,7 +113,8 @@ VETO_STRUCTURE: Final[str] = "VETO_COUNTER_STRUCTURE"
 VETO_STRUCTURE_LOGGED: Final[str] = "VETO_COUNTER_STRUCTURE_LOGGED"
 VETO_CODES: Final[frozenset[str]] = frozenset(
     {VETO_CALENDAR, VETO_NEWS, VETO_LIQUIDITY, VETO_STRUCTURE, VETO_STRUCTURE_LOGGED})
-MIN_COMBINED_MULTIPLIER: Final[float] = 0.25
+# The sizer's minimum-lot floor uses the same bound (risk.limits.MIN_SIZE_MULTIPLIER).
+MIN_COMBINED_MULTIPLIER: Final[float] = MIN_SIZE_MULTIPLIER
 REDUCED_TIER_FACTOR: Final[float] = 0.5
 
 # --- calendar assessment codes -------------------------------------------------
@@ -125,8 +127,11 @@ CALENDAR_CODES: Final[frozenset[str]] = frozenset(
     {CAL_PRE_EVENT, CAL_POST_EVENT, CAL_POST_SURPRISE, CAL_US_DATA_BAR, CAL_STALE})
 
 # --- setups and candidates -------------------------------------------------------
-SetupName = Literal["displacement", "orb", "retest", "engulfing"]
+SetupName = Literal["displacement", "orb", "retest", "engulfing", "agent"]
+# Detector setups, in priority order. "agent" (an entry the operator agent designed,
+# deliberation.agent_entry) is a SetupName but no detector produces it.
 SETUP_NAMES: Final[tuple[SetupName, ...]] = ("displacement", "orb", "retest", "engulfing")
+AGENT_SETUP: Final[SetupName] = "agent"
 MAX_OFFERED_CANDIDATES: Final[int] = 3
 
 # Stored per candidate in v6_candidates.verdict:
@@ -142,6 +147,16 @@ CANDIDATE_VERDICTS: Final[tuple[CandidateVerdictLabel, ...]] = (
 
 _ID_RE: Final[re.Pattern[str]] = re.compile(ID_PATTERN)
 _VARIANT_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9]{1,12}$")
+
+
+def agent_entry_id(bar_t: int) -> str:
+    """The id of the entry an operator agent may design for the bar opening at `bar_t`.
+
+    Known before the agent decides (the side is not), unique per bar like a detector id.
+    """
+    if isinstance(bar_t, bool) or not isinstance(bar_t, int) or bar_t < 0:
+        raise ValueError("bar_t must be a non-negative int epoch")
+    return f"{AGENT_SETUP}-{bar_t}"
 
 
 def candidate_id_for(setup: SetupName, side: Side, bar_t: int, variant: str = "") -> str:

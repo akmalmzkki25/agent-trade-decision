@@ -194,10 +194,11 @@ def test_saturday_switches_off_every_weekday_event() -> None:
     [
         (utc(*SUMMER, 12, 30), "overlap", ("US_DATA_BAR",)),
         (utc(*SUMMER, 14), "overlap", ("LBMA_PAUSE",)),
-        (utc(*SUMMER, 4), "asia", ("OUTSIDE_MAIN_WINDOW",)),
-        (utc(*SUMMER, 9, 30), "london", ("OUTSIDE_MAIN_WINDOW", "LBMA_PAUSE")),
-        (utc(2026, 7, 18, 12), "weekend", ("WEEKEND", "OUTSIDE_MAIN_WINDOW")),
-        (utc(2026, 7, 17, 21, 30), "weekend", ("WEEKEND", "ROLLOVER", "OUTSIDE_MAIN_WINDOW")),
+        (utc(*SUMMER, 4), "asia", ("OUTSIDE_TRADING_HOURS",)),
+        (utc(*SUMMER, 9, 30), "london", ("LBMA_PAUSE",)),
+        (utc(*SUMMER, 20), "ny_late", ("OUTSIDE_TRADING_HOURS",)),
+        (utc(2026, 7, 18, 12), "weekend", ("WEEKEND", "OUTSIDE_TRADING_HOURS")),
+        (utc(2026, 7, 17, 21, 30), "weekend", ("WEEKEND", "ROLLOVER", "OUTSIDE_TRADING_HOURS")),
     ],
 )
 def test_block_reasons_name_every_active_block(
@@ -224,7 +225,7 @@ def test_rollover_block_is_new_york_five_to_seven_pm(
     assert session_state(start - 1).phase == "ny_late"
     assert session_state(start).rollover_block is True
     assert session_state(start).phase == "rollover"
-    assert session_state(start).block_reasons == ("ROLLOVER", "OUTSIDE_MAIN_WINDOW")
+    assert session_state(start).block_reasons == ("ROLLOVER", "OUTSIDE_TRADING_HOURS")
     assert session_state(start + 2 * HOUR - 1).rollover_block is True
     assert session_state(start + 2 * HOUR).rollover_block is False
     assert session_state(start + 2 * HOUR).phase == "asia"
@@ -324,7 +325,9 @@ def test_clean_main_window_bar_allows_entries() -> None:
         phase="overlap", in_main_window=True, main_window_third="late",
         rollover_block=False, weekend=False, lbma_pause=False, us_data_block=False,
         continuation_allowed=True, asia_quiet=False, entries_allowed=True, block_reasons=(),
+        in_trading_window=True,
     )
+    assert state.quality == "prime"
 
 
 # --- opening ranges ----------------------------------------------------------------
@@ -362,11 +365,15 @@ def test_invariants_hold_across_the_spring_mismatch() -> None:
         assert state.entries_allowed is (not state.block_reasons)
         assert state.in_main_window is (state.main_window_third != "outside")
         assert state.in_main_window is (state.phase == "overlap")
+        assert state.in_trading_window >= state.in_main_window
+        assert (not state.entries_allowed) or state.in_trading_window
+        assert (state.quality == "closed") is (not state.in_trading_window)
+        hour = datetime.fromtimestamp(epoch, tz=timezone.utc).hour
+        london, new_york = int(is_london_dst(epoch)), int(is_new_york_dst(epoch))
         if state.in_main_window:
-            hour = datetime.fromtimestamp(epoch, tz=timezone.utc).hour
-            start = 11 if is_london_dst(epoch) else 12
-            end = 17 if is_new_york_dst(epoch) else 18
-            assert start <= hour < end
+            assert 12 - london <= hour < 18 - new_york
+        if state.in_trading_window:
+            assert 8 - london <= hour < 21 - new_york
 
 
 def test_results_are_frozen() -> None:

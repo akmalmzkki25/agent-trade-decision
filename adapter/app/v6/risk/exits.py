@@ -180,6 +180,20 @@ def _stop_price(
     return round(level - direction * (ROUND_ZONE + spread_price), digits), True
 
 
+def stop_floor_price(
+    spec: SymbolSpec, stop_floor_points: int, spread_price: float, friction_price: float
+) -> float:
+    """The smallest stop distance (price units) `build_exit_plan` accepts."""
+    return _stop_floor(spec, stop_floor_points, spread_price, friction_price)
+
+
+def stop_shift_allowance(spread_price: float, side: str) -> float:
+    """How far `build_exit_plan` may move a stop beyond the requested level: the short
+    side's spread buffer plus the round-level step-past."""
+    buffer = spread_price if side == "sell" else 0.0
+    return buffer + ROUND_ZONE + spread_price
+
+
 def _stop_floor(
     spec: SymbolSpec, stop_floor_points: int, spread_price: float, friction_price: float
 ) -> float:

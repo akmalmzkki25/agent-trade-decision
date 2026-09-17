@@ -4,7 +4,8 @@ From an approved candidate to the order Phase 2 would have sent (never published
 Only `risk/` turns risk into prices and lots: the exit plan comes from
 `risk.exits`, the size from `risk.sizing`, and the side always from the
 candidate the detectors produced. The intent source must pass the demo policy
-again (plan section 3.3, layer 3).
+again (plan section 3.3, layer 3). The intent's labels are the exit plan's plus
+the sizer's (MIN_LOT_FLOOR when a smaller multiplier was sized at the minimum lot).
 """
 
 from __future__ import annotations
@@ -70,7 +71,7 @@ def _intent(context: MarketContext, candidate: Candidate, plan: ExitPlan,
         risk_tier=protocol.risk_tier, exit_profile=protocol.exit_profile,
         time_barrier_s=plan.time_barrier_s,
         valid_until_epoch=context.as_of_epoch + settings.pending_expiry_bars * M15_S,
-        source=source, labels=plan.labels,
+        source=source, labels=plan.labels + sizing.labels,
     )
 
 

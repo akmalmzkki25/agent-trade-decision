@@ -27,6 +27,8 @@ ID_CHARS: Final[int] = 64
 PATH_CHARS: Final[int] = 260
 SECONDS_PER_MINUTE: Final[int] = 60
 HIGH_IMPORTANCE: Final[str] = "HIGH"
+RECENT_M15_BARS: Final[int] = 4
+MAX_PIVOTS_SHOWN: Final[int] = 3
 
 
 def _format_epoch(epoch: object, pattern: str) -> str:
@@ -98,7 +100,8 @@ def header_lines(packet: Mapping[str, Any], now: float, path: Path) -> list[str]
 
 
 def session_line(session: object) -> str:
-    return (f"session phase {text(get_path(session, 'phase'))}, third "
+    return (f"session phase {text(get_path(session, 'phase'))}, quality "
+            f"{text(get_path(session, 'quality'))}, third "
             f"{text(get_path(session, 'main_window_third'))}, entries "
             f"{yes_no(get_path(session, 'entries_allowed'))}, continuation "
             f"{yes_no(get_path(session, 'continuation_allowed'))}, armed "
@@ -193,6 +196,48 @@ def baseline_line(views: object) -> str:
             f"{yes_no(get_path(structure, 'counter_structure_veto'))}")
 
 
+def _pivots_text(pivots: object) -> str:
+    if not isinstance(pivots, list) or not pivots:
+        return MISSING
+    rows = [item for item in pivots if isinstance(item, Mapping)][-MAX_PIVOTS_SHOWN:]
+    return " ".join(f"{clean(item.get('kind'))}@{num(item.get('price'))}" for item in rows)
+
+
+def levels_line(levels: object) -> str:
+    return (f"levels: PDH {num(get_path(levels, 'prior_day_high'))} PDL "
+            f"{num(get_path(levels, 'prior_day_low'))} | round10 "
+            f"{num(get_path(levels, 'round_10_below'))}/{num(get_path(levels, 'round_10_above'))}"
+            f" round50 {num(get_path(levels, 'round_50_below'))}/"
+            f"{num(get_path(levels, 'round_50_above'))} | pivots M15 "
+            f"{_pivots_text(get_path(levels, 'pivots_m15'))} H1 "
+            f"{_pivots_text(get_path(levels, 'pivots_h1'))}")
+
+
+def bars_line(bars: object) -> str:
+    rows = get_path(bars, "M15")
+    if not isinstance(rows, list) or not rows:
+        return "M15: -"
+    recent = [row for row in rows if isinstance(row, list) and len(row) == 5]
+    shown = " | ".join(f"{_clock(row[0])} o{num(row[1])} h{num(row[2])} l{num(row[3])} "
+                       f"c{num(row[4])}" for row in recent[-RECENT_M15_BARS:])
+    return f"M15 last {min(len(recent), RECENT_M15_BARS)}: {shown}"
+
+
+def limits_line(limits: object) -> str:
+    if not isinstance(limits, Mapping):
+        return "agent entry: -"
+    if limits.get("agent_entry_possible") is not True:
+        return "agent entry: NOT POSSIBLE (budget cannot fund the stop floor)"
+    return (f"agent entry id {clean(limits.get('agent_entry_id'), ID_CHARS)} | BUY LIMIT <= "
+            f"{num(limits.get('buy_limit_max'))} SELL LIMIT >= "
+            f"{num(limits.get('sell_limit_min'))} (max {num(limits.get('max_entry_distance'))}"
+            f" away) | stop {num(limits.get('stop_floor'))}..."
+            f"{num(limits.get('max_stop_distance'))} | target "
+            f"{num(limits.get('min_reward_r'), '.1f')}-{num(limits.get('max_reward_r'), '.1f')}R"
+            f" (default {num(limits.get('default_reward_r'), '.1f')}R) | budget "
+            f"${num(limits.get('risk_budget_usd'))}, lots by code")
+
+
 def render_packet(packet: Mapping[str, Any], *, now: float, path: Path) -> str:
     candidates = [item for item in packet.get("candidates") or () if isinstance(item, Mapping)]
     allowed = packet.get("allowed")
@@ -201,7 +246,10 @@ def render_packet(packet: Mapping[str, Any], *, now: float, path: Path) -> str:
         session_line(packet.get("session")),
         gates_line(packet.get("gates")),
         calendar_line(packet.get("calendar")),
-        f"candidates ({len(candidates)}), PA TAKE needs conviction >= "
+        bars_line(packet.get("bars")),
+        levels_line(packet.get("levels")),
+        limits_line(packet.get("limits")),
+        f"suggestions ({len(candidates)}), PA TAKE needs conviction >= "
         f"{num(get_path(allowed, 'pa_min_conviction'))}:",
         *(candidate_line(index, item) for index, item in enumerate(candidates, start=1)),
         baseline_line(packet.get("baseline_views")),

@@ -335,7 +335,7 @@ def test_status_reports_agents_and_the_last_submission(queue: OperatorQueue,
     assert status["pending"] == {
         "cycle_id": of.CYCLE_ID, "session_id": of.SESSION_ID, "bar_open_epoch": of.BAR_OPEN,
         "created_at_epoch": of.CREATED, "expires_at_epoch": of.EXPIRES,
-        "offered_at": clock.now_epoch(), "candidates": [of.BUY_ID, of.SELL_ID],
+        "offered_at": clock.now_epoch(), "candidates": [of.BUY_ID, of.SELL_ID, of.AGENT_ID],
         "mode": "execute"}
     assert status["last_agent"] == {"agent": "claude_code", "at": clock.now_epoch(),
                                     "via": "wait"}

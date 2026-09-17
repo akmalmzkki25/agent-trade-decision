@@ -6,7 +6,7 @@ volume is zero, so this desk only reads cost and activity proxies and never has
 a directional voice. It always prefers LIMIT orders (kn/15 §2).
 
 - NO_TRADE (multiplier 0) on a hard breach: spread above the account ceiling,
-  friction / ATR(M5) at or above MAX_FRICTION_TO_ATR_M5, a quote gap of
+  friction / ATR(M5) at or above PREFERRED_FRICTION_TO_ATR_M5, a quote gap of
   QUOTE_GAP_NO_TRADE_MS or more, no quotes at all in the tick window, or the
   rollover block itself.
 - CAUTION (multiplier CAUTION_MULTIPLIER) on a soft warning: spread in the top
@@ -31,13 +31,15 @@ from ..cycle_types import (
     MarketContext,
 )
 from ..market.sessions import session_state
-from ..risk.limits import MAX_FRICTION_TO_ATR_M5, MAX_SPREAD_POINTS
+from ..risk.limits import PREFERRED_FRICTION_TO_ATR_M5, PREFERRED_SPREAD_POINTS
 from ..schemas.agents import (
     MAX_NOTE_CHARS, MAX_REASON_CODES, LiquidityReason, LiquidityStance, LiquidityView,
 )
 from .structure import finite_feature
 
-DEFAULT_MAX_SPREAD_POINTS: Final[int] = MAX_SPREAD_POINTS["standard"]
+# The rules desk keeps kn/15's original cost lines (the hard gates are wider since
+# 2026-09-17): it is the conservative shadow baseline, not the gate.
+DEFAULT_MAX_SPREAD_POINTS: Final[int] = PREFERRED_SPREAD_POINTS["standard"]
 SPREAD_WIDE_PERCENTILE: Final[float] = 0.80
 FRICTION_CAUTION_SHARE: Final[float] = 0.75
 QUOTE_GAP_CAUTION_MS: Final[int] = 10_000
@@ -88,7 +90,7 @@ def hard_breaches(context: MarketContext, max_spread_points: int) -> Codes:
     quotes_missing = context.ticks.window_s > 0 and context.ticks.quote_count == 0
     checks: tuple[tuple[bool, LiquidityReason], ...] = (
         (spread_points(context) > max_spread_points, "SPREAD_WIDE"),
-        (friction is not None and friction >= MAX_FRICTION_TO_ATR_M5, "FRICTION_HIGH"),
+        (friction is not None and friction >= PREFERRED_FRICTION_TO_ATR_M5, "FRICTION_HIGH"),
         (quote_gap_ms(context) >= QUOTE_GAP_NO_TRADE_MS, "QUOTE_GAP"),
         (quotes_missing, "QUOTES_THIN"),
         (context.session.rollover_block, "ROLLOVER_NEAR"),
@@ -102,7 +104,7 @@ def _cost_warnings(context: MarketContext) -> Codes:
     checks: tuple[tuple[bool, LiquidityReason], ...] = (
         (percentile is not None and percentile >= SPREAD_WIDE_PERCENTILE, "SPREAD_WIDE"),
         (friction is not None
-         and friction >= FRICTION_CAUTION_SHARE * MAX_FRICTION_TO_ATR_M5, "FRICTION_HIGH"),
+         and friction >= FRICTION_CAUTION_SHARE * PREFERRED_FRICTION_TO_ATR_M5, "FRICTION_HIGH"),
         (friction is None or percentile is None, "DATA_MISSING"),
     )
     return _unique(code for warned, code in checks if warned)

@@ -207,7 +207,7 @@ survives restarts. To reset one, only after the loss has been reviewed:
 | `session start` refused `APP-V6-SESSION-MARKET-CLOSED` | weekend or rollover block | start after the reopen |
 | `status`: `armed: false` in execute mode; `session.disarm_reason` is `HALTED`, `BREAKER`, `EA_STALE`, `EA_NOT_SEEN`, `NOT_DEMO`, `ACCOUNT_POLICY`, `EA_LOCAL_HALT` or `UNCLEAN_RESTART` | the adapter disarmed the session and publishes nothing; the watchdog never re-arms | fix the cause, then `session start` (re-arms the open session); after a HALT use `resume` |
 | every cycle holds `APP-V6-WARMUP`; `preflight` `WARMUP` | not enough M15/M5 history yet | let the EA backfill (restart the EA once); check `bar_coverage` in `status` |
-| holds `APP-V6-SIZE`, refusal `MIN_LOT_WALL` | 0.5 % of $2,000 × m cannot pay a 0.01 lot at this stop | expected at this account size; see the sizing wall in v6-operator.md §5.7 |
+| holds `APP-V6-SIZE`, refusal `MIN_LOT_WALL` | 0.5 % of $5,000 ($25) cannot pay a 0.01 lot at this stop (wider than about $24.60) | expected for very wide stops; see v6-operator.md §5.7 |
 | holds `APP-V6-OPERATOR-TIMEOUT` | no decision before the deadline | keep the agent session focused; submit within 2 minutes |
 | holds `APP-V6-STALE`, `preflight` `EA_STALE` | EA silent (terminal frozen, disconnected, sleep) | check MT5, network, sleep settings |
 | `preflight` `EA_SIGNING_NOT_REQUIRED` | execute mode without required signing | check `V6_MODE` and `V6_EA_HMAC_KEY`, restart |

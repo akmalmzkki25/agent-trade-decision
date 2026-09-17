@@ -76,16 +76,27 @@ def _assess(candidate: Candidate, plan: ExitPlan | Refusal, settings: V6Settings
                                target=plan.tp, available_from=available_from, exit_plan=plan)
 
 
+def assess_candidate(context: MarketContext, candidate: Candidate, settings: V6Settings, *,
+                     friction_price: float,
+                     tp_r_multiple: float | None = None) -> CandidateAssessment:
+    """Exit plan (or refusal) and label geometry for one candidate.
+
+    `tp_r_multiple` overrides V6_TP_R_MULTIPLE (an agent entry brings its own target).
+    """
+    config = LabelerConfig.from_settings(settings, context.spec.point)
+    plan = build_exit_plan(
+        candidate, spread_price=context.spread_price, friction_price=friction_price,
+        spec=context.spec, stop_floor_points=settings.stop_floor_points,
+        tp_r_multiple=settings.tp_r_multiple if tp_r_multiple is None else tp_r_multiple,
+        time_barrier_s=settings.time_barrier_s)
+    return _assess(candidate, plan, settings, config)
+
+
 def assess_candidates(context: MarketContext, candidates: tuple[Candidate, ...],
                       settings: V6Settings, *, friction_price: float) -> CandidatePool:
     """Exit plan (or refusal) and label geometry for every candidate; the offer."""
-    config = LabelerConfig.from_settings(settings, context.spec.point)
     assessments = tuple(
-        _assess(candidate, build_exit_plan(
-            candidate, spread_price=context.spread_price, friction_price=friction_price,
-            spec=context.spec, stop_floor_points=settings.stop_floor_points,
-            tp_r_multiple=settings.tp_r_multiple, time_barrier_s=settings.time_barrier_s,
-        ), settings, config)
+        assess_candidate(context, candidate, settings, friction_price=friction_price)
         for candidate in candidates)
     accepted = tuple(item for item in assessments if item.exit_plan is not None)
     return CandidatePool(assessments=assessments, offered=accepted[:MAX_OFFERED_CANDIDATES])

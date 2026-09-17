@@ -6,6 +6,13 @@ converted per call, never as fixed UTC or broker-server hours: the US and EU mov
 their clocks on different Sundays, so a fixed-UTC calendar is silently one hour
 wrong for weeks each year (knowledge/03 section 2). Inputs are UTC epoch seconds
 and nothing here reads the system clock, so backtests and live runs agree.
+
+Entries are allowed in London + New York trading hours (London 08:00 to New York
+16:00: 07:00-20:00 UTC in summer, 08:00-21:00 in winter) except in the hard
+blocks: weekend, rollover, the LBMA fix pauses and the US data bar. The main
+window (London noon to New York 13:00, kn/03's core 11:00-17:00 UTC), its thirds,
+the post-London continuation zone and `quality` are information for the agents,
+not blocks (user decision 2026-09-17).
 """
 
 from __future__ import annotations
@@ -17,6 +24,9 @@ from zoneinfo import ZoneInfo
 
 Phase = Literal["weekend", "rollover", "asia", "london", "overlap", "ny_late"]
 MainWindowThird = Literal["early", "mid", "late", "outside"]
+# prime: the main window; active: London morning; thin: New York after 13:00 (kn/03:
+# liquidity falls, retests fail more often); closed: outside the trading window.
+SessionQuality = Literal["prime", "active", "thin", "closed"]
 
 LONDON: Final[ZoneInfo] = ZoneInfo("Europe/London")
 NEW_YORK: Final[ZoneInfo] = ZoneInfo("America/New_York")
@@ -33,6 +43,9 @@ SUNDAY: Final[int] = 6
 NY_DAILY_CLOSE: Final[time] = time(17, 0)
 NY_ROLLOVER_END: Final[time] = time(19, 0)
 NY_MAIN_WINDOW_END: Final[time] = time(13, 0)
+# London + New York trading hours end at the 16:00 New York close: 20:00 UTC in summer,
+# where MetaQuotes-Demo stops quoting (market.broker_hours), 21:00 UTC in winter.
+NY_TRADING_END: Final[time] = time(16, 0)
 # +/-15 minutes around the 08:30 ET macro release bar.
 NY_DATA_BLOCK_START: Final[time] = time(8, 15)
 NY_DATA_BLOCK_END: Final[time] = time(8, 45)
@@ -59,9 +72,14 @@ NY_OPEN_RANGE_NAME: Final[str] = "ny_open"
 
 BLOCK_WEEKEND: Final[str] = "WEEKEND"
 BLOCK_ROLLOVER: Final[str] = "ROLLOVER"
-BLOCK_OUTSIDE_MAIN_WINDOW: Final[str] = "OUTSIDE_MAIN_WINDOW"
+BLOCK_OUTSIDE_TRADING_HOURS: Final[str] = "OUTSIDE_TRADING_HOURS"
 BLOCK_LBMA_PAUSE: Final[str] = "LBMA_PAUSE"
 BLOCK_US_DATA_BAR: Final[str] = "US_DATA_BAR"
+
+QUALITY_PRIME: Final[SessionQuality] = "prime"
+QUALITY_ACTIVE: Final[SessionQuality] = "active"
+QUALITY_THIN: Final[SessionQuality] = "thin"
+QUALITY_CLOSED: Final[SessionQuality] = "closed"
 
 _UNIX_EPOCH: Final[datetime] = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _ONE_SECOND: Final[timedelta] = timedelta(seconds=1)
@@ -72,10 +90,11 @@ class SessionState:
     """
     Session facts for one instant.
 
-    `entries_allowed` is True exactly when `block_reasons` is empty.
-    `continuation_allowed` is narrower than it looks: it only says whether the
-    post-London zone rules continuation setups out, so callers must still honour
-    `entries_allowed`. `asia_quiet` is informational and never blocks.
+    `entries_allowed` is True exactly when `block_reasons` is empty (hard blocks only).
+    `continuation_allowed` is information: False in the post-London zone, where kn/03
+    finds continuation setups failing more often; it never blocks, and it does not
+    override `entries_allowed`. `in_main_window`, `main_window_third`, `asia_quiet`
+    and `quality` are information too.
     """
 
     phase: Phase
@@ -89,6 +108,16 @@ class SessionState:
     asia_quiet: bool
     entries_allowed: bool
     block_reasons: tuple[str, ...]
+    in_trading_window: bool
+
+    @property
+    def quality(self) -> SessionQuality:
+        """prime (main window), active (London morning), thin (NY afternoon), closed."""
+        if not self.in_trading_window:
+            return QUALITY_CLOSED
+        if self.in_main_window:
+            return QUALITY_PRIME
+        return QUALITY_ACTIVE if self.phase == "london" else QUALITY_THIN
 
 
 @dataclass(frozen=True)
@@ -115,15 +144,16 @@ def session_state(epoch: int) -> SessionState:
     rollover = _within(epoch, NEW_YORK, ny.date(), NY_DAILY_CLOSE, NY_ROLLOVER_END)
     third = _main_window_third(epoch, london)
     in_main = third != OUTSIDE
+    in_trading = _in_trading_window(epoch, london)
     lbma = _is_weekday(london.date()) and _in_lbma_pause(epoch, london.date())
     us_data = _is_weekday(ny.date()) and _within(
         epoch, NEW_YORK, ny.date(), NY_DATA_BLOCK_START, NY_DATA_BLOCK_END
     )
     # Main window end -> rollover end: retests fail more often after London
-    # (knowledge/03), so continuation setups are switched off, not just shrunk.
+    # (knowledge/03). Reported to the agents; no longer a block.
     post_london = _within(epoch, NEW_YORK, ny.date(), NY_MAIN_WINDOW_END, NY_ROLLOVER_END)
     reasons = _block_reasons(
-        weekend=weekend, rollover=rollover, in_main=in_main, lbma=lbma, us_data=us_data
+        weekend=weekend, rollover=rollover, in_trading=in_trading, lbma=lbma, us_data=us_data
     )
     return SessionState(
         phase=_phase(epoch, weekend=weekend, rollover=rollover, in_main=in_main,
@@ -138,6 +168,7 @@ def session_state(epoch: int) -> SessionState:
         asia_quiet=not weekend and _is_asia_quiet(epoch),
         entries_allowed=not reasons,
         block_reasons=reasons,
+        in_trading_window=in_trading,
     )
 
 
@@ -237,6 +268,19 @@ def _main_window_third(epoch: int, london: datetime) -> MainWindowThird:
     return MAIN_WINDOW_THIRD_LABELS[index]
 
 
+def _in_trading_window(epoch: int, london: datetime) -> bool:
+    """London 08:00 to New York 16:00 on a weekday.
+
+    Anchoring on the London date is safe for the same reason as the main window:
+    the whole window lies on that date in London, New York and UTC.
+    """
+    day = london.date()
+    if not _is_weekday(day):
+        return False
+    start = _local_epoch(LONDON, day, LONDON_OPEN)
+    return start <= epoch < _local_epoch(NEW_YORK, day, NY_TRADING_END)
+
+
 def _in_lbma_pause(epoch: int, london_day: date) -> bool:
     fixes = (_local_epoch(LONDON, london_day, clock) for clock in LBMA_FIXES)
     return any(
@@ -272,12 +316,12 @@ def _phase(
 
 
 def _block_reasons(
-    *, weekend: bool, rollover: bool, in_main: bool, lbma: bool, us_data: bool
+    *, weekend: bool, rollover: bool, in_trading: bool, lbma: bool, us_data: bool
 ) -> tuple[str, ...]:
     ordered = (
         (weekend, BLOCK_WEEKEND),
         (rollover, BLOCK_ROLLOVER),
-        (not in_main, BLOCK_OUTSIDE_MAIN_WINDOW),
+        (not in_trading, BLOCK_OUTSIDE_TRADING_HOURS),
         (lbma, BLOCK_LBMA_PAUSE),
         (us_data, BLOCK_US_DATA_BAR),
     )

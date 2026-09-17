@@ -134,7 +134,7 @@ def test_a_loss_seen_by_both_the_ea_and_the_journal_counts_once() -> None:
 
 
 def test_realised_losses_trip_the_v6_breaker_of_a_large_account() -> None:
-    settings = V6Settings(_env_file=None)
+    settings = V6Settings(_env_file=None, sizing_equity_basis_usd=2000.0)
     pnl = realised_pnl((linked(FIRST, -200.0, closed_at=CLOSE - 6 * DAY),), LOGIN, AS_OF)
 
     inputs = pnl.breaker_inputs(equity=10_000.0, floating_v6=0.0, daily_start=10_000.0,

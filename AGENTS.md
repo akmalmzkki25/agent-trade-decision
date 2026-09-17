@@ -94,9 +94,12 @@ print it and never open `adapter/.env`.
    Exit 1 or 3: report `problems` and `hints`, then stop.
 2. Run `OP session start`. Stop on a `refusal`, or when `mode` is `execute` and `armed`
    is false.
-3. Repeat: run `OP wait --agent <AGENT> --timeout 240` as a blocking command. On a
-   packet, run `OP template`, write `adapter/.v6_operator/decision.json` by the rubric,
-   run `OP submit --agent <AGENT>`, then wait again.
+3. Repeat: run `OP wait --agent <AGENT> --timeout 240` as a blocking command. A packet
+   comes on every M15 bar that passes the hard gates while V6 is flat. On a packet,
+   analyse the market yourself, run `OP template`, write
+   `adapter/.v6_operator/decision.json` by the rubric (HOLD, a suggestion, or your own
+   `entry_plan` inside the packet's `limits`; code sets the lots), run
+   `OP submit --agent <AGENT>`, then wait again.
 4. On "Sudah cukup hari ini", run `OP session stop --reason sudah_cukup` and report the
    day. Open positions keep running.
 

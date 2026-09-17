@@ -128,7 +128,7 @@ def test_the_real_route_refuses_a_disabled_agent(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(("packet", "code", "detail"), [
-    ({"schema_version": "v6.operator.packet.1"}, 1,
+    ({"schema_version": "v6.operator.packet.2"}, 1,
      "malformed packet: cycle_id,packet_hash,expires_at_epoch,candidates"),
     ([1, 2], 1, "the packet is not a JSON object"),
 ])

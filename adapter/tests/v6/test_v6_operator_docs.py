@@ -51,22 +51,24 @@ def test_the_documented_packet_and_decision_are_valid() -> None:
     assert template == {**packet.decision_template.model_dump(mode="json"), "agent": None}
 
 
-def test_the_documented_candidate_is_sized_as_the_doc_says() -> None:
-    packet = OperatorPacket.model_validate_json(example("packet"))
-    candidate = packet.candidates[0]
-    news = json.loads(example("decision"))["views"]["news_risk"]["size_multiplier"]
-    sized = size(candidate.exit.stop_distance, news)
-    assert sized.lots == 0.01 and sized.risk_usd == pytest.approx(candidate.sizing.risk_usd)
-    assert refused(candidate.exit.stop_distance, 0.5)
+def test_the_documented_agent_entry_is_sized_as_the_doc_says() -> None:
+    raw = json.loads(example("decision"))
+    plan, news = raw["entry_plan"], raw["views"]["news_risk"]["size_multiplier"]
+    stop = round(plan["entry"] - plan["stop"], 2)
+    sized = size(stop, news)
+    assert sized.lots == 0.01 and sized.risk_usd == pytest.approx(stop + 0.40)
+    assert sized.risk_budget_usd == pytest.approx(25.0 * news)
+    halved = size(stop, 0.5)
+    assert (halved.lots, halved.labels) == (0.01, ())      # $12.50 still pays $7.90
 
 
-# --- the sizing wall of section 5.7 ----------------------------------------------------------
+# --- the sizing table of section 5.7 ---------------------------------------------------------
 def size(stop: float, multiplier: float) -> Any:
     request = SizingRequest(
-        equity=2010.5, balance=2000.0, free_margin=2000.0, price=4532.35, stop_distance=stop,
-        risk_pct=0.5, size_multiplier=multiplier, remaining_daily_loss_usd=60.0,
-        margin_per_lot=2266.0, friction_price=0.40, spec=XAU)
-    return size_position(request, equity_basis_usd=2000.0, max_lots=0.01,
+        equity=96_896.17, balance=96_896.17, free_margin=96_000.0, price=4532.35,
+        stop_distance=stop, risk_pct=0.5, size_multiplier=multiplier,
+        remaining_daily_loss_usd=150.0, margin_per_lot=2266.0, friction_price=0.40, spec=XAU)
+    return size_position(request, equity_basis_usd=5000.0, max_lots=0.01,
                          notional_ratio_max=10.0)
 
 
@@ -75,15 +77,20 @@ def refused(stop: float, multiplier: float) -> bool:
     return isinstance(result, Refusal) and result.codes == (MIN_LOT_WALL,)
 
 
-@pytest.mark.parametrize(("multiplier", "largest_stop"), [
-    (1.0, 9.6), (0.8, 7.6), (0.75, 7.1), (0.64, 6.0)])
-def test_the_sizing_wall_rows(multiplier: float, largest_stop: float) -> None:
-    assert size(largest_stop, multiplier).lots == 0.01
-    assert refused(round(largest_stop + 0.01, 2), multiplier)
+@pytest.mark.parametrize(("multiplier", "floored_from"), [(1.0, None), (0.5, 12.1), (0.25, 5.85)])
+def test_the_sizing_table_rows(multiplier: float, floored_from: float | None) -> None:
+    widest = size(24.6, multiplier)
+    assert widest.lots == 0.01
+    assert refused(24.61, multiplier)
+    if floored_from is None:
+        assert widest.labels == ()
+    else:
+        assert widest.labels == ("MIN_LOT_FLOOR",)
+        assert size(max(floored_from, 6.0), multiplier).lots == 0.01
 
 
-@pytest.mark.parametrize("multiplier", [0.63, 0.5, 0.375])
-def test_below_the_wall_nothing_sizes_at_the_stop_floor(multiplier: float) -> None:
+@pytest.mark.parametrize("multiplier", [0.24, 0.1])
+def test_below_a_quarter_nothing_sizes(multiplier: float) -> None:
     assert refused(6.0, multiplier)
 
 

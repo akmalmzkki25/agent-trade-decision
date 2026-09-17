@@ -81,7 +81,8 @@ def test_a_valid_decision_is_accepted_with_every_view(sealed: OperatorPacket) ->
     assert decision.withdrawn_ids == frozenset()
     assert decision.summary() == {
         "cycle_id": of.CYCLE_ID, "agent": "codex", "action": "ENTER",
-        "candidate_id": of.BUY_ID, "flagged": [], "withdrawn": [], "latency_ms": 0}
+        "candidate_id": of.BUY_ID, "flagged": [], "agent_entry": False, "withdrawn": [],
+        "latency_ms": 0}
     assert _protocol(decision).action == "ENTER"
 
 
@@ -151,7 +152,7 @@ def test_an_expired_packet_refuses_decisions(sealed: OperatorPacket, now: float)
 def test_the_agent_must_be_enabled_in_settings_and_packet(sealed: OperatorPacket) -> None:
     only_claude = V6Settings(_env_file=None, operator_agents_csv="claude_code")
     allowed = op.allowed_values(operator_agents=("claude_code",),
-                                candidate_ids=(of.BUY_ID, of.SELL_ID),
+                                candidate_ids=(of.BUY_ID, of.SELL_ID, of.AGENT_ID),
                                 event_ids=(of.EVENT_ID,), pa_min_conviction=0.6)
     narrow = of.packet(allowed=allowed.model_dump(mode="json"))
 

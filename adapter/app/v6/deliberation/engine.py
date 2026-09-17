@@ -9,9 +9,12 @@ Deliberation engine: one closed M15 bar in, one recorded CycleResult out.
              -> protocol.resolve -> exits + sizing -> ShadowIntent (the sized order)
              -> execute mode, operator decision: publish through the IntentPort
 
-The operator backend asks only when the packet offers a candidate that sizes at
-the standard tier; it waits until bar close + V6_OPERATOR_DEADLINE_S and holds
-with APP-V6-OPERATOR-TIMEOUT when no decision arrives. The rules backend never
+The operator backend asks on every bar that passes the hard gates while a session
+is active, with or without detector suggestions: the agent may design its own
+entry (user decision 2026-09-17), which `agent_entry` turns into a candidate that
+takes the same exits/sizing/intent path. It waits until bar close +
+V6_OPERATOR_DEADLINE_S and holds with APP-V6-OPERATOR-TIMEOUT when no decision
+arrives. The rules backend never
 publishes (execute mode requires the operator backend). A published intent makes
 the cycle ENTER with its intent id; a decision the session may not publish stays
 ENTER_SHADOW; a publishing refusal holds with its reason.
@@ -26,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final
 
 import anyio
@@ -40,12 +43,19 @@ from ..providers.base import (
 )
 from ..providers.offline import OfflineProvider
 from ..providers.operator_queue import OperatorQueue
+from ..risk import limits
 from ..risk.breakers import BreakerStatus
 from ..risk.gates import evaluate_gates, failed_codes
 from ..risk.policy import EXECUTE_MODE
+from ..schemas.operator import OperatorPacket
+from ..schemas.operator_parts import AgentEntryPlan
 from ..setups import detect_all
+from ..cycle_types import CandidateAssessment
 from ..types import GateResult
-from .candidates import CandidatePool, Detector, assess_candidates, label_verdicts
+from .agent_entry import agent_candidate, limits_from_packet
+from .candidates import (
+    VERDICT_CHOSEN, CandidatePool, Detector, assess_candidate, assess_candidates, label_verdicts,
+)
 from .context_builder import (
     BarReader, ContextRequest, as_of_for, build_context, cycle_friction, load_bars,
 )
@@ -67,6 +77,7 @@ BREAKER_FAILED_DETAIL: Final[str] = "breaker evaluation failed"
 DETAIL_NO_CANDIDATE: Final[str] = "detectors found no candidate on this bar"
 DETAIL_NO_SESSION: Final[str] = "no active trading session: tier 0 only"
 DETAIL_LATE: Final[str] = "decision deadline passed"
+DETAIL_AGENT_EXIT: Final[str] = "the agent entry was refused by the exit plan: "
 STATUS_HOLD: Final[CycleStatus] = "HOLD"
 STATUS_ENTER: Final[CycleStatus] = "ENTER_SHADOW"
 STATUS_PUBLISHED: Final[CycleStatus] = "ENTER"
@@ -97,10 +108,16 @@ class Tier0:
     baseline: Baseline
 
 
+def rules_spread_ceiling(settings: V6Settings) -> int:
+    """The rules desks keep kn/15's preferred spread line, never above the gate."""
+    return min(settings.effective_max_spread_points,
+               limits.PREFERRED_SPREAD_POINTS[settings.account_type])
+
+
 def rules_provider_for(settings: V6Settings, clock: Clock) -> OfflineProvider:
     return OfflineProvider(clock=clock, pa_min_conviction=settings.pa_min_conviction,
                            structure_veto=settings.structure_veto,
-                           max_spread_points=settings.effective_max_spread_points)
+                           max_spread_points=rules_spread_ceiling(settings))
 
 
 def panel_for_backend(settings: V6Settings, rules: OfflineProvider) -> AgentProvider | None:
@@ -219,6 +236,8 @@ class DeliberationEngine:
             detail = "failed gates: " + ",".join(failed_codes(tier0.gates))
             return self._hold(draft.update(candidates=label_verdicts(pool, gated=True)),
                               gate_hold, detail)
+        if self._deps.operator is not None:
+            return await self._operator_path(self._deps.operator, draft, tier0)
         if not pool.assessments:
             return self._hold(draft, HoldReason.NO_CANDIDATE, DETAIL_NO_CANDIDATE)
         if not pool.offered:
@@ -227,8 +246,6 @@ class DeliberationEngine:
             return self._hold(draft, HoldReason.NO_SESSION, DETAIL_NO_SESSION)
         if self._late(request):
             return self._hold(draft, HoldReason.LATE, DETAIL_LATE)
-        if self._deps.operator is not None:
-            return await self._operator_decide(self._deps.operator, draft, tier0)
         panel = await self._tier1(tier0, request)
         if panel is None:
             return self._hold(self._timed(draft), HoldReason.LATE, DETAIL_LATE)
@@ -253,6 +270,16 @@ class DeliberationEngine:
             panel = await run_panel(deps.panel, deps.rules, tier0.inputs, tier0.baseline,
                                     deadline, deps.clock)
         return panel
+
+    async def _operator_path(self, queue: OperatorQueue, draft: CycleDraft,
+                             tier0: Tier0) -> CycleOutcome:
+        """Every gated-in bar with a session goes to the agent, suggestions or not."""
+        request = draft.request
+        if request.session_id is None:
+            return self._hold(draft, HoldReason.NO_SESSION, DETAIL_NO_SESSION)
+        if self._late(request):
+            return self._hold(draft, HoldReason.LATE, DETAIL_LATE)
+        return await self._operator_decide(queue, draft, tier0)
 
     async def _operator_decide(self, queue: OperatorQueue, draft: CycleDraft,
                                tier0: Tier0) -> CycleOutcome:
@@ -287,13 +314,34 @@ class DeliberationEngine:
         if protocol.hold_reason is not None:
             return self._hold(draft, protocol.hold_reason, protocol.detail)
         agent = None if operator is None else operator.agent
-        return await self._enter(draft, tier0, panel, protocol, agent)
-
-    async def _enter(self, draft: CycleDraft, tier0: Tier0, panel: PanelResult,
-                     protocol: ProtocolDecision, agent: str | None) -> CycleOutcome:
         item = tier0.pool.find(protocol.candidate_id)
+        plan = None if operator is None or operator.decision is None else (
+            operator.decision.entry_plan)
+        if item is None and plan is not None:
+            item = self._agent_item(tier0, operator.packet, plan)
+            draft = draft.update(candidates=draft.candidates + (item,))
+            if item.exit_plan is None:
+                codes = "" if item.refusal is None else ",".join(item.refusal.codes)
+                return self._hold(draft, HoldReason.EXIT, DETAIL_AGENT_EXIT + codes)
         if item is None:
             raise ValueError("the protocol picked a candidate that was not offered")
+        return await self._enter(draft, tier0, panel, protocol, agent, item)
+
+    def _agent_item(self, tier0: Tier0, packet: OperatorPacket,
+                    plan: AgentEntryPlan) -> CandidateAssessment:
+        """The agent's own entry as an assessed candidate, judged by the packet's limits."""
+        settings, context = self._deps.settings, tier0.context
+        candidate = agent_candidate(plan, limits_from_packet(packet), context.bar_open_epoch)
+        item = assess_candidate(context, candidate, settings,
+                                friction_price=cycle_friction(settings, context),
+                                tp_r_multiple=candidate.features["reward_r"])
+        if item.exit_plan is None:
+            return item
+        return replace(item, verdict=VERDICT_CHOSEN)
+
+    async def _enter(self, draft: CycleDraft, tier0: Tier0, panel: PanelResult,
+                     protocol: ProtocolDecision, agent: str | None,
+                     item: CandidateAssessment) -> CycleOutcome:
         order = shadow_order(tier0.context, item, protocol, source=panel.provider,
                              remaining_loss_usd=tier0.breakers.remaining_loss_usd,
                              settings=self._deps.settings)

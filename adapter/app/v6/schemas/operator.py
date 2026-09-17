@@ -3,9 +3,11 @@ Contracts of the operator backend (plan section 3.3; user decisions 2026-09-16).
 
 Each cycle that reaches tier 1 is served to an operator agent (Claude Code, Codex
 or Antigravity, in a chat session) as one `OperatorPacket`; the agent answers
-with one `OperatorDecision` that fills the four desk views and the Chief. Agents never
-emit a price, a lot or a direction: they rank the offered candidate ids and pick
-enum values, and `parse_operator_decision` applies the same semantic checks as
+with one `OperatorDecision` that fills the four desk views and the Chief. The Chief
+either enters one of the detector suggestions or the agent's own entry plan (the
+packet's `limits.agent_entry_id`, user decision 2026-09-17): side, order type,
+entry, stop and an optional target, which code validates and sizes. Agents never
+set lots. `parse_operator_decision` applies the same semantic checks as
 `agents.validate_view`. Packets exist for DEMO accounts only.
 
 `packet_hash` is the sha256 of the canonical JSON (sorted keys, no whitespace,
@@ -32,10 +34,10 @@ from .agents import (
 from .operator_parts import (
     ENUM_CHOICES, EQUITY_BANDS, LIMIT_VALUES, MAX_CODES, MAX_DECISION_BYTES, MAX_EVENTS,
     MAX_FEATURES, MAX_GATES, MAX_PACKET_H1_BARS, MAX_PACKET_M15_BARS, TOP_EQUITY_BAND,
-    AllowedValues, BaselineViews, CandidateExit, CandidateSizing, CompactBar, Epoch,
-    EquityBand, Frozen, Hash, PacketAccount, PacketBars, PacketCalendar, PacketCandidate,
-    PacketEvent, PacketGate, PacketMarket, PacketSession, RebuttalStance, allowed_values,
-    canonical_json, equity_band,
+    AgentEntryPlan, AllowedValues, BaselineViews, CandidateExit, CandidateSizing, CompactBar,
+    Epoch, EquityBand, Frozen, Hash, PacketAccount, PacketBars, PacketCalendar,
+    PacketCandidate, PacketEvent, PacketGate, PacketLevels, PacketLimits, PacketMarket,
+    PacketSession, RebuttalStance, allowed_values, canonical_json, equity_band,
 )
 
 __all__ = [
@@ -44,7 +46,8 @@ __all__ = [
     "MAX_FEATURES", "ENUM_CHOICES", "LIMIT_VALUES", "EQUITY_BANDS", "TOP_EQUITY_BAND",
     "DECISION_ERR_TOO_LARGE", "DECISION_ERR_NOT_JSON", "DECISION_ERR_SCHEMA",
     "DECISION_ERR_STALE", "DECISION_ERR_EXPIRED", "DECISION_ERR_AGENT", "DECISION_ERR_VIEW",
-    "DECISION_ERR_REBUTTAL", "EquityBand", "RebuttalStance", "CompactBar",
+    "DECISION_ERR_REBUTTAL", "DECISION_ERR_ENTRY_PLAN", "DECISION_SCHEMAS", "AgentEntryPlan",
+    "PacketLimits", "PacketLevels", "EquityBand", "RebuttalStance", "CompactBar",
     "PacketAccount", "PacketMarket", "PacketSession", "PacketBars", "PacketGate",
     "PacketEvent", "PacketCalendar", "CandidateExit", "CandidateSizing", "PacketCandidate",
     "BaselineViews", "AllowedValues", "OperatorPacketBody", "OperatorPacket", "OperatorViews",
@@ -54,8 +57,11 @@ __all__ = [
     "parse_operator_decision",
 ]
 
-PACKET_SCHEMA: Final[str] = "v6.operator.packet.1"
-DECISION_SCHEMA: Final[str] = "v6.operator.decision.1"
+PACKET_SCHEMA: Final[str] = "v6.operator.packet.2"
+DECISION_SCHEMA: Final[str] = "v6.operator.decision.2"
+# Version 1 decisions (no entry_plan) are still accepted: they can only pick a suggestion.
+DECISION_SCHEMAS: Final[tuple[str, ...]] = ("v6.operator.decision.1", DECISION_SCHEMA)
+DecisionSchema = Literal["v6.operator.decision.1", "v6.operator.decision.2"]
 HASH_EXCLUDED_KEYS: Final[frozenset[str]] = frozenset({"packet_hash", "decision_template"})
 M15_S: Final[int] = TIMEFRAME_SECONDS["M15"]
 MAX_ERROR_DETAIL_CHARS: Final[int] = 300
@@ -70,6 +76,7 @@ DECISION_ERR_EXPIRED: Final[str] = "DECISION_EXPIRED"
 DECISION_ERR_AGENT: Final[str] = "DECISION_AGENT_NOT_ALLOWED"
 DECISION_ERR_VIEW: Final[str] = "DECISION_VIEW"
 DECISION_ERR_REBUTTAL: Final[str] = "DECISION_REBUTTAL"
+DECISION_ERR_ENTRY_PLAN: Final[str] = "DECISION_ENTRY_PLAN"
 
 
 def packet_hash(document: Mapping[str, object]) -> str:
@@ -81,7 +88,7 @@ def packet_hash(document: Mapping[str, object]) -> str:
 class OperatorPacketBody(Frozen):
     """Everything the agent decides on; `packet_hash` covers exactly these fields."""
 
-    schema_version: Literal["v6.operator.packet.1"]
+    schema_version: Literal["v6.operator.packet.2"]
     cycle_id: ItemId
     created_at_epoch: Epoch
     expires_at_epoch: Epoch
@@ -93,23 +100,25 @@ class OperatorPacketBody(Frozen):
     market: PacketMarket
     session: PacketSession
     bars: PacketBars
+    levels: PacketLevels
+    limits: PacketLimits
     gates: tuple[PacketGate, ...] = Field(max_length=MAX_GATES)
     calendar: PacketCalendar
-    candidates: tuple[PacketCandidate, ...] = Field(
-        min_length=1, max_length=MAX_OFFERED_CANDIDATES)
+    candidates: tuple[PacketCandidate, ...] = Field(max_length=MAX_OFFERED_CANDIDATES)
     baseline_views: BaselineViews
     allowed: AllowedValues
 
     @model_validator(mode="after")
     def _check_body(self) -> "OperatorPacketBody":
-        ids = tuple(item.candidate_id for item in self.candidates)
+        ids = tuple(item.candidate_id for item in self.candidates) + (
+            self.limits.agent_entry_id,)
         events = tuple(event.event_id for event in self.calendar.events)
         checks = (
             (self.bar_close_epoch == self.bar_open_epoch + M15_S, "bar_close is not open + M15"),
             (self.bar_close_epoch <= self.created_at_epoch < self.expires_at_epoch,
              "times must satisfy bar_close <= created_at < expires_at"),
             (ids == self.allowed.candidate_ids and len(set(ids)) == len(ids),
-             "allowed.candidate_ids must list the distinct candidates in order"),
+             "allowed.candidate_ids must list the distinct candidates, then the agent entry"),
             (events == self.allowed.event_ids, "allowed.event_ids must list the calendar events"),
         )
         problems = [message for ok, message in checks if not ok]
@@ -128,15 +137,19 @@ class OperatorViews(Frozen):
 
 
 class OperatorDecision(Frozen):
-    """One agent's answer to one packet. `rebuttal` is PA's R2 stance per TAKE candidate."""
+    """One agent's answer to one packet. `rebuttal` is PA's R2 stance per TAKE candidate.
 
-    schema_version: Literal["v6.operator.decision.1"]
+    `entry_plan` is required exactly when the Chief ENTERs the packet's agent entry id.
+    """
+
+    schema_version: DecisionSchema
     cycle_id: ItemId
     packet_hash: Hash
     agent: OperatorAgent
     views: OperatorViews
     chief: ChiefDecision
     rebuttal: dict[ItemId, RebuttalStance] = Field(default_factory=dict, max_length=MAX_RANKED)
+    entry_plan: AgentEntryPlan | None = None
 
     @property
     def withdrawn_ids(self) -> frozenset[str]:
@@ -256,6 +269,23 @@ def _check_rebuttal(decision: OperatorDecision) -> None:
                                     f"rebuttal names candidates PA did not TAKE: {stray}")
 
 
+def entry_plan_problem(chief: ChiefDecision, plan: object, agent_entry_id: str) -> str | None:
+    """Why the entry plan does not match the Chief's pick, or None."""
+    enters_agent = chief.action == "ENTER" and chief.candidate_id == agent_entry_id
+    if enters_agent and plan is None:
+        return "the Chief enters the agent entry but entry_plan is missing"
+    if plan is not None and not enters_agent:
+        return "entry_plan is only allowed when the Chief ENTERs the agent entry id"
+    return None
+
+
+def _check_entry_plan(decision: OperatorDecision, packet: OperatorPacket) -> None:
+    problem = entry_plan_problem(decision.chief, decision.entry_plan,
+                                 packet.limits.agent_entry_id)
+    if problem is not None:
+        raise OperatorDecisionError(DECISION_ERR_ENTRY_PLAN, problem)
+
+
 def parse_operator_decision(raw: bytes, packet: OperatorPacket, *,
                             now: float) -> OperatorDecision:
     """Validate an agent's submission against the packet it answers.
@@ -275,4 +305,5 @@ def parse_operator_decision(raw: bytes, packet: OperatorPacket, *,
         raise OperatorDecisionError(DECISION_ERR_AGENT, "the agent is not in V6_OPERATOR_AGENTS")
     _check_views(decision, packet)
     _check_rebuttal(decision)
+    _check_entry_plan(decision, packet)
     return decision

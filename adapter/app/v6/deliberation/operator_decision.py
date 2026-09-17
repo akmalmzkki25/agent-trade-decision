@@ -9,9 +9,12 @@ only flagged and the cycle uses that desk's rules view instead.
 
 Nothing an agent writes can leave the enum space: views are re-parsed strictly
 (unknown fields, NaN, oversized text and ids that were not offered are
-refused), notes are bounded printable text that no rule reads, and direction,
-prices and lots never come from a decision. Error details never echo submitted
-text: they name known fields, pydantic error types and VIEW_ERR_* codes only.
+refused), notes are bounded printable text that no rule reads, and lots never
+come from a decision. An agent-designed entry (`entry_plan`) is checked here
+against the packet's limits, so the agent learns at once why a plan does not fit
+and can resubmit before the deadline; `risk/` still sizes it and may refuse it.
+Error details never echo submitted text: they name known fields, pydantic error
+types, VIEW_ERR_* codes and agent_entry.PROBLEM_* codes only.
 """
 
 from __future__ import annotations
@@ -39,11 +42,13 @@ from ..schemas.agents import (
     NewsRiskView, PriceActionView, StructureView, ViewValidationError, validate_view,
 )
 from ..schemas.operator import (
-    DECISION_ERR_AGENT, DECISION_ERR_EXPIRED, DECISION_ERR_NOT_JSON, DECISION_ERR_REBUTTAL,
-    DECISION_ERR_SCHEMA, DECISION_ERR_STALE, DECISION_ERR_TOO_LARGE, DECISION_ERR_VIEW,
-    MAX_DECISION_BYTES, OperatorPacket, RebuttalStance,
+    DECISION_ERR_AGENT, DECISION_ERR_ENTRY_PLAN, DECISION_ERR_EXPIRED, DECISION_ERR_NOT_JSON,
+    DECISION_ERR_REBUTTAL, DECISION_ERR_SCHEMA, DECISION_ERR_STALE, DECISION_ERR_TOO_LARGE,
+    DECISION_ERR_VIEW, MAX_DECISION_BYTES, DecisionSchema, OperatorPacket, RebuttalStance,
+    entry_plan_problem,
 )
-from ..schemas.operator_parts import Frozen, Hash
+from ..schemas.operator_parts import AgentEntryPlan, Frozen, Hash
+from .agent_entry import limits_from_packet, plan_problems
 from .panel import CHIEF_ROLE, Baseline, PanelResult
 
 logger = logging.getLogger(__name__)
@@ -73,13 +78,14 @@ class RawViews(Frozen):
 class DecisionEnvelope(Frozen):
     """An OperatorDecision whose views are still unchecked JSON."""
 
-    schema_version: Literal["v6.operator.decision.1"]
+    schema_version: DecisionSchema
     cycle_id: ItemId
     packet_hash: Hash
     agent: OperatorAgent
     views: RawViews
     chief: JsonValue
     rebuttal: dict[ItemId, RebuttalStance] = Field(default_factory=dict, max_length=MAX_RANKED)
+    entry_plan: JsonValue = None
 
 
 KNOWN_FIELDS: Final[frozenset[str]] = frozenset(DecisionEnvelope.model_fields) | frozenset(
@@ -125,6 +131,7 @@ class ValidatedDecision:
     rebuttal: Mapping[str, str] = field(default_factory=dict)
     flags: tuple[DeskFlag, ...] = ()
     latency_ms: int = 0
+    entry_plan: AgentEntryPlan | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rebuttal", MappingProxyType(dict(self.rebuttal)))
@@ -167,6 +174,7 @@ class ValidatedDecision:
         """Log- and status-safe facts (no free text)."""
         return {"cycle_id": self.cycle_id, "agent": self.agent, "action": self.chief.action,
                 "candidate_id": self.chief.candidate_id, "flagged": list(self.flagged_roles),
+                "agent_entry": self.entry_plan is not None,
                 "withdrawn": sorted(self.withdrawn_ids), "latency_ms": self.latency_ms}
 
 
@@ -252,6 +260,9 @@ def _checked_views(envelope: DecisionEnvelope, packet: OperatorPacket) -> Decisi
     if stray:
         return _error(DECISION_ERR_REBUTTAL,
                       f"rebuttal names {len(stray)} candidate(s) price_action did not TAKE")
+    plan = _checked_plan(envelope, packet, chief_view)
+    if isinstance(plan, DecisionError):
+        return plan
     desks = {role: check(role, getattr(envelope.views, role)) for role in RISK_DESKS}
     return ValidatedDecision(
         cycle_id=envelope.cycle_id, packet_hash=envelope.packet_hash, agent=envelope.agent,
@@ -259,9 +270,36 @@ def _checked_views(envelope: DecisionEnvelope, packet: OperatorPacket) -> Decisi
         news_risk=_typed(desks["news_risk"], NewsRiskView),
         liquidity=_typed(desks["liquidity"], LiquidityView),
         structure=_typed(desks["structure"], StructureView),
-        rebuttal=dict(envelope.rebuttal),
+        rebuttal=dict(envelope.rebuttal), entry_plan=plan,
         flags=tuple(DeskFlag(role=role, code=result) for role, result in desks.items()
                     if isinstance(result, str)))
+
+
+def _checked_plan(envelope: DecisionEnvelope, packet: OperatorPacket,
+                  chief: ChiefDecision) -> AgentEntryPlan | DecisionError | None:
+    """The agent's entry plan when the Chief enters it, checked against the packet limits."""
+    raw = envelope.entry_plan
+    mismatch = entry_plan_problem(chief, raw, packet.limits.agent_entry_id)
+    if mismatch is not None:
+        return _error(DECISION_ERR_ENTRY_PLAN, mismatch, "entry_plan")
+    if raw is None:
+        return None
+    try:
+        plan = AgentEntryPlan.model_validate(raw)
+    except ValidationError as exc:
+        errors = exc.errors(include_url=False, include_context=False, include_input=False)
+        where = ", ".join(f"{_safe_location(err['loc'])}({err['type']})"
+                          for err in errors[:MAX_REPORTED_ERRORS])
+        return _error(DECISION_ERR_ENTRY_PLAN, f"invalid at: {where}", "entry_plan")
+    if plan.order_type != chief.order_style:
+        return _error(DECISION_ERR_ENTRY_PLAN,
+                      f"chief.order_style {chief.order_style} must equal "
+                      f"entry_plan.order_type {plan.order_type}", "entry_plan")
+    problems = plan_problems(plan, limits_from_packet(packet))
+    if problems:
+        detail = "; ".join(f"{item.code}: {item.message}" for item in problems)
+        return _error(DECISION_ERR_ENTRY_PLAN, detail, "entry_plan")
+    return plan
 
 
 def validate_decision(packet: OperatorPacket, decision: bytes | DecisionEnvelope,

@@ -136,7 +136,7 @@ def test_a_passive_buy_becomes_a_buy_limit_with_every_ea_limit() -> None:
         "operator", "claude_code", 1, 250570)
     assert (row.side, row.order_type, row.entry, row.sl, row.tp, row.lots, row.risk_usd) == (
         "buy", "BUY_LIMIT", 4298.0, 4291.0, 4312.0, 0.01, 7.4)
-    assert (draft.ref_price, draft.max_drift_points, draft.max_spread_points) == (4300.2, 140, 35)
+    assert (draft.ref_price, draft.max_drift_points, draft.max_spread_points) == (4300.2, 140, 50)
     assert (row.valid_until_epoch, row.pending_expiry_epoch) == (
         math.floor(NOW) + 120, CLOSE + 1800)
     assert (row.time_barrier_s, row.created_at) == (7200, NOW)

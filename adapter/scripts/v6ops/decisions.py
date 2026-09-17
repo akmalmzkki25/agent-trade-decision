@@ -47,7 +47,7 @@ from .waiting import NEXT_NO_SESSION, collect_codes, demo_refused, session_gone
 
 DECISION_PATH: Final[str] = "/v6/operator/decision"
 STATUS_PATH: Final[str] = "/v6/status"
-DECISION_SCHEMA: Final[str] = "v6.operator.decision.1"
+DECISION_SCHEMA: Final[str] = "v6.operator.decision.2"
 MAX_DECISION_BYTES: Final[int] = 64 * 1024
 RESULT_POLLS: Final[int] = 8
 RESULT_POLL_S: Final[float] = 0.5
@@ -99,14 +99,35 @@ def fallback_template(packet: Mapping[str, Any]) -> dict[str, Any]:
         views[role] = _plain(view if isinstance(view, Mapping) else default)
     return {"schema_version": DECISION_SCHEMA, "cycle_id": packet.get("cycle_id"),
             "packet_hash": packet.get("packet_hash"), "agent": None, "views": views,
-            "chief": _plain(HOLD_CHIEF), "rebuttal": {}}
+            "chief": _plain(HOLD_CHIEF), "rebuttal": {}, "entry_plan": None}
 
 
 def build_template(packet: Mapping[str, Any]) -> dict[str, Any]:
     """The packet's decision template with `agent` left for `submit --agent`."""
     template = packet.get("decision_template")
     decision = _plain(template) if isinstance(template, Mapping) else fallback_template(packet)
-    return {**decision, "agent": None, "rebuttal": decision.get("rebuttal") or {}}
+    return {**decision, "agent": None, "rebuttal": decision.get("rebuttal") or {},
+            "entry_plan": decision.get("entry_plan")}
+
+
+def agent_entry_example(packet: Mapping[str, Any]) -> dict[str, Any] | None:
+    """How to enter the agent's own trade: the fields to set (values are placeholders)."""
+    limits = packet.get("limits")
+    if not isinstance(limits, Mapping) or not limits.get("agent_entry_possible"):
+        return None
+    entry_id = limits.get("agent_entry_id")
+    return {
+        "views.price_action.ranked": [{"candidate_id": entry_id, "verdict": "TAKE",
+                                       "conviction": 0.7, "reason_codes": [], "note": ""}],
+        "chief": {"action": "ENTER", "candidate_id": entry_id,
+                  "order_style": "LIMIT (must equal entry_plan.order_type)"},
+        "entry_plan": {"side": "buy|sell", "order_type": "LIMIT|MARKET",
+                       "entry": "price for LIMIT (buy <= buy_limit_max, sell >= "
+                                "sell_limit_min), null for MARKET",
+                       "stop": "price, distance in [stop_floor, max_stop_distance]",
+                       "target": "price between min_reward_r and max_reward_r, or null",
+                       "thesis": "<= 300 chars"},
+    }
 
 
 def _existing_edit(out_path: Path, fresh: Mapping[str, Any]) -> bool:
@@ -128,6 +149,8 @@ def run_template(ctx: Context, *, packet_path: Path, out_path: Path, force: bool
                "candidate_ids": get_path(packet, "allowed", "candidate_ids"),
                "event_ids": get_path(packet, "allowed", "event_ids"),
                "pa_min_conviction": get_path(packet, "allowed", "pa_min_conviction"),
+               "limits": packet.get("limits"),
+               "agent_entry_example": agent_entry_example(packet),
                "agents": get_path(packet, "allowed", "agents")}
     if left <= 0:
         emit(ctx.stdout, {**summary, "written": None, "expired": True, "next": NEXT_EXPIRED})

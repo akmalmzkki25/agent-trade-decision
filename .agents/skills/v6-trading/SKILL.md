@@ -87,7 +87,12 @@ arrives while you are busy stays open until its deadline, and the next `wait` ge
   1. Read the printed summary. Read `adapter/.v6_operator/packet.json` when you need
      bars, gates, features or the allowed enums.
   2. Run `OP template`.
-  3. Decide with the rubric and write the full decision to
+  3. Analyse the market yourself (bars, `levels`, ATRs, session quality, calendar,
+     costs) and decide with the rubric (section 5): HOLD, enter a suggestion, or
+     design your own entry. For your own entry, rank `limits.agent_entry_id` TAKE, set
+     the Chief to ENTER that id with `order_style` equal to the plan's `order_type`,
+     and fill `entry_plan` (side, LIMIT or MARKET, entry, stop, target or null,
+     thesis) inside `limits` (section 5.8). Never set lots. Write the full decision to
      `adapter/.v6_operator/decision.json` with your file tool. Keep `cycle_id`,
      `packet_hash` and `schema_version`; use only ids and enum values from `allowed`;
      leave `agent` as `null` (`submit` fills it in).
@@ -98,8 +103,9 @@ arrives while you are busy stays open until its deadline, and the next `wait` ge
      - exit 1 with `code` `EXPIRED`: the packet is closed (expired, or withdrawn by a
        stop, halt or disarm). Do not resubmit; run `wait` (it exits 4 if the session
        ended);
-     - exit 1 with another `code`: report `code` and `error`. The packet stays open, so
-       fix the decision and submit again while time remains;
+     - exit 1 with another `code`: report `code` and `error` (for `DECISION_ENTRY_PLAN`
+       the detail names the broken limit). The packet stays open, so fix the decision
+       and submit again while time remains;
      - exit 4 (the packet is closed and the session has ended) or 5: act as the table
        above says for `wait`.
   6. Run `wait` again (step 4).
