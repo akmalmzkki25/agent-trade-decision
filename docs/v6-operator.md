@@ -12,7 +12,9 @@
 > gate keamanan** (sesi London + New York), dengan atau tanpa saran detektor. Agen
 > **menganalisis sendiri** dan boleh **merancang entry sendiri** (`entry_plan`: arah,
 > LIMIT/MARKET, entry, stop, target) di dalam blok `limits`, atau memilih saran, atau HOLD.
-> Agen **tidak pernah** menentukan lot: kode yang memvalidasi dan menghitung lot.
+> Agen **memilih lot 0,01–0,03** (`lots`); kode tetap memotongnya bila budget risiko tidak
+> cukup. Selama ada order pending V6, setiap bar datang **paket review**: jawab
+> `pending_action` KEEP atau CANCEL (Chief HOLD).
 > News/Liquidity/Structure hanya bisa memveto atau mengecilkan (pengali ≤ 1); Chief hanya
 > bisa menurunkan risiko. Akun
 > **REAL/CONTEST selalu ditolak**: berhenti dan lapor. Selama sesi: jangan edit file
@@ -174,10 +176,11 @@ sent). `wait` retries an unreachable adapter or a 5xx twice, then exits 1.
      packet, and write that reason in `note`.
    - Never be less cautious than the baseline on hard data: a stale calendar, spread at the
      ceiling, a quote gap.
-5. **You may design the entry, never the size.** `entry_plan` carries side, order type,
-   entry, stop and target, and must fit `limits` (5.8). Lots, expiry, time barrier and
-   magic always come from `adapter/app/v6/risk/`; a suggestion's side and prices come
-   from the detector.
+5. **You may design the entry and choose the size.** `entry_plan` carries side, order
+   type, entry, stop and target, and must fit `limits` (5.8). `lots` (0.01-0.03) is your
+   size request; the sizer may reduce it to what the risk budget pays, never raise it.
+   Expiry, time barrier and magic always come from `adapter/app/v6/risk/`; a
+   suggestion's side and prices come from the detector.
 6. **Use only listed values.**
    - Ids come from `allowed.candidate_ids` and `allowed.event_ids`.
    - Enum values and size limits come from `allowed.enums` and `allowed.limits`.
@@ -310,6 +313,10 @@ HOLD: `null`); `risk_tier` reduced|standard; `order_style`; `exit_profile` STAND
   suggestion (for suggestions: highest conviction, then displacement > orb > retest).
 - The Chief can only lower risk; `reduced` halves the budget (the minimum lot still
   trades, 5.7).
+- **Size (`lots`).** Choose 0.01 for an ordinary setup, 0.02 for a clean one with a tight
+  stop, 0.03 only for your best read with a stop the budget still pays at 0.03
+  (0.03 × (stop + $0.40) × 100 ≤ B × m, about a $7.9 stop at m = 1). The sizer reduces an
+  unaffordable request and never goes below 0.01 while B pays for it.
 - Prefer `LIMIT`. MARKET is for a clear reason (a fast break you do not want to miss);
   a liquidity LIMIT turns an agent MARKET entry into a HOLD.
 - `rationale` is the audit trail: the id, its conviction, the vetoes you weighed and the
@@ -337,13 +344,15 @@ Resolution rules (`deliberation/protocol.py`, in order):
 - Budget B = min(equity, balance, $5,000) × 0.5 % = **$25**, capped at half the remaining
   daily loss allowance; the scaled budget is B × m.
 - Loss per 0.01 lot = stop distance + $0.40 friction.
-- Lots are floored to 0.01, with 0.01 as the execute cap; a size is never rounded up past
-  B.
+- Lots are floored to 0.01 and capped by your `lots` (default 0.01) and `V6_MAX_LOTS`
+  (0.03); a size is never rounded up past B.
 - **Minimum-lot floor.** When only m pushed the scaled budget below the minimum lot while
   B still pays for it (and m ≥ 0.25), the trade is sized at exactly 0.01 lot, labelled
   `MIN_LOT_FLOOR`: asking for less risk gives the least risk available, not a refusal.
 - `APP-V6-SIZE` (`MIN_LOT_WALL`) only when B itself cannot pay the stop: a stop wider than
   about **$24.60** at 0.01 lot.
+- The EA checks the order again: `lots ≤ InpMaxLots` (0.03) and the loss at the stop
+  ≤ `InpMaxRiskUsd` ($50).
 
 | m | Scaled budget | Largest stop at 0.01 lot |
 |---|---|---|
@@ -378,6 +387,28 @@ of it; a pull below 1R holds with `APP-V6-EXIT`, so keep targets short of the ne
 level or leave the target `null`. Sizing and the intent builder follow. Write the level
 logic in `thesis` and in the Chief `rationale`.
 
+### 5.9 Reviewing a resting order (`pending_action`)
+
+A published LIMIT rests until it fills or expires (2 × M15). While it rests, the
+OCCUPANCY gate blocks new entries, but every bar still brings a **review packet** (as
+long as the system gates pass): `pending_order` shows the order (type, price, SL, TP,
+lots, expiry) and `distance_from_quote`, how far the market must travel to fill it.
+`candidates` is empty and `limits.agent_entry_possible` is false.
+
+Answer with a HOLD Chief, no `entry_plan`, no `lots`, and `pending_action`:
+- **KEEP** when the plan still holds: price has not broken the invalidation or run past
+  the target, and the level you wanted is still the level the market is likely to
+  test.
+- **CANCEL** when the plan is dead: price broke through the target or the invalidation
+  zone before filling, the structure changed (a breakout replaced the range you
+  faded), a news risk appeared inside the holding window, or the fill would now come
+  only after a move that contradicts the thesis.
+
+CANCEL queues `CANCEL_PENDING` for the EA (the session stop path); the cycle records
+`APP-V6-PENDING-CANCELLED`, KEEP records `APP-V6-PENDING-KEPT`. The next bar without a
+resting order brings a normal packet again. An open position does not produce review
+packets: SL, TP and the time barrier manage it.
+
 ## 6. Packet and decision
 
 The packet is `v6.operator.packet.2` (decisions use `v6.operator.decision.2`; `.1` is
@@ -394,12 +425,13 @@ fields are:
 | `session` | phase, `quality` (prime/active/thin), main-window third and `in_main_window`, `entries_allowed`, `continuation_allowed`, `block_reasons`, `armed` |
 | `bars` | closed bars `[open_epoch, o, h, l, c]`: M1 ≤ 30, M5 ≤ 36, M15 ≤ 32, H1 ≤ 24, D1 ≤ 5 |
 | `levels` | prior full day's high/low, nearest $10 and $50 levels, confirmed M15 and H1 pivots |
-| `limits` | the bounds of your own entry (5.8): `agent_entry_id`, passive LIMIT edges, entry distance, stop range, reward range, budget, lots cap, pending expiry, time barrier |
+| `limits` | the bounds of your own entry (5.8): `agent_entry_id`, passive LIMIT edges, entry distance, stop range, reward range, budget, `volume_min`/`lots_step`/`max_lots`, pending expiry, time barrier |
+| `pending_order` | review packets only (5.9): the resting V6 order and `distance_from_quote`; `null` otherwise |
 | `gates`, `calendar` | gate results; calendar assessment and events (`event_id` for `news_risk.event_ids`) |
 | `candidates` | 0-3 detector suggestions that size at m = 1: side, entry, invalidation, codes, features, `exit`, `sizing` |
 | `baseline_views` | the rules desks' four views (null where a desk failed) |
 | `allowed` | agents, ids (suggestions, then `limits.agent_entry_id`), `pa_min_conviction`, every enum and size limit |
-| `decision_template` | the baseline views, a HOLD Chief, `entry_plan: null` and the first allowed agent |
+| `decision_template` | the baseline views, a HOLD Chief, `entry_plan: null`, `lots: null`, `pending_action` (`KEEP` in a review packet, else `null`) and the first allowed agent |
 
 The two examples below are exact: `tests/v6/test_v6_operator_docs.py` validates them
 with the adapter's own parser. The prices are illustrative.
@@ -600,7 +632,8 @@ with the adapter's own parser. The prices are illustrative.
     "default_reward_r": 2.0,
     "risk_budget_usd": 25.0,
     "volume_min": 0.01,
-    "max_lots": 0.01,
+    "lots_step": 0.01,
+    "max_lots": 0.03,
     "pending_expiry_epoch": 1789647300,
     "time_barrier_s": 7200
   },
@@ -870,6 +903,10 @@ with the adapter's own parser. The prices are illustrative.
         "CAUTION",
         "BLOCK"
       ],
+      "pending_action": [
+        "KEEP",
+        "CANCEL"
+      ],
       "price_action.ranked.reason_codes": [
         "LEVEL_CONFLUENCE",
         "HTF_ALIGNED",
@@ -944,11 +981,12 @@ with the adapter's own parser. The prices are illustrative.
       "max_view_bytes": 8192
     }
   },
-  "packet_hash": "f088cf3fbdaf5b103b06a3bcd54e2d69c5c934ed340698fa076abc814651867a",
+  "pending_order": null,
+  "packet_hash": "96da4893509aefeedafef3ca9d747fe7d27fd837cac7a1f205c852938c2e8294",
   "decision_template": {
     "schema_version": "v6.operator.decision.2",
     "cycle_id": "c-5f0e2a9b4c1d7e36",
-    "packet_hash": "f088cf3fbdaf5b103b06a3bcd54e2d69c5c934ed340698fa076abc814651867a",
+    "packet_hash": "96da4893509aefeedafef3ca9d747fe7d27fd837cac7a1f205c852938c2e8294",
     "agent": "claude_code",
     "views": {
       "price_action": {
@@ -1024,7 +1062,9 @@ with the adapter's own parser. The prices are illustrative.
       "dissent": ""
     },
     "rebuttal": {},
-    "entry_plan": null
+    "entry_plan": null,
+    "lots": null,
+    "pending_action": null
   }
 }
 ```
@@ -1037,7 +1077,8 @@ In this example the decision below ENTERs the agent's own entry instead of a sug
   the broken H1 pivot (4531.1) with a LIMIT at 4531.40, a stop under the M15 swing low
   (7.50 away, inside 6.00-22.02) and a 2R target at 4546.40, short of the 4550 level.
 - News tightens to CAUTION 0.80 (jobless claims inside the two-hour barrier); m = 0.80
-  gives a $20.00 budget, and the plan risks $7.90 at 0.01 lot.
+  gives a $20.00 budget, and the requested 0.02 lot risks $15.80 (0.03 would be $23.70
+  and be reduced to 0.02).
 - With a CAUTION of 0.50 the same plan would still trade at 0.01 lot (`MIN_LOT_FLOOR`).
 
 <!-- example:decision -->
@@ -1045,7 +1086,7 @@ In this example the decision below ENTERs the agent's own entry instead of a sug
 {
   "schema_version": "v6.operator.decision.2",
   "cycle_id": "c-5f0e2a9b4c1d7e36",
-  "packet_hash": "f088cf3fbdaf5b103b06a3bcd54e2d69c5c934ed340698fa076abc814651867a",
+  "packet_hash": "96da4893509aefeedafef3ca9d747fe7d27fd837cac7a1f205c852938c2e8294",
   "agent": "claude_code",
   "views": {
     "price_action": {
@@ -1114,12 +1155,14 @@ In this example the decision below ENTERs the agent's own entry instead of a sug
     "order_style": "LIMIT",
     "exit_profile": "STANDARD",
     "confidence": 0.55,
-    "rationale": "own entry: buy limit 4531.40 on the H1 pivot retest, stop 4523.90 under the M15 swing, target 4546.40 (2R) before 4550",
+    "rationale": "own entry: buy limit 4531.40 on the H1 pivot retest, stop 4523.90 under the M15 swing, target 4546.40 (2R) before 4550; 0.02 lot risks 15.80 of the 20.00 budget",
     "dissent": "news: a HIGH USD release falls inside the holding window"
   },
   "rebuttal": {
     "agent-1789644600": "maintain"
   },
+  "lots": 0.02,
+  "pending_action": null,
   "entry_plan": {
     "side": "buy",
     "order_type": "LIMIT",
@@ -1143,6 +1186,8 @@ answers 409 with `code`, or 422 with `code: INVALID` and `error`:
 | 422 `INVALID` | `DECISION_SCHEMA` | a missing or unknown field, a wrong type, an out-of-range value, a string too long |
 | 422 `INVALID` | `DECISION_VIEW` | Price Action or Chief is wrong: an unknown id, `abstain` with ranks, ENTER without a candidate, HOLD with one, a duplicate id |
 | 422 `INVALID` | `DECISION_REBUTTAL` | a rebuttal names a candidate PA did not TAKE |
+| 422 `INVALID` | `DECISION_LOTS` | `lots` outside `volume_min`..`max_lots`, off the `lots_step` grid, or given without an ENTER |
+| 422 `INVALID` | `DECISION_REVIEW` | a review packet without `pending_action`, or with an ENTER or `lots`; `pending_action` in an entry packet |
 | 422 `INVALID` | `DECISION_ENTRY_PLAN` | `entry_plan` missing when the Chief enters `agent_entry_id`, present with another pick, malformed, `order_style` not equal to `order_type`, or outside `limits` (the codes of 5.8) |
 | 409 `HASH_MISMATCH` | `DECISION_STALE_PACKET` | `packet_hash` belongs to another packet |
 | 409 `UNKNOWN_CYCLE` | | no pending cycle has this `cycle_id` |

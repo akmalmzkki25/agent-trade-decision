@@ -235,7 +235,20 @@ def limits_line(limits: object) -> str:
             f"{num(limits.get('max_stop_distance'))} | target "
             f"{num(limits.get('min_reward_r'), '.1f')}-{num(limits.get('max_reward_r'), '.1f')}R"
             f" (default {num(limits.get('default_reward_r'), '.1f')}R) | budget "
-            f"${num(limits.get('risk_budget_usd'))}, lots by code")
+            f"${num(limits.get('risk_budget_usd'))} | lots {num(limits.get('volume_min'))}-"
+            f"{num(limits.get('max_lots'))} (you choose; the budget may reduce it)")
+
+
+def review_line(order: object, market: object) -> str | None:
+    """The resting V6 order of a review packet, or None for an entry packet."""
+    if not isinstance(order, Mapping):
+        return None
+    return (f"REVIEW resting {clean(order.get('order_type'))} "
+            f"{num(order.get('price'))} sl {num(order.get('sl'))} tp {num(order.get('tp'))}"
+            f" lots {num(order.get('lots'))} expires {utc(order.get('expiration_epoch'))} | "
+            f"market needs {num(order.get('distance_from_quote'))} to fill (bid "
+            f"{num(get_path(market, 'bid'))} ask {num(get_path(market, 'ask'))}) | answer "
+            f"pending_action KEEP or CANCEL with a HOLD Chief")
 
 
 def render_packet(packet: Mapping[str, Any], *, now: float, path: Path) -> str:
@@ -249,6 +262,8 @@ def render_packet(packet: Mapping[str, Any], *, now: float, path: Path) -> str:
         bars_line(packet.get("bars")),
         levels_line(packet.get("levels")),
         limits_line(packet.get("limits")),
+        *([line] if (line := review_line(packet.get("pending_order"),
+                                         packet.get("market"))) else []),
         f"suggestions ({len(candidates)}), PA TAKE needs conviction >= "
         f"{num(get_path(allowed, 'pa_min_conviction'))}:",
         *(candidate_line(index, item) for index, item in enumerate(candidates, start=1)),

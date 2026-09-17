@@ -40,7 +40,9 @@ class ShadowOrder:
 
 
 def size_for(context: MarketContext, plan: ExitPlan, multiplier: float,
-             remaining_loss_usd: float, settings: V6Settings) -> SizingResult | Refusal:
+             remaining_loss_usd: float, settings: V6Settings,
+             lots_cap: float | None = None) -> SizingResult | Refusal:
+    """Size at most `lots_cap` (the agent's requested lots; None = V6_MAX_LOTS)."""
     account = context.account
     request = SizingRequest(
         equity=account.equity, balance=account.balance, free_margin=account.free_margin,
@@ -50,7 +52,8 @@ def size_for(context: MarketContext, plan: ExitPlan, multiplier: float,
         friction_price=cycle_friction(settings, context), spec=context.spec,
     )
     return size_position(request, equity_basis_usd=settings.sizing_equity_basis_usd,
-                         max_lots=settings.max_lots,
+                         max_lots=(settings.max_lots if lots_cap is None
+                                   else min(settings.max_lots, lots_cap)),
                          notional_ratio_max=settings.notional_ratio_max)
 
 
@@ -77,8 +80,11 @@ def _intent(context: MarketContext, candidate: Candidate, plan: ExitPlan,
 
 def shadow_order(context: MarketContext, item: CandidateAssessment,
                  protocol: ProtocolDecision, *, source: str, remaining_loss_usd: float,
-                 settings: V6Settings) -> ShadowOrder:
-    """Policy check, sizing and the shadow intent for the protocol's ENTER pick."""
+                 settings: V6Settings, lots_cap: float | None = None) -> ShadowOrder:
+    """Policy check, sizing and the shadow intent for the protocol's ENTER pick.
+
+    `lots_cap` is the operator's requested size; the risk budget still caps it.
+    """
     plan = item.exit_plan
     if plan is None:
         raise ValueError("an offered candidate must carry an exit plan")
@@ -86,7 +92,8 @@ def shadow_order(context: MarketContext, item: CandidateAssessment,
                                  context.account.login, settings)
     if not policy.allowed:
         return ShadowOrder(exit_plan=plan, policy=policy)
-    sizing = size_for(context, plan, protocol.size_multiplier, remaining_loss_usd, settings)
+    sizing = size_for(context, plan, protocol.size_multiplier, remaining_loss_usd, settings,
+                      lots_cap)
     if isinstance(sizing, Refusal):
         return ShadowOrder(exit_plan=plan, refusal=sizing, policy=policy)
     intent = _intent(context, item.candidate, plan, protocol, sizing, source, settings)

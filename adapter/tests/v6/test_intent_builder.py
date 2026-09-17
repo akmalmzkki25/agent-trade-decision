@@ -205,7 +205,7 @@ def test_limits_honour_the_stops_level_and_a_coarser_tick_grid() -> None:
     (lambda: settings().model_copy(update={"backend": "rules"}), POLICY_EXECUTE_NEEDS_OPERATOR),
     (lambda: settings().model_copy(update={"ea_hmac_key": SecretStr("")}),
      POLICY_EXECUTE_NEEDS_KEY),
-    (lambda: settings().model_copy(update={"max_lots": 0.02}), POLICY_EXECUTE_LOT_CAP),
+    (lambda: settings().model_copy(update={"max_lots": 0.04}), POLICY_EXECUTE_LOT_CAP),
     (lambda: settings(allowed_logins_csv="777"), POLICY_LOGIN_NOT_ALLOWED),
 ])
 def test_only_valid_execute_settings_build_intents(cfg: Any, code: str) -> None:
@@ -297,7 +297,7 @@ def test_unusable_numbers_are_refused(overrides: dict[str, Any]) -> None:
     ({"exit_plan": plan(tp=4290.0)}, ib.BAD_GEOMETRY),
     ({"candidate": candidate(entry=4298.005), "exit_plan": plan(entry=4298.005, sl=4291.005)},
      ib.OFF_GRID),
-    ({"sizing": sizing(lots=0.02)}, ib.LOT_LIMIT),
+    ({"sizing": sizing(lots=0.04)}, ib.LOT_LIMIT),
     ({"settings": settings(max_lots=0.005)}, ib.LOT_LIMIT),
     ({"context": context(volume_min=0.02)}, ib.LOT_LIMIT),
     ({"sizing": sizing(lots=0.005), "context": context(volume_min=0.001, volume_step=0.005)},
@@ -346,7 +346,7 @@ def test_the_spread_limit_is_the_effective_gate(cfg: dict[str, Any], expected: i
 # --- the draft and its poll response ----------------------------------------------------------
 @pytest.mark.parametrize("change", [
     lambda d: replace(d, row=replace(d.row, source="rules", agent="")),
-    lambda d: replace(d, row=replace(d.row, lots=0.02)),
+    lambda d: replace(d, row=replace(d.row, lots=0.04)),
     lambda d: replace(d, row=replace(d.row, agent="gpt")),
     lambda d: replace(d, row="not a row"),
     lambda d: replace(d, candidate_id=7),

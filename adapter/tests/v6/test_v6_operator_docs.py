@@ -55,20 +55,22 @@ def test_the_documented_agent_entry_is_sized_as_the_doc_says() -> None:
     raw = json.loads(example("decision"))
     plan, news = raw["entry_plan"], raw["views"]["news_risk"]["size_multiplier"]
     stop = round(plan["entry"] - plan["stop"], 2)
-    sized = size(stop, news)
-    assert sized.lots == 0.01 and sized.risk_usd == pytest.approx(stop + 0.40)
+    sized = size(stop, news, max_lots=raw["lots"])
+    assert (raw["lots"], sized.lots) == (0.02, 0.02)
+    assert sized.risk_usd == pytest.approx(2 * (stop + 0.40))
     assert sized.risk_budget_usd == pytest.approx(25.0 * news)
+    assert size(stop, news, max_lots=0.03).lots == 0.02   # 0.03 would risk $23.70 > $20
     halved = size(stop, 0.5)
     assert (halved.lots, halved.labels) == (0.01, ())      # $12.50 still pays $7.90
 
 
 # --- the sizing table of section 5.7 ---------------------------------------------------------
-def size(stop: float, multiplier: float) -> Any:
+def size(stop: float, multiplier: float, max_lots: float = 0.01) -> Any:
     request = SizingRequest(
         equity=96_896.17, balance=96_896.17, free_margin=96_000.0, price=4532.35,
         stop_distance=stop, risk_pct=0.5, size_multiplier=multiplier,
         remaining_daily_loss_usd=150.0, margin_per_lot=2266.0, friction_price=0.40, spec=XAU)
-    return size_position(request, equity_basis_usd=5000.0, max_lots=0.01,
+    return size_position(request, equity_basis_usd=5000.0, max_lots=max_lots,
                          notional_ratio_max=10.0)
 
 

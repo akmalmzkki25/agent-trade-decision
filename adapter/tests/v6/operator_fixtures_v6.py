@@ -41,7 +41,8 @@ def limits_block(**changes: Any) -> dict[str, Any]:
         "sell_limit_min": round(BID + 0.01, 2), "max_entry_distance": 12.0,
         "stop_floor": 6.0, "max_stop_distance": 22.5, "min_reward_r": 1.0,
         "max_reward_r": 5.0, "default_reward_r": 2.0, "risk_budget_usd": 25.0,
-        "volume_min": 0.01, "max_lots": 0.01, "pending_expiry_epoch": BAR_CLOSE + 1800,
+        "volume_min": 0.01, "lots_step": 0.01, "max_lots": 0.03,
+        "pending_expiry_epoch": BAR_CLOSE + 1800,
         "time_barrier_s": 7200,
     }
     return {**block, **changes}

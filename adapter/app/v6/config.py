@@ -102,7 +102,7 @@ class V6Settings(BaseSettings):
     account_type: AccountType = "standard"
     risk_pct: float = Field(default=0.5, gt=0.0)
     sizing_equity_basis_usd: float = Field(default=5000.0, gt=0.0)
-    max_lots: float = Field(default=0.01, gt=0.0)
+    max_lots: float = Field(default=0.03, gt=0.0)
     max_trades_per_day: int = Field(default=4, ge=1, le=20)
     allow_real_account: bool = False
     demo_server_pattern: str = r"(?i)(trial|demo)"

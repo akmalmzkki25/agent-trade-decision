@@ -377,11 +377,11 @@ disarm cancels undelivered intents, withdraws a pending operator packet and queu
 | 8 | no local halt (`GlobalVariable QlipV6_HALT == 1`, AutoTrading off) | `rejected_local`/`HALTED` |
 | 9 | local daily breaker (3 %) not tripped | `rejected_local`/`BREAKER` |
 | 10 | no V6 position and no V6 pending order (magic) | `rejected_local`/`OCCUPIED` |
-| 11 | `lots ≤ InpMaxLots` (default and hard cap 0.01) | `rejected_local`/`LOT_CAP` |
+| 11 | `lots ≤ InpMaxLots` (default and hard cap 0.03) | `rejected_local`/`LOT_CAP` |
 | 12 | current spread ≤ `max_spread_points` | `rejected_local`/`SPREAD` |
 | 13 | `|side price − ref_price| / point ≤ max_drift_points` (a market order: `<`, since the rest is its deviation); a limit price still passive (`BUY_LIMIT entry < ask − stops_level·point`, `SELL_LIMIT entry > bid + stops_level·point`) | `rejected_local`/`DRIFT` |
 | 14 | symbol trade mode full and session open | `rejected_local`/`MARKET_CLOSED` |
-| 15 | loss at `sl` for `lots` (`OrderCalcProfit`) ≤ `InpMaxRiskUsd` (default 20.0: twice the adapter's $10 budget, so a 10× spec error cannot pass) | `rejected_local`/`RISK_CAP` |
+| 15 | loss at `sl` for `lots` (`OrderCalcProfit`) ≤ `InpMaxRiskUsd` (default 50.0: twice the adapter's $25 budget, so a 10× spec error cannot pass) | `rejected_local`/`RISK_CAP` |
 | 16 | `OrderCheck` passes | `rejected_local`/`ORDER_CHECK` (with `retcode`) |
 | 17 | `OrderSend` | `placed` (pending) / `filled` (market) / `failed`/`BROKER_ERROR` |
 

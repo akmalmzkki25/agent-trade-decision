@@ -351,7 +351,7 @@ def test_invalid_decisions_are_422(client: TestClient, sealed: OperatorPacket) -
     unknown["views"]["price_action"]["ranked"][0]["candidate_id"] = INJECTION.replace(" ", "-")
     bad_view = post(client, "/v6/operator/decision", unknown)
     not_json = post(client, "/v6/operator/decision", b"{nope")
-    extra = post(client, "/v6/operator/decision", {**of.decision(sealed), "lots": 10})
+    extra = post(client, "/v6/operator/decision", {**of.decision(sealed), "volume": 10})
 
     assert (bad_view.status_code, bad_view.json()["code"], bad_view.json()["error"]) == (
         422, "INVALID", "DECISION_VIEW")

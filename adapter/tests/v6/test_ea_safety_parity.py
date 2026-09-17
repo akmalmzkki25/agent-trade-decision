@@ -113,8 +113,8 @@ def test_limits_and_defaults_match_the_contract() -> None:
     assert (int(defines["V6_MAGIC_FIRST"]), int(defines["V6_MAGIC_LAST"])) == (
         limits.V6_MAGIC_FIRST, limits.V6_MAGIC_LAST)
     assert float(inputs["InpMaxLots"]) == limits.MAX_EXECUTE_LOTS
-    assert float(inputs["InpMaxRiskUsd"]) == float(defines["V6_MAX_RISK_USD_CEILING"]) == 20.0
-    assert "`InpMaxRiskUsd` (default 20.0" in doc
+    assert float(inputs["InpMaxRiskUsd"]) == float(defines["V6_MAX_RISK_USD_CEILING"]) == 50.0
+    assert "`InpMaxRiskUsd` (default 50.0" in doc
     assert float(inputs["InpDailyBreakerPct"]) == limits.MAX_DAILY_LOSS_PCT
     assert inputs["InpExecute"] == "true"
     assert inputs["InpBackfillDaysM5"] == "5"

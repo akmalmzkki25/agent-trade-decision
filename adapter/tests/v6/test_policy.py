@@ -231,7 +231,7 @@ EXECUTE = {"backend": "operator", "mode": "execute", "ea_hmac_key": SecretStr(EA
         ({**EXECUTE, "backend": "rules"}, POLICY_EXECUTE_NEEDS_OPERATOR),
         ({**EXECUTE, "ea_hmac_key": SecretStr("")}, POLICY_EXECUTE_NEEDS_KEY),
         ({**EXECUTE, "ea_hmac_key": SecretStr("short")}, POLICY_EXECUTE_NEEDS_KEY),
-        ({**EXECUTE, "max_lots": 0.02}, POLICY_EXECUTE_LOT_CAP),
+        ({**EXECUTE, "max_lots": 0.04}, POLICY_EXECUTE_LOT_CAP),
     ],
 )
 def test_settings_policy(update: dict[str, Any], code: str) -> None:

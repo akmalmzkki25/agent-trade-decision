@@ -153,8 +153,9 @@ def packet_problems(packet: Mapping[str, Any]) -> list[str]:
         (isinstance(packet.get("packet_hash"), str)
          and HASH_PATTERN.fullmatch(packet["packet_hash"]) is not None, "packet_hash"),
         (type(packet.get("expires_at_epoch")) is int, "expires_at_epoch"),
-        (isinstance(packet.get("candidates"), list) and bool(packet.get("candidates")),
-         "candidates"),
+        # A packet may carry no suggestion: the agent can design its own entry.
+        (isinstance(packet.get("candidates"), list), "candidates"),
+        (isinstance(packet.get("limits"), Mapping), "limits"),
     )
     return [name for ok, name in checks if not ok]
 

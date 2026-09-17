@@ -47,7 +47,7 @@ from ..schemas.operator import (
 )
 from ..schemas.operator_parts import MAX_DETAIL_CHARS, MAX_SERVER_CHARS
 from ..types import GateResult, Refusal
-from .packet_extras import bars_block, levels_block, limits_block
+from .packet_extras import bars_block, levels_block, limits_block, pending_order_block
 from .shadow import size_for
 
 logger = logging.getLogger(__name__)
@@ -90,6 +90,7 @@ class PacketRequest:
     armed: bool
     now: float
     deadline_epoch: float | None = None
+    review: bool = False            # a V6 order rests: ask KEEP or CANCEL, offer no entry
 
 
 @dataclass(frozen=True)
@@ -125,7 +126,7 @@ def build_packet(request: PacketRequest, settings: V6Settings) -> OperatorPacket
     window = _window(request, settings)
     if isinstance(window, PacketRefusal):
         return window
-    candidates, skipped = _sized_candidates(request, settings)
+    candidates, skipped = ((), ()) if request.review else _sized_candidates(request, settings)
     if skipped:
         logger.info("v6 operator packet %s: suggestions left out (%s)",
                     request.context.cycle_id, ",".join(skipped))
@@ -210,7 +211,7 @@ def _body(request: PacketRequest, settings: V6Settings, window: tuple[int, int],
     events = context.calendar.events[:MAX_EVENTS]
     ids = tuple(str(document["candidate_id"]) for document in candidates)
     event_ids = tuple(event.event_id for event in events)
-    limits = limits_block(context, settings, request.remaining_loss_usd)
+    limits = limits_block(context, settings, request.remaining_loss_usd, review=request.review)
     allowed = allowed_values(operator_agents=settings.operator_agents,
                              candidate_ids=ids + (str(limits["agent_entry_id"]),),
                              event_ids=event_ids, pa_min_conviction=settings.pa_min_conviction)
@@ -232,6 +233,7 @@ def _body(request: PacketRequest, settings: V6Settings, window: tuple[int, int],
         "candidates": list(candidates),
         "baseline_views": _baseline(request.baseline, frozenset(ids), frozenset(event_ids)),
         "allowed": allowed.model_dump(mode="json"),
+        "pending_order": pending_order_block(context) if request.review else None,
     }
     return OperatorPacketBody.model_validate_json(canonical_json(document))
 

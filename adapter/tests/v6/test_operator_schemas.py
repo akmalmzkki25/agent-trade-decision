@@ -189,8 +189,8 @@ def test_decision_size_and_json_errors() -> None:
 
     _refused(oversized, sealed, op.DECISION_ERR_TOO_LARGE)
     _refused(b"{not json", sealed, op.DECISION_ERR_NOT_JSON)
-    error = _refused(of.decision(sealed, lots=10), sealed, op.DECISION_ERR_SCHEMA)
-    assert "lots" in error.detail
+    error = _refused(of.decision(sealed, volume=10), sealed, op.DECISION_ERR_SCHEMA)
+    assert "volume" in error.detail
     with pytest.raises(TypeError):
         parse_operator_decision("text", sealed, now=of.CREATED)  # type: ignore[arg-type]
 

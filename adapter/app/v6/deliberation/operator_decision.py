@@ -44,8 +44,8 @@ from ..schemas.agents import (
 from ..schemas.operator import (
     DECISION_ERR_AGENT, DECISION_ERR_ENTRY_PLAN, DECISION_ERR_EXPIRED, DECISION_ERR_NOT_JSON,
     DECISION_ERR_REBUTTAL, DECISION_ERR_SCHEMA, DECISION_ERR_STALE, DECISION_ERR_TOO_LARGE,
-    DECISION_ERR_VIEW, MAX_DECISION_BYTES, DecisionSchema, OperatorPacket, RebuttalStance,
-    entry_plan_problem,
+    DECISION_ERR_VIEW, MAX_DECISION_BYTES, DecisionSchema, OperatorPacket, PendingAction,
+    RebuttalStance, decision_extras_problem, entry_plan_problem,
 )
 from ..schemas.operator_parts import AgentEntryPlan, Frozen, Hash
 from .agent_entry import limits_from_packet, plan_problems
@@ -86,6 +86,8 @@ class DecisionEnvelope(Frozen):
     chief: JsonValue
     rebuttal: dict[ItemId, RebuttalStance] = Field(default_factory=dict, max_length=MAX_RANKED)
     entry_plan: JsonValue = None
+    lots: float | None = Field(default=None, gt=0)
+    pending_action: PendingAction | None = None
 
 
 KNOWN_FIELDS: Final[frozenset[str]] = frozenset(DecisionEnvelope.model_fields) | frozenset(
@@ -132,6 +134,8 @@ class ValidatedDecision:
     flags: tuple[DeskFlag, ...] = ()
     latency_ms: int = 0
     entry_plan: AgentEntryPlan | None = None
+    lots: float | None = None
+    pending_action: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rebuttal", MappingProxyType(dict(self.rebuttal)))
@@ -174,7 +178,8 @@ class ValidatedDecision:
         """Log- and status-safe facts (no free text)."""
         return {"cycle_id": self.cycle_id, "agent": self.agent, "action": self.chief.action,
                 "candidate_id": self.chief.candidate_id, "flagged": list(self.flagged_roles),
-                "agent_entry": self.entry_plan is not None,
+                "agent_entry": self.entry_plan is not None, "lots": self.lots,
+                "pending_action": self.pending_action,
                 "withdrawn": sorted(self.withdrawn_ids), "latency_ms": self.latency_ms}
 
 
@@ -263,6 +268,9 @@ def _checked_views(envelope: DecisionEnvelope, packet: OperatorPacket) -> Decisi
     plan = _checked_plan(envelope, packet, chief_view)
     if isinstance(plan, DecisionError):
         return plan
+    extras = decision_extras_problem(chief_view, envelope.lots, envelope.pending_action, packet)
+    if extras is not None:
+        return _error(extras[0], extras[1], "decision")
     desks = {role: check(role, getattr(envelope.views, role)) for role in RISK_DESKS}
     return ValidatedDecision(
         cycle_id=envelope.cycle_id, packet_hash=envelope.packet_hash, agent=envelope.agent,
@@ -270,7 +278,8 @@ def _checked_views(envelope: DecisionEnvelope, packet: OperatorPacket) -> Decisi
         news_risk=_typed(desks["news_risk"], NewsRiskView),
         liquidity=_typed(desks["liquidity"], LiquidityView),
         structure=_typed(desks["structure"], StructureView),
-        rebuttal=dict(envelope.rebuttal), entry_plan=plan,
+        rebuttal=dict(envelope.rebuttal), entry_plan=plan, lots=envelope.lots,
+        pending_action=envelope.pending_action,
         flags=tuple(DeskFlag(role=role, code=result) for role, result in desks.items()
                     if isinstance(result, str)))
 

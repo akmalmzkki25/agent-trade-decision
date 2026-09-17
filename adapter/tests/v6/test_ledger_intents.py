@@ -55,7 +55,7 @@ def store(ledger: LedgerCycles) -> IntentStore:
     ({"source": "rules"}, "agent does not match"),
     ({"order_type": "SELL_LIMIT"}, "order_type"),
     ({"sl": 4540.0}, "own side"),
-    ({"lots": 0.02}, "execution cap"),
+    ({"lots": 0.04}, "execution cap"),
     ({"lots": 0.0}, "finite and positive"),
     ({"risk_usd": -1.0}, "must not be negative"),
     ({"valid_until_epoch": int(T0)}, "after created_at"),

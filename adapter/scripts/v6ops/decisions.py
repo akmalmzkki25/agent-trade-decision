@@ -99,7 +99,9 @@ def fallback_template(packet: Mapping[str, Any]) -> dict[str, Any]:
         views[role] = _plain(view if isinstance(view, Mapping) else default)
     return {"schema_version": DECISION_SCHEMA, "cycle_id": packet.get("cycle_id"),
             "packet_hash": packet.get("packet_hash"), "agent": None, "views": views,
-            "chief": _plain(HOLD_CHIEF), "rebuttal": {}, "entry_plan": None}
+            "chief": _plain(HOLD_CHIEF), "rebuttal": {}, "entry_plan": None, "lots": None,
+            "pending_action": "KEEP" if isinstance(packet.get("pending_order"), Mapping)
+            else None}
 
 
 def build_template(packet: Mapping[str, Any]) -> dict[str, Any]:
@@ -107,7 +109,8 @@ def build_template(packet: Mapping[str, Any]) -> dict[str, Any]:
     template = packet.get("decision_template")
     decision = _plain(template) if isinstance(template, Mapping) else fallback_template(packet)
     return {**decision, "agent": None, "rebuttal": decision.get("rebuttal") or {},
-            "entry_plan": decision.get("entry_plan")}
+            "entry_plan": decision.get("entry_plan"), "lots": decision.get("lots"),
+            "pending_action": decision.get("pending_action")}
 
 
 def agent_entry_example(packet: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -121,6 +124,8 @@ def agent_entry_example(packet: Mapping[str, Any]) -> dict[str, Any] | None:
                                        "conviction": 0.7, "reason_codes": [], "note": ""}],
         "chief": {"action": "ENTER", "candidate_id": entry_id,
                   "order_style": "LIMIT (must equal entry_plan.order_type)"},
+        "lots": f"{limits.get('volume_min')}..{limits.get('max_lots')} in steps of "
+                f"{limits.get('lots_step')} (null = the minimum; the budget may reduce it)",
         "entry_plan": {"side": "buy|sell", "order_type": "LIMIT|MARKET",
                        "entry": "price for LIMIT (buy <= buy_limit_max, sell >= "
                                 "sell_limit_min), null for MARKET",

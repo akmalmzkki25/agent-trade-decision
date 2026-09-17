@@ -80,7 +80,7 @@ def test_calendar_codes_without_blackout_and_ranked_views() -> None:
     assert lines[5].startswith("calendar: codes CAL_US_DATA_BAR | next HIGH USD cpi-yy")
     assert f"[1] {BUY_ID} BUY displacement" in lines[10] and "barrier - min" in lines[10]
     assert lines[6].startswith("M15 last 1:") and lines[7].startswith("levels: PDH 4550.00")
-    assert lines[8].startswith(f"agent entry id agent-") and "lots by code" in lines[8]
+    assert lines[8].startswith(f"agent entry id agent-") and "lots 0.01-0.03 (you choose" in lines[8]
     assert f"PA TAKE {BUY_ID} 0.70" in lines[-2]
 
 

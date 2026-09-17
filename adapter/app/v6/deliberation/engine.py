@@ -62,6 +62,7 @@ from .context_builder import (
 from .cycle_draft import CycleDraft, CycleOutcome, CycleRequest, elapsed_ms
 from .operator_packet import PacketRefusal, PacketRequest
 from .operator_tier import OperatorRound, operator_round
+from .pending_review import REASON_AGENT_CANCEL, review_hold, wants_review
 from .panel import Baseline, PanelResult, rules_baseline, run_panel
 from .protocol import resolve
 from .publication import IntentPort, PublishRequest
@@ -232,6 +233,9 @@ class DeliberationEngine:
     async def _decide(self, draft: CycleDraft, tier0: Tier0) -> CycleOutcome:
         request, pool = draft.request, tier0.pool
         gate_hold = hold_reason_for_gates(tier0.gates)
+        if (gate_hold is not None and self._deps.operator is not None
+                and wants_review(tier0.context, tier0.gates)):
+            return await self._operator_path(self._deps.operator, draft, tier0, review=True)
         if gate_hold is not None:
             detail = "failed gates: " + ",".join(failed_codes(tier0.gates))
             return self._hold(draft.update(candidates=label_verdicts(pool, gated=True)),
@@ -272,23 +276,24 @@ class DeliberationEngine:
         return panel
 
     async def _operator_path(self, queue: OperatorQueue, draft: CycleDraft,
-                             tier0: Tier0) -> CycleOutcome:
-        """Every gated-in bar with a session goes to the agent, suggestions or not."""
+                             tier0: Tier0, review: bool = False) -> CycleOutcome:
+        """Every gated-in bar with a session goes to the agent, suggestions or not; a bar
+        with a resting V6 order goes to it as a review."""
         request = draft.request
         if request.session_id is None:
             return self._hold(draft, HoldReason.NO_SESSION, DETAIL_NO_SESSION)
         if self._late(request):
             return self._hold(draft, HoldReason.LATE, DETAIL_LATE)
-        return await self._operator_decide(queue, draft, tier0)
+        return await self._operator_decide(queue, draft, tier0, review)
 
     async def _operator_decide(self, queue: OperatorQueue, draft: CycleDraft,
-                               tier0: Tier0) -> CycleOutcome:
+                               tier0: Tier0, review: bool = False) -> CycleOutcome:
         deps, request = self._deps, draft.request
         packet_request = PacketRequest(
             context=tier0.context, gates=tier0.gates, offered=tier0.pool.offered,
             baseline=tier0.baseline.views, remaining_loss_usd=tier0.breakers.remaining_loss_usd,
             session_id=request.session_id, armed=request.session_armed, now=self._now(),
-            deadline_epoch=self._deadline(request))
+            deadline_epoch=self._deadline(request), review=review)
         outcome = await operator_round(queue, packet_request, deps.settings, tier0.baseline,
                                        deps.clock)
         if isinstance(outcome, PacketRefusal):
@@ -297,7 +302,17 @@ class DeliberationEngine:
         draft = self._with_panel(draft, tier0, outcome.panel)
         if outcome.decision is None:
             return self._hold(draft, HoldReason.OPERATOR_TIMEOUT, outcome.detail)
+        if review:
+            return await self._review_result(draft, outcome.decision.pending_action)
         return await self._resolve(draft, tier0, outcome.panel, outcome)
+
+    async def _review_result(self, draft: CycleDraft, action: str | None) -> CycleOutcome:
+        reason, detail, cancel = review_hold(action)
+        publisher = self._deps.publisher
+        if cancel and publisher is not None and self._deps.settings.mode == EXECUTE_MODE:
+            cancelled = await publisher.cancel_pending(REASON_AGENT_CANCEL)
+            detail += f" (undelivered intents cancelled: {len(cancelled)})"
+        return self._hold(draft, reason, detail)
 
     async def _resolve(self, draft: CycleDraft, tier0: Tier0, panel: PanelResult,
                        operator: OperatorRound | None = None) -> CycleOutcome:
@@ -314,6 +329,8 @@ class DeliberationEngine:
         if protocol.hold_reason is not None:
             return self._hold(draft, protocol.hold_reason, protocol.detail)
         agent = None if operator is None else operator.agent
+        lots = None if operator is None or operator.decision is None else (
+            operator.decision.lots or tier0.context.spec.volume_min)
         item = tier0.pool.find(protocol.candidate_id)
         plan = None if operator is None or operator.decision is None else (
             operator.decision.entry_plan)
@@ -325,7 +342,7 @@ class DeliberationEngine:
                 return self._hold(draft, HoldReason.EXIT, DETAIL_AGENT_EXIT + codes)
         if item is None:
             raise ValueError("the protocol picked a candidate that was not offered")
-        return await self._enter(draft, tier0, panel, protocol, agent, item)
+        return await self._enter(draft, tier0, panel, protocol, agent, item, lots)
 
     def _agent_item(self, tier0: Tier0, packet: OperatorPacket,
                     plan: AgentEntryPlan) -> CandidateAssessment:
@@ -341,10 +358,10 @@ class DeliberationEngine:
 
     async def _enter(self, draft: CycleDraft, tier0: Tier0, panel: PanelResult,
                      protocol: ProtocolDecision, agent: str | None,
-                     item: CandidateAssessment) -> CycleOutcome:
+                     item: CandidateAssessment, lots: float | None = None) -> CycleOutcome:
         order = shadow_order(tier0.context, item, protocol, source=panel.provider,
                              remaining_loss_usd=tier0.breakers.remaining_loss_usd,
-                             settings=self._deps.settings)
+                             settings=self._deps.settings, lots_cap=lots)
         draft = draft.update(exit_plan=order.exit_plan, sizing=order.sizing,
                              refusal=order.refusal)
         if order.policy is not None and not order.policy.allowed:

@@ -37,8 +37,8 @@
 input string InpAdapterBase        = "http://127.0.0.1:8765"; // Adapter base URL (allow it in WebRequest)
 input bool   InpExecute            = true;    // Execute signed intents (DEMO accounts only)
 input long   InpMagic              = 250570;  // V6 magic (250570..250579)
-input double InpMaxLots            = 0.01;    // Lot cap per order (hard cap 0.01)
-input double InpMaxRiskUsd         = 20.0;    // Max loss at the stop per order, account currency (<= 20)
+input double InpMaxLots            = 0.03;    // Lot cap per order (hard cap 0.03)
+input double InpMaxRiskUsd         = 50.0;    // Max loss at the stop per order, account currency (<= 50)
 input double InpDailyBreakerPct    = 3.0;     // Local breaker: equity drop from the server-day start, % (<= 3)
 input string InpFlattenServerTime  = "22:55"; // Flatten V6 daily at this server time (HH:MM)
 input string InpHmacKeyFile        = "QlipV6\\hmac.key"; // V6 key file under MQL5\Files

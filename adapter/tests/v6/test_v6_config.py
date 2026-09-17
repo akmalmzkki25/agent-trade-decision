@@ -120,15 +120,15 @@ def test_the_operator_backend_needs_the_token_when_enabled() -> None:
 def test_execute_mode_happy_path() -> None:
     cfg = execute()
 
-    assert (cfg.ea_signing, cfg.ea_hmac_key_ok, cfg.max_lots) == ("required", True, 0.01)
+    assert (cfg.ea_signing, cfg.ea_hmac_key_ok, cfg.max_lots) == ("required", True, 0.03)
     assert execute(max_lots=0.005).max_lots == 0.005
 
 
 @pytest.mark.parametrize(("overrides", "message"), [
     ({"backend": "rules"}, "requires V6_BACKEND=operator"),
     ({"ea_hmac_key": ""}, "requires V6_EA_HMAC_KEY"),
-    ({"max_lots": 0.011}, "V6_MAX_LOTS <= 0.01"),
-    ({"max_lots": 1.0}, "V6_MAX_LOTS <= 0.01"),
+    ({"max_lots": 0.031}, "V6_MAX_LOTS <= 0.03"),
+    ({"max_lots": 1.0}, "V6_MAX_LOTS <= 0.03"),
     ({"ea_hmac_key": "short"}, "V6_EA_HMAC_KEY must be"),
     ({"ea_hmac_key": "has a space " + "x" * 30}, "V6_EA_HMAC_KEY must be"),
     ({"ea_hmac_key": "your-key-here-" + "x" * 30}, "V6_EA_HMAC_KEY must be"),

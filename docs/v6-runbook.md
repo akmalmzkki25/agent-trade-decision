@@ -98,8 +98,8 @@ re-sync the key (section 2).
    | `InpAdapterBase` | `http://127.0.0.1:8765` | must be in the WebRequest list |
    | `InpExecute` | `true` | execute signed intents (the EA still requires a DEMO account) |
    | `InpMagic` | `250570` | = `V6_MAGIC` |
-   | `InpMaxLots` | `0.01` | hard cap 0.01 |
-   | `InpMaxRiskUsd` | `20` | loss at the stop per order; twice the adapter's $10 budget |
+   | `InpMaxLots` | `0.03` | hard cap 0.03 (the agent picks 0.01-0.03) |
+   | `InpMaxRiskUsd` | `50` | loss at the stop per order; twice the adapter's $25 budget |
    | `InpDailyBreakerPct` | `3` | local breaker, works when the adapter is down |
    | `InpFlattenServerTime` | `22:55` | daily flatten before rollover (server time) |
    | `InpHmacKeyFile` | `QlipV6\hmac.key` | relative to `MQL5\Files` |

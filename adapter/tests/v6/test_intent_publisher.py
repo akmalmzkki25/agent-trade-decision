@@ -135,3 +135,17 @@ async def test_an_occupied_book_holds(container: V6Container) -> None:
     demo_poll(container, open_v6_positions=1)
     outcome = await publish_now(container)
     assert (outcome.hold_reason, outcome.code) == (HoldReason.GATE, book.BOOK_OCCUPIED)
+
+
+@pytest.mark.anyio
+async def test_a_review_cancel_queues_cancel_pending_and_closes_the_intent(
+        container: V6Container, clock: FakeClock) -> None:
+    demo_poll(container)
+    open_session(container, armed=True)
+    published = await publish_now(container)
+    publisher = IntentPublisher(container.parts.desk)
+    assert await publisher.cancel_pending("AGENT_CANCEL") == (published.intent_id,)
+    command = container.parts.control.commands.current(clock.now_epoch())
+    assert command is not None and command.command == "CANCEL_PENDING"
+    assert container.ledger_cycles.intents.active_intent() is None
+    assert await publisher.cancel_pending("AGENT_CANCEL") == ()

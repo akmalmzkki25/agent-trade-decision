@@ -77,7 +77,7 @@ def test_a_healthy_demo_execute_session_is_armed() -> None:
     ({"settings": settings().model_copy(update={"backend": "rules"})}, am.DISARM_SETTINGS),
     ({"settings": settings().model_copy(update={"ea_hmac_key": SecretStr("")})},
      am.DISARM_SETTINGS),
-    ({"settings": settings().model_copy(update={"max_lots": 0.02})}, am.DISARM_SETTINGS),
+    ({"settings": settings().model_copy(update={"max_lots": 0.04})}, am.DISARM_SETTINGS),
     ({"session": None}, am.DISARM_NO_SESSION),
     ({"session": session(stopped_at=NOW - 1, stop_reason="operator")}, am.DISARM_NO_SESSION),
     ({"session": session(mode="shadow")}, am.DISARM_SESSION_MODE),

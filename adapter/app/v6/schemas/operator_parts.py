@@ -52,6 +52,8 @@ TOP_EQUITY_BAND: Final[EquityBand] = "ge_50k"
 # Same spelling as deliberation.protocol.RebuttalStance (a test keeps them equal).
 RebuttalStance = Literal["maintain", "withdraw"]
 AgentOrderType = Literal["LIMIT", "MARKET"]
+# What the agent does with a resting V6 pending order in a review packet.
+PendingAction = Literal["KEEP", "CANCEL"]
 
 Hash = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 Epoch = Annotated[int, Field(ge=0)]
@@ -83,6 +85,7 @@ ENUM_CHOICES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType({
     "rebuttal": get_args(RebuttalStance),
     "entry_plan.side": ("buy", "sell"),
     "entry_plan.order_type": get_args(AgentOrderType),
+    "pending_action": get_args(PendingAction),
 })
 LIMIT_VALUES: Final[Mapping[str, int]] = MappingProxyType({
     "max_ranked": MAX_RANKED, "max_reason_codes": agents.MAX_REASON_CODES,
@@ -199,6 +202,7 @@ class PacketLimits(Frozen):
     default_reward_r: Price
     risk_budget_usd: float = Field(ge=0)
     volume_min: Price
+    lots_step: Price
     max_lots: Price
     pending_expiry_epoch: Epoch
     time_barrier_s: int = Field(gt=0)
@@ -269,6 +273,20 @@ class PacketCandidate(Frozen):
         if (self.sizing is None) == (not self.sizing_refusal):
             raise ValueError("give sizing or the codes that refused it, not both or neither")
         return self
+
+
+class PacketPendingOrder(Frozen):
+    """The resting V6 order a review packet asks about (KEEP or CANCEL)."""
+
+    ticket: int = Field(ge=0)
+    intent_id: Annotated[str, StringConstraints(max_length=16)]
+    order_type: Literal["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"]
+    price: Price
+    sl: float = Field(ge=0)
+    tp: float = Field(ge=0)
+    lots: Price
+    expiration_epoch: Epoch
+    distance_from_quote: float
 
 
 class AgentEntryPlan(Frozen):

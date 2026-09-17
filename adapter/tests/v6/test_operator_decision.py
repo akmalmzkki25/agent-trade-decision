@@ -81,8 +81,8 @@ def test_a_valid_decision_is_accepted_with_every_view(sealed: OperatorPacket) ->
     assert decision.withdrawn_ids == frozenset()
     assert decision.summary() == {
         "cycle_id": of.CYCLE_ID, "agent": "codex", "action": "ENTER",
-        "candidate_id": of.BUY_ID, "flagged": [], "agent_entry": False, "withdrawn": [],
-        "latency_ms": 0}
+        "candidate_id": of.BUY_ID, "flagged": [], "agent_entry": False, "lots": None,
+        "pending_action": None, "withdrawn": [], "latency_ms": 0}
     assert _protocol(decision).action == "ENTER"
 
 
@@ -123,7 +123,7 @@ def test_envelope_errors(sealed: OperatorPacket) -> None:
     _refused(sealed, oversized, op.DECISION_ERR_TOO_LARGE)
     _refused(sealed, b"{not json", op.DECISION_ERR_NOT_JSON)
     _refused(sealed, b"[]", op.DECISION_ERR_SCHEMA)
-    error = _refused(sealed, of.decision(sealed, lots=10), op.DECISION_ERR_SCHEMA)
+    error = _refused(sealed, of.decision(sealed, volume=10), op.DECISION_ERR_SCHEMA)
     assert error.detail == "invalid at: ?(extra_forbidden)"
     missing = of.decision(sealed)
     del missing["views"]["price_action"]

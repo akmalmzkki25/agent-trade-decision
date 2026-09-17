@@ -83,6 +83,9 @@ arrives while you are busy stays open until its deadline, and the next `wait` ge
   (halt, breaker, stale EA, not DEMO, restart after a crash): do not decide. Run
   `OP session status`, report `disarm_reason` and stop the loop. The user re-arms by
   saying "Mulai trading skrg" again.
+- If the summary shows a `REVIEW` line, a V6 order rests: answer with a HOLD Chief and
+  `pending_action` KEEP or CANCEL (section 5.9), no `entry_plan`, no `lots`. CANCEL when
+  price has run past the target or through the invalidation, or the setup changed.
 - Otherwise:
   1. Read the printed summary. Read `adapter/.v6_operator/packet.json` when you need
      bars, gates, features or the allowed enums.
@@ -92,7 +95,8 @@ arrives while you are busy stays open until its deadline, and the next `wait` ge
      design your own entry. For your own entry, rank `limits.agent_entry_id` TAKE, set
      the Chief to ENTER that id with `order_style` equal to the plan's `order_type`,
      and fill `entry_plan` (side, LIMIT or MARKET, entry, stop, target or null,
-     thesis) inside `limits` (section 5.8). Never set lots. Write the full decision to
+     thesis) inside `limits` (section 5.8). Set `lots` (0.01-0.03, section 5.6); the
+     budget may reduce it. Write the full decision to
      `adapter/.v6_operator/decision.json` with your file tool. Keep `cycle_id`,
      `packet_hash` and `schema_version`; use only ids and enum values from `allowed`;
      leave `agent` as `null` (`submit` fills it in).

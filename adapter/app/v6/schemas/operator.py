@@ -37,7 +37,8 @@ from .operator_parts import (
     AgentEntryPlan, AllowedValues, BaselineViews, CandidateExit, CandidateSizing, CompactBar,
     Epoch, EquityBand, Frozen, Hash, PacketAccount, PacketBars, PacketCalendar,
     PacketCandidate, PacketEvent, PacketGate, PacketLevels, PacketLimits, PacketMarket,
-    PacketSession, RebuttalStance, allowed_values, canonical_json, equity_band,
+    PacketPendingOrder, PacketSession, PendingAction, RebuttalStance, allowed_values,
+    canonical_json, equity_band,
 )
 
 __all__ = [
@@ -47,7 +48,8 @@ __all__ = [
     "DECISION_ERR_TOO_LARGE", "DECISION_ERR_NOT_JSON", "DECISION_ERR_SCHEMA",
     "DECISION_ERR_STALE", "DECISION_ERR_EXPIRED", "DECISION_ERR_AGENT", "DECISION_ERR_VIEW",
     "DECISION_ERR_REBUTTAL", "DECISION_ERR_ENTRY_PLAN", "DECISION_SCHEMAS", "AgentEntryPlan",
-    "PacketLimits", "PacketLevels", "EquityBand", "RebuttalStance", "CompactBar",
+    "PacketLimits", "PacketLevels", "PacketPendingOrder", "PendingAction",
+    "DECISION_ERR_REVIEW", "DECISION_ERR_LOTS", "decision_extras_problem", "EquityBand", "RebuttalStance", "CompactBar",
     "PacketAccount", "PacketMarket", "PacketSession", "PacketBars", "PacketGate",
     "PacketEvent", "PacketCalendar", "CandidateExit", "CandidateSizing", "PacketCandidate",
     "BaselineViews", "AllowedValues", "OperatorPacketBody", "OperatorPacket", "OperatorViews",
@@ -77,6 +79,9 @@ DECISION_ERR_AGENT: Final[str] = "DECISION_AGENT_NOT_ALLOWED"
 DECISION_ERR_VIEW: Final[str] = "DECISION_VIEW"
 DECISION_ERR_REBUTTAL: Final[str] = "DECISION_REBUTTAL"
 DECISION_ERR_ENTRY_PLAN: Final[str] = "DECISION_ENTRY_PLAN"
+DECISION_ERR_REVIEW: Final[str] = "DECISION_REVIEW"
+DECISION_ERR_LOTS: Final[str] = "DECISION_LOTS"
+LOTS_EPSILON: Final[float] = 1e-9
 
 
 def packet_hash(document: Mapping[str, object]) -> str:
@@ -107,6 +112,8 @@ class OperatorPacketBody(Frozen):
     candidates: tuple[PacketCandidate, ...] = Field(max_length=MAX_OFFERED_CANDIDATES)
     baseline_views: BaselineViews
     allowed: AllowedValues
+    # Set in a review packet: a V6 order rests; the agent answers KEEP or CANCEL.
+    pending_order: PacketPendingOrder | None = None
 
     @model_validator(mode="after")
     def _check_body(self) -> "OperatorPacketBody":
@@ -150,6 +157,10 @@ class OperatorDecision(Frozen):
     chief: ChiefDecision
     rebuttal: dict[ItemId, RebuttalStance] = Field(default_factory=dict, max_length=MAX_RANKED)
     entry_plan: AgentEntryPlan | None = None
+    # The size the agent wants for an ENTER (limits.volume_min..max_lots; null = volume_min).
+    lots: float | None = Field(default=None, gt=0)
+    # Review packets only: KEEP or CANCEL the resting V6 order.
+    pending_action: PendingAction | None = None
 
     @property
     def withdrawn_ids(self) -> frozenset[str]:
@@ -208,7 +219,8 @@ def decision_template(body: OperatorPacketBody, digest: str) -> OperatorDecision
         structure=_or_default(base.structure, UNKNOWN_STRUCTURE_VIEW))
     return OperatorDecision(schema_version=DECISION_SCHEMA, cycle_id=body.cycle_id,
                             packet_hash=digest, agent=body.allowed.agents[0], views=views,
-                            chief=HOLD_DECISION)
+                            chief=HOLD_DECISION,
+                            pending_action=None if body.pending_order is None else "KEEP")
 
 
 def seal_packet(body: OperatorPacketBody) -> OperatorPacket:
@@ -284,6 +296,41 @@ def _check_entry_plan(decision: OperatorDecision, packet: OperatorPacket) -> Non
                                  packet.limits.agent_entry_id)
     if problem is not None:
         raise OperatorDecisionError(DECISION_ERR_ENTRY_PLAN, problem)
+    extras = decision_extras_problem(decision.chief, decision.lots, decision.pending_action,
+                                     packet)
+    if extras is not None:
+        raise OperatorDecisionError(*extras)
+
+
+def _lots_problem(lots: float | None, packet: OperatorPacketBody) -> str | None:
+    if lots is None:
+        return None
+    limits = packet.limits
+    steps = round(lots / limits.lots_step)
+    on_step = abs(steps * limits.lots_step - lots) <= LOTS_EPSILON
+    within = limits.volume_min - LOTS_EPSILON <= lots <= limits.max_lots + LOTS_EPSILON
+    if not (on_step and within):
+        return (f"lots must be a multiple of {limits.lots_step} between "
+                f"{limits.volume_min} and {limits.max_lots}")
+    return None
+
+
+def decision_extras_problem(chief: ChiefDecision, lots: float | None,
+                            pending_action: str | None,
+                            packet: OperatorPacketBody) -> tuple[str, str] | None:
+    """(code, detail) when `lots` or `pending_action` does not fit the packet, else None."""
+    if packet.pending_order is not None:
+        if pending_action is None:
+            return DECISION_ERR_REVIEW, "a review packet needs pending_action KEEP or CANCEL"
+        if chief.action != "HOLD" or lots is not None:
+            return DECISION_ERR_REVIEW, "a review packet allows only a HOLD Chief and no lots"
+        return None
+    if pending_action is not None:
+        return DECISION_ERR_REVIEW, "pending_action is only allowed in a review packet"
+    if lots is not None and chief.action != "ENTER":
+        return DECISION_ERR_LOTS, "lots is only allowed with an ENTER"
+    problem = _lots_problem(lots, packet)
+    return None if problem is None else (DECISION_ERR_LOTS, problem)
 
 
 def parse_operator_decision(raw: bytes, packet: OperatorPacket, *,

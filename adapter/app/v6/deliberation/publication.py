@@ -48,3 +48,7 @@ class PublishOutcome:
 
 class IntentPort(Protocol):
     async def publish(self, request: PublishRequest) -> PublishOutcome: ...
+
+    async def cancel_pending(self, reason: str) -> tuple[str, ...]:
+        """Queue CANCEL_PENDING for the EA; returns the undelivered intents cancelled."""
+        ...

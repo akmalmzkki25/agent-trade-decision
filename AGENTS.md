@@ -98,7 +98,8 @@ print it and never open `adapter/.env`.
    comes on every M15 bar that passes the hard gates while V6 is flat. On a packet,
    analyse the market yourself, run `OP template`, write
    `adapter/.v6_operator/decision.json` by the rubric (HOLD, a suggestion, or your own
-   `entry_plan` inside the packet's `limits`; code sets the lots), run
+   `entry_plan` inside the packet's `limits`, with `lots` 0.01-0.03; while a V6 order
+   rests, a review packet asks `pending_action` KEEP or CANCEL), run
    `OP submit --agent <AGENT>`, then wait again.
 4. On "Sudah cukup hari ini", run `OP session stop --reason sudah_cukup` and report the
    day. Open positions keep running.

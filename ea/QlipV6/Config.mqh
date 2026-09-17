@@ -10,9 +10,9 @@
 #define V6_MAGIC_FIRST           250570
 #define V6_MAGIC_LAST            250579
 // limits.MAX_EXECUTE_LOTS: demo execution trades the minimum lot, never more.
-#define V6_MAX_EXECUTE_LOTS      0.01
+#define V6_MAX_EXECUTE_LOTS      0.03
 // 1 % of the $2,000 sizing basis, twice the adapter's $10 budget per trade.
-#define V6_MAX_RISK_USD_CEILING  20.0
+#define V6_MAX_RISK_USD_CEILING  50.0
 // limits.MAX_DAILY_LOSS_PCT.
 #define V6_MAX_BREAKER_PCT       3.0
 #define CONFIG_TIMEOUT_MIN_MS    100
@@ -91,9 +91,9 @@ bool ParseClockMinute(const string text, int &minute_of_day)
 bool LimitsAreValid(V6Config &c)
 {
    bool ok = ConfigCheck(c.max_lots > 0.0 && c.max_lots <= V6_MAX_EXECUTE_LOTS,
-                         "InpMaxLots must be within (0, 0.01]");
+                         "InpMaxLots must be within (0, 0.03]");
    ok = ConfigCheck(c.max_risk_usd > 0.0 && c.max_risk_usd <= V6_MAX_RISK_USD_CEILING,
-                    "InpMaxRiskUsd must be within (0, 20]") && ok;
+                    "InpMaxRiskUsd must be within (0, 50]") && ok;
    ok = ConfigCheck(c.breaker_pct > 0.0 && c.breaker_pct <= V6_MAX_BREAKER_PCT,
                     "InpDailyBreakerPct must be within (0, 3]") && ok;
    ok = ConfigCheck(ParseClockMinute(c.flatten_text, c.flatten_minute),

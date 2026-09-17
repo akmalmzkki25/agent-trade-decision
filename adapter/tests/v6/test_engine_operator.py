@@ -33,10 +33,15 @@ WAIT_STEP_S = 0.01
 class FakePublisher:
     outcome: PublishOutcome
     requests: list[PublishRequest] = field(default_factory=list)
+    cancels: list[str] = field(default_factory=list)
 
     async def publish(self, request: PublishRequest) -> PublishOutcome:
         self.requests.append(request)
         return self.outcome
+
+    async def cancel_pending(self, reason: str) -> tuple[str, ...]:
+        self.cancels.append(reason)
+        return ()
 
 
 @dataclass(frozen=True)

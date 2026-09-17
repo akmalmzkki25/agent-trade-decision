@@ -120,7 +120,7 @@ def test_invalid_intents(changes: dict[str, Any], message: str) -> None:
 
 
 @pytest.mark.parametrize(("changes", "field"), [
-    ({"lots": 0.02}, "lots"), ({"require_demo": 0}, "require_demo"),
+    ({"lots": 0.04}, "lots"), ({"require_demo": 0}, "require_demo"),
     ({"source": "claude_code"}, "source"), ({"source": "openai"}, "source"),
     ({"time_barrier_s": 14_401}, "time_barrier_s"), ({"sig": "ABC"}, "sig"),
     ({"entry": -1.0}, "entry"), ({"extra": 1}, "extra"),
@@ -136,7 +136,7 @@ def test_order_problems_handle_non_finite_values() -> None:
                               pending_expiry_epoch=100, time_barrier_s=60)
 
     assert "prices and lots must be finite and positive" in problems
-    assert "lots above the 0.01 execution cap" in problems
+    assert "lots above the 0.03 execution cap" in problems
 
 
 # --- execution report ------------------------------------------------------------------

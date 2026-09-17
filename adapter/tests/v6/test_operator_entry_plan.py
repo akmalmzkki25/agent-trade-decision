@@ -118,3 +118,83 @@ def test_the_schema_rejects_a_plan_with_the_wrong_pick() -> None:
     with pytest.raises(op.OperatorDecisionError) as caught:
         op.parse_operator_decision(of.raw(document), sealed, now=NOW)
     assert caught.value.code == op.DECISION_ERR_ENTRY_PLAN
+
+
+# --- lots and review ------------------------------------------------------------------------
+REVIEW_ORDER = {"ticket": 91, "intent_id": "k7w2m4pq3xza", "order_type": "BUY_LIMIT",
+                "price": 4530.0, "sl": 4522.0, "tp": 4546.0, "lots": 0.02,
+                "expiration_epoch": of.BAR_CLOSE + 900, "distance_from_quote": 5.35}
+
+
+def review_packet() -> OperatorPacket:
+    return of.packet(candidates=[], pending_order=REVIEW_ORDER,
+                     limits=of.limits_block(agent_entry_possible=False),
+                     allowed=op.allowed_values(
+                         operator_agents=("claude_code", "codex"), candidate_ids=(of.AGENT_ID,),
+                         event_ids=(of.EVENT_ID,), pa_min_conviction=0.6
+                     ).model_dump(mode="json"),
+                     baseline_views={**of.body()["baseline_views"], "price_action": None})
+
+
+def review_decision(sealed: OperatorPacket, **changes: Any) -> dict[str, Any]:
+    template = sealed.decision_template.model_dump(mode="json")
+    return {**template, "agent": "codex", **changes}
+
+
+@pytest.mark.parametrize(("lots", "ok"), [
+    (0.01, True), (0.02, True), (0.03, True), (None, True),
+    (0.04, False), (0.015, False), (0.005, False)])
+def test_lots_must_fit_the_limits(sealed: OperatorPacket, lots: float | None, ok: bool) -> None:
+    result = validate(sealed, agent_decision(sealed) | {"lots": lots})
+    if ok:
+        assert isinstance(result, ValidatedDecision) and result.lots == lots
+    else:
+        assert isinstance(result, DecisionError) and result.code == op.DECISION_ERR_LOTS
+
+
+def test_lots_need_an_enter(sealed: OperatorPacket) -> None:
+    document = of.decision(sealed, chief=chief_payload("HOLD", None), rebuttal={}, lots=0.02)
+    result = validate(sealed, document)
+    assert isinstance(result, DecisionError) and result.code == op.DECISION_ERR_LOTS
+
+
+def test_pending_action_only_in_a_review(sealed: OperatorPacket) -> None:
+    result = validate(sealed, of.decision(sealed, pending_action="KEEP"))
+    assert isinstance(result, DecisionError) and result.code == op.DECISION_ERR_REVIEW
+
+
+@pytest.mark.parametrize("action", ["KEEP", "CANCEL"])
+def test_a_review_packet_takes_keep_or_cancel(action: str) -> None:
+    packet = review_packet()
+    assert packet.decision_template.pending_action == "KEEP"
+    result = validate(packet, review_decision(packet, pending_action=action))
+    assert isinstance(result, ValidatedDecision) and result.pending_action == action
+    assert result.summary()["pending_action"] == action
+
+
+@pytest.mark.parametrize("changes", [
+    {"pending_action": None},
+    {"pending_action": "CANCEL", "lots": 0.01},
+])
+def test_a_review_packet_refuses_anything_else(changes: dict[str, Any]) -> None:
+    packet = review_packet()
+    result = validate(packet, review_decision(packet, **changes))
+    assert isinstance(result, DecisionError) and result.code == op.DECISION_ERR_REVIEW
+    with pytest.raises(op.OperatorDecisionError):
+        op.parse_operator_decision(of.raw(review_decision(packet, **changes)), packet, now=NOW)
+
+
+def test_a_review_packet_refuses_an_enter() -> None:
+    packet = review_packet()
+    document = review_decision(packet, pending_action="KEEP", entry_plan=of.entry_plan(),
+                               chief=chief_payload("ENTER", of.AGENT_ID))
+    document["views"]["price_action"] = pa_payload(of.AGENT_ID, conviction=0.8)
+    result = validate(packet, document)
+    assert isinstance(result, DecisionError)
+    assert result.code in {op.DECISION_ERR_REVIEW, op.DECISION_ERR_ENTRY_PLAN}
+    op_doc = review_decision(packet, chief=chief_payload("ENTER", of.AGENT_ID),
+                             pending_action="KEEP")
+    op_doc["views"]["price_action"] = pa_payload(of.AGENT_ID, conviction=0.8)
+    op_doc["entry_plan"] = of.entry_plan()
+    with pytest.raises(op.OperatorDecisionError):
+        op.parse_operator_decision(of.raw(op_doc), packet, now=NOW)

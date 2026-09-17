@@ -91,3 +91,12 @@ class IntentPublisher:
         if not booked.ok:
             return refused(booked.code, booked.detail)
         return PublishOutcome(intent_id=draft.row.intent_id, code=booked.code)
+
+    async def cancel_pending(self, reason: str) -> tuple[str, ...]:
+        """The agent's review CANCEL: the EA deletes the V6 pending orders on its next poll
+        and reports them; an intent it never received is cancelled here."""
+        deps = self._desk.deps
+        now = deps.clock.now_epoch()
+        deps.commands.request_cancel_pending(reason, now)
+        cancelled = await asyncio.to_thread(deps.book.cancel_all, reason, now)
+        return tuple(record.intent_id for record in cancelled)
