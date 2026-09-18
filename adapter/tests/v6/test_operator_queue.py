@@ -348,3 +348,13 @@ def test_status_reports_agents_and_the_last_submission(queue: OperatorQueue,
     assert final["last_agent"]["via"] == "submit"
     assert final["last_closed"]["agent"] == "codex"
     json.dumps(final)
+
+
+def test_closed_cycles_can_be_looked_up(queue: OperatorQueue, clock: FakeClock) -> None:
+    sealed = packet()
+    queue.offer(sealed)
+    assert queue.pending_kind() == "m15"
+    queue.withdraw(clock.now_epoch())
+    closed = queue.closed(sealed.cycle_id)
+    assert closed is not None and closed.reason == "cancelled" and closed.decision is None
+    assert queue.pending_kind() is None and queue.closed("c-unknown") is None
