@@ -2,13 +2,15 @@
 
 Tanggal 2026-09-17, cabang `layering`. Keempat bagian desain disetujui pengguna di chat
 pada hari yang sama. Rencana implementasi tahap A ada di
-`docs/superpowers/plans/2026-09-17-v6-phase-a-plan-management.md`.
+`docs/superpowers/plans/2026-09-17-v6-phase-a-plan-management.md`, tahap B di
+`docs/superpowers/plans/2026-09-18-v6-phase-b-minute-packets.md`.
 
 ## Status dan penyimpangan saat implementasi (2026-09-18)
 
-Tahap A sudah dikerjakan (adapter dan EA 6.2.1). Tahap B belum: snapshot menit (§3.1),
-`MinuteInbox` (§4.2), paket `m1` (§2.5, §2.6) dan `v6_minute_cycles` (§4.6). Desain di
-bawah tetap berlaku, kecuali hal berikut.
+Tahap A sudah dikerjakan (adapter dan EA 6.2.1). Tahap B juga (2026-09-18, adapter dan
+EA 6.3.0): snapshot menit (§3.1), inbox dan worker menit (§4.2), paket `m1` (§2.5,
+§2.6), `submit --quick`, `v6_minute_cycles` (§4.6), replay `--minutes`, dan keputusan
+v1/v2 dipensiunkan (§9). Desain di bawah tetap berlaku, kecuali hal berikut.
 
 - **Tenggat paket M15** (§4.2, §4.5): tidak ada `V6_M15_DEADLINE_S`;
   `V6_OPERATOR_DEADLINE_S` tetap dipakai, dengan default baru 180 detik.
@@ -54,8 +56,28 @@ bawah tetap berlaku, kecuali hal berikut.
   Nilai default `20:00-22:00` sudah menutup jeda itu, bersama jendela tanpa entry EA
   (flatten 22:55 server sampai tengah malam server) dan blok rollover. Ukur ulang setelah
   pergantian DST AS (2026-11-01).
-- **Belum selesai** (§9): drill 1–8 (runbook §6) menunggu izin pengguna, lalu satu hari
-  London–NY dengan posisi yang dikelola.
+- **Snapshot menit** (§3.1) memakai blok yang sama dengan snapshot M15 (`account`,
+  `quote`, `ticks`, `positions`, `pending_orders`, `day`, `ea_state`) alih-alih subset
+  field: satu penulis JSON di EA, satu model di adapter, dan `day.trades_today` serta
+  status EA ikut segar setiap menit. Snapshot dikirim sekali, tanpa kirim ulang; kegagalan
+  dicatat EA paling banyak sekali per 15 menit.
+- **Bar M1 per jenis paket** (§1): paket `m15` tetap membawa 30 bar M1; hanya paket `m1`
+  membawa 60 bar M1 (dan tidak membawa timeframe lain).
+- **Bias pada keputusan `m1`** (§2.4) diperiksa tetapi tidak mengganti bias M15 yang
+  diingat: hanya keputusan `m15` yang memperbarui `last_bias`.
+- **`v6_minute_cycles`** (§4.6) mencatat setiap menit yang diproses, termasuk menit yang
+  dilewati (dengan alasannya: `NOT_ARMED`, `M15_PENDING`, `M15_CLOSE`, `ROLLOVER`,
+  `NO_M15_CONTEXT`, `INTENT_ACTIVE`, `GATES:<kode>`), supaya persentase paket terjawab
+  dan waktu tier 0 per menit bisa diukur dari ledger.
+- **Keputusan v1/v2** (§9) ditolak dengan `DECISION_SCHEMA` ("decisions v1 and v2 are
+  retired") sebelum diparse; laporan `submit` tidak lagi memuat `chief_action`.
+- **Beban paket menit**: replay `--minutes` pada 2026-09-17 menghitung 1.041 paket `m1`
+  dari 1.274 menit (sisanya SPREAD, SESSION, NEWS); waktu adapter per menit p50 8,5 ms,
+  p95 13 ms.
+- **Belum selesai** (§9): drill tahap A 1–8 dan drill tahap B 1–6 (runbook §6) menunggu
+  izin pengguna, lalu satu hari London–NY dengan posisi yang dikelola dan kriteria
+  selesai tahap B (p95 `tier0_ms` < 300 ms, ≥ 90 % paket `m1` terjawab dalam dua jam
+  ramai, invarian ledger bersih).
 
 ## Konteks
 

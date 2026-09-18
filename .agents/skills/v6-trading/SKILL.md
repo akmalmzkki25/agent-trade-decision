@@ -1,6 +1,6 @@
 ---
 name: v6-trading
-description: Qlip V6 XAUUSD operator loop on a DEMO MetaTrader 5 account, one identical procedure for Claude Code (agent claude_code), Codex (agent codex) and Antigravity (agent antigravity). Use when the user says "Mulai trading skrg" (check preflight, start the daily session, then decide every M15 packet), "Sudah cukup hari ini" (stop the session and report the day) or "status trading" (report status only). DEMO only, never for REAL or CONTEST accounts.
+description: Qlip V6 XAUUSD operator loop on a DEMO MetaTrader 5 account, one identical procedure for Claude Code (agent claude_code), Codex (agent codex) and Antigravity (agent antigravity). Use when the user says "Mulai trading skrg" (check preflight, start the daily session, then decide every M15 and M1 packet), "Sudah cukup hari ini" (stop the session and report the day) or "status trading" (report status only). DEMO only, never for REAL or CONTEST accounts.
 ---
 
 # V6 trading operator
@@ -76,10 +76,24 @@ command the same way. This is the only step that differs between the agents:
 
 ### Deciding a packet
 
-Aim to submit within 2 minutes; the hard limit is `expires_at_epoch` (bar close +
-180 s). A packet that arrives while you are busy stays open until its deadline, and the
-next `wait` gets it.
+The first line of the summary names the packet: `M1 PACKET` (one per closed M1 bar,
+`packet_kind` m1) or `V6 PACKET` (one per M15 bar, `packet_kind` m15). A packet that
+arrives while you are busy stays open until its deadline, and the next `wait` gets it;
+an m15 packet replaces an open m1 packet.
 
+**An m1 packet** (hard limit `expires_at_epoch`, the minute close + 50 s):
+1. Read the three lines: the quote, the M1 moves, your M15 bias and, for an open or
+   resting trade, the distance to each of its levels.
+2. Nothing to do (no entry to time at your M15 levels, the trade still on plan): run
+   `OP submit --agent <AGENT> --quick` at once, and report nothing.
+3. Otherwise, within 45 s of the minute close: run `OP template`, edit
+   `adapter/.v6_operator/decision.json` (flat: ENTER with an `entry_plan`, section 5.8;
+   a trade: MANAGE, section 5.9; `views` and `m15_bias` may stay `null`, section 5.12),
+   run `OP submit --agent <AGENT>` and report one line as in step 5 below. An M1 signal
+   against your M15 bias is a reason to wait, not to reverse.
+
+**An m15 packet** (aim to submit within 2 minutes; the hard limit is
+`expires_at_epoch`, the bar close + 180 s):
 - If the summary says `mode execute` and `armed no`, the adapter disarmed the session
   (halt, breaker, stale EA, not DEMO, restart after a crash): do not decide. Run
   `OP session status`, report `disarm_reason` and stop the loop. The user re-arms by
@@ -107,7 +121,7 @@ next `wait` gets it.
      Keep `cycle_id`, `packet_hash`, `packet_kind` and `schema_version`; use only ids
      and enum values from `allowed`; leave `agent` as `null` (`submit` fills it in).
   4. Run `OP submit --agent <AGENT>`.
-  5. Report one line:
+  5. Report one line (for an m15 packet always, for an m1 packet only after an action):
      - exit 0 (accepted): the cycle, `decision_action` (with `plan_order_type` or
        `manage_op`) and `result.status`, with `hold_reason` (a MANAGE records
        `APP-V6-MANAGE-KEPT`, `-SENT` or `-REFUSED`), or "pending" when `result` is null;
@@ -154,6 +168,6 @@ Start nothing.
   `wait` runs. If that made a packet miss its deadline, say that the cycle timed out as
   HOLD.
 
-The session runs 24 hours (the adapter reopens it after the daily rollover). Start a
-new chat when the context gets heavy, then say "Mulai trading skrg": the open session
-continues.
+The session runs 24 hours (the adapter reopens it after the daily rollover), with an
+m1 packet almost every minute. Start a new chat when the context gets heavy, then say
+"Mulai trading skrg": the open session continues, nothing is stopped.

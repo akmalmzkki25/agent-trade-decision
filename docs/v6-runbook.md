@@ -5,7 +5,9 @@
 > EA V6 di chart XAUUSD, **hentikan V5 di akun yang sama**, jalankan adapter, lalu
 > ketik "Mulai trading skrg" di Claude Code, Codex atau Antigravity (prosedur sama).
 > Berhenti: "Sudah cukup hari ini". Darurat: tombol HALT di dashboard, file `adapter/V6_HALT`, `v6_operator.py
-> halt`, GlobalVariable `QlipV6_HALT=1`, atau tombol AutoTrading.
+> halt`, GlobalVariable `QlipV6_HALT=1`, atau tombol AutoTrading. Sejak EA 6.3.0 (tahap B)
+> agen juga menerima paket `m1` hampir setiap menit; `submit --quick` untuk "tidak ada
+> perubahan". EA harus dipasang ulang setelah dikompilasi.
 
 Scope: one Windows machine, MT5 on a **DEMO** account (since 2026-09-17 **Monex-Demo**,
 symbol `XAUUSD.m`; earlier MetaQuotes-Demo), the adapter on `127.0.0.1:8765`, and the operator agent in Claude Code, Codex or Antigravity (one
@@ -43,6 +45,9 @@ V6_TIME_LIMIT_MIN_MINUTES=60    # the holding-time window of an agent plan
 V6_TIME_LIMIT_MAX_MINUTES=240
 V6_PENDING_EXPIRY_MIN_MINUTES=15   # how long a LIMIT or STOP may rest
 V6_PENDING_EXPIRY_MAX_MINUTES=60
+V6_MINUTE_PACKETS=true          # phase B: an m1 packet per closed M1 bar (EA 6.3.0)
+V6_M1_DEADLINE_S=50             # an m1 packet expires this long after its minute (20-55)
+V6_MINUTE_STALE_S=10            # a minute snapshot older than this is skipped (3-30)
 ```
 
 The timing keys may only tighten:
@@ -101,11 +106,13 @@ re-sync the key (section 2).
    5. Reload the EA. A command-line compile does not reload an EA that is already
       running. Remove it from the chart and attach it again (its inputs return to the
       defaults in step 4), or restart MT5, which keeps the chart's inputs.
-   6. The Experts log (`MQL5\Logs`) shows `V6 EA 6.2.1 started`. EA 6.2.x (phase A) places LIMIT,
-      STOP and market orders, runs the SL+ ladder itself (`Plan.mqh`) and applies
-      signed management actions (`Actions.mqh`). Deploy it together with the adapter of
-      the same commit: an older adapter cannot parse its snapshots, and an older EA
-      cannot parse the adapter's `v6.intent.2` answers.
+   6. The Experts log (`MQL5\Logs`) shows `V6 EA 6.3.0 started`, and its `V6 limits:`
+      line says `minute snapshots on`. EA 6.3.0 (phase B) sends one `v6.minute.1` snapshot per
+      closed M1 bar to `/v6/minute` (`Cadence.mqh`), on top of phase A: LIMIT, STOP and
+      market orders, the SL+ ladder (`Plan.mqh`) and signed management actions
+      (`Actions.mqh`). Deploy it together with the adapter of the same commit: an older
+      adapter has no `/v6/minute` route (404 on every minute) and cannot parse newer
+      snapshots, and an older EA cannot parse the adapter's `v6.intent.2` answers.
 4. **Attach the EA** `QlipV6_XAUUSD` to one XAUUSD chart (M15). These inputs are the
    current build's names, so check the Inputs tab:
 
@@ -120,6 +127,8 @@ re-sync the key (section 2).
    | `InpFlattenServerTime` | `22:55` | daily flatten before rollover (server time) |
    | `InpHmacKeyFile` | `QlipV6\hmac.key` | relative to `MQL5\Files` |
    | `InpPollIntervalMs` | `2000` | poll cadence |
+   | `InpMinuteSnapshots` | `true` | one minute snapshot per closed M1 bar (phase B); `false` stops the m1 packets at the source |
+   | `InpMinuteTimeoutMs` | `800` | minute snapshot timeout (200-1500 ms); a minute is sent once, never retried |
 
    - The Experts log should show the HMAC self-test passing. If a vector fails, the EA
      refuses to execute.
@@ -158,14 +167,22 @@ re-sync the key (section 2).
    ..\.venv\Scripts\python.exe scripts\v6_operator.py session start
    ```
 
-5. **Check.** **"status trading"** (or `session status` and `status`) shows the session,
+5. **Minute packets.** While the session is armed, the agent gets an m1 packet at almost
+   every closed M1 bar besides the m15 packet of each M15 bar: about 1,000-1,300 a day
+   while flat (the replay of 2026-09-17 counts 1,041 of 1,274 minutes; spread, session
+   and news blocks stop the rest). Most minutes are answered with `submit --quick`; the
+   agent reports only actions and m15 packets, and starts a new chat when its context
+   gets heavy (the session continues). The dashboard's "Minute packets" card shows the
+   answered share, the actions and the adapter time per minute. To count them for other
+   days: `..\.venv\Scripts\python.exe scripts\v6_replay.py --from <day> --to <day> --minutes`.
+6. **Check.** **"status trading"** (or `session status` and `status`) shows the session,
    cycles, holds, intents and the EA age.
-6. **Stop.** **"Sudah cukup hari ini"** (or `session stop`) disarms the session, cancels
+7. **Stop.** **"Sudah cukup hari ini"** (or `session stop`) disarms the session, cancels
    pending V6 orders and reports the day. **Open positions keep running** to SL, TP3,
    their SL+ steps, their time limit (60-240 min) or the daily flatten. A session left
    open is closed at the rollover block and, with `V6_SESSION_AUTO_RENEW=true`, reopened
    and re-armed as soon as the block ends; `wait` keeps waiting meanwhile.
-7. **Shut down.** Stop the adapter with Ctrl+C after the session. MT5 can stay up for
+8. **Shut down.** Stop the adapter with Ctrl+C after the session. MT5 can stay up for
    open positions.
 
 ## 4. Kill switches
@@ -234,18 +251,25 @@ survives restarts. To reset one, only after the loss has been reviewed:
 | a management action shows `REJECTED` or `EXPIRED` (dashboard "Plan & actions") | the EA refused it against its live quote (`SL_WIDER`, `TOO_CLOSE`, `BARRIER`, `STALE`, `UNKNOWN_TICKET`, `BAD_ACTION`), or it never reached the EA within 30 s | expected protection; the next packet shows `last_action` and the agent decides again |
 | `wait` answers 3 after the rollover with no session | the adapter is reopening the session (`session_renewal_due` in `status`) | keep waiting; it reopens when the block ends and the arming checks pass |
 | `wait` keeps timing out | nothing passed the gates (normal), halted, breaker, outside the main window | read `runtime_status` and `last_cycle.hold_reason` in `status` |
+| no m1 packets between the M15 packets | the minute worker skips every minute: see the reason in the dashboard's "Minute packets" rows or `status` → `runtime.minutes` (`NOT_ARMED`, `M15_PENDING`, `M15_CLOSE`, `ROLLOVER`, `NO_M15_CONTEXT`, `INTENT_ACTIVE`, `GATES:<codes>`, `DISABLED`, `INACTIVE`); no rows at all means no minute snapshot arrives | an EA older than 6.3.0, or not re-attached after the compile (the log shows the version); `InpMinuteSnapshots` false; `V6_MINUTE_PACKETS=false` |
+| Experts log: `minute` failure lines (at most one per 15 minutes) | the EA cannot post `/v6/minute`: adapter down, or an adapter older than phase B (404) | start the adapter of the same commit; minutes are not retried, the next one replaces a lost one |
+| m1 packets answer `EXPIRED` often | the agent answers after the 50 s deadline, or an m15 packet replaced the m1 packet | answer an m1 packet with `--quick` at once unless it needs an action; keep replies short |
 
 Where to look:
 - adapter console log;
-- tables `v6_actions` (management actions) and `v6_plan_steps` (SL+ steps);
+- tables `v6_actions` (management actions), `v6_plan_steps` (SL+ steps) and
+  `v6_minute_cycles` (every processed minute: outcome or skip reason, `tier0_ms`; kept
+  3 days);
 - `http://127.0.0.1:8765/v6` (last cycles, hold histogram, sizing floor);
 - `<data folder>\MQL5\Logs\YYYYMMDD.log` (EA);
 - `adapter\.v6_operator\` (last packet and decision).
 
-## 6. Phase A: drills and broker measurements
+## 6. Drills and broker measurements
 
-Run the drills after deploying the adapter and EA 6.2.1 of the same commit, **with the
-user's approval**, on the demo account, one at a time. Record for each: the time, the
+### Phase A: plans and management
+
+Run the drills after deploying the adapter and EA (6.2.1 or later) of the same commit,
+**with the user's approval**, on the demo account, one at a time. Record for each: the time, the
 command or decision, the EA log lines and the `v6_actions` / `v6_plan_steps` rows.
 
 | # | Drill | Expected |
@@ -284,6 +308,30 @@ blocks:
 
 Measure again after a daylight-saving change (US time changes on 2026-11-01). Only the
 user edits `adapter/.env`; the adapter is then restarted.
+
+### Phase B: minute packets
+
+Run these after deploying the adapter and EA 6.3.0 of the same commit, **with the
+user's approval**, on the demo account. Record the time, the packet (`M1 PACKET` or
+`V6 PACKET`), the answer and the `v6_minute_cycles` row.
+
+| # | Drill | Expected |
+|---|---|---|
+| 1 | an armed session, V6 flat, a quiet minute | an m1 packet every minute outside the M15 closes; `submit --quick` is accepted (HOLD) and the row is `ANSWERED` |
+| 2 | an ENTER from an m1 packet (views and bias `null`) | the plan is checked like an m15 plan and published; the cycle records the inherited views |
+| 3 | an m1 packet still open at an M15 close | the m15 packet replaces it; a submit to the m1 packet answers `EXPIRED`; no m1 packet while the m15 packet is open |
+| 4 | a position open: an m1 packet answered MANAGE CLOSE or a MODIFY of the stop | the action reaches the EA like an m15 one (`v6_actions`) |
+| 5 | the rollover block, and a disarmed session | no m1 packet; rows `SKIPPED` with `ROLLOVER` or `NOT_ARMED` |
+| 6 | the adapter stopped for a few minutes | the EA logs a minute failure at most once per 15 minutes; the M15 snapshots are retried as before; after the restart, m1 packets resume after the first M15 cycle |
+
+**Phase B is done when**, over one London-New York day:
+- no minute backlog builds up in the adapter: p95 `tier0_ms` in `v6_minute_cycles`
+  stays under 300 ms (the dashboard's "Minute packets" card);
+- at least 90 % of the m1 packets are answered in time during two busy hours (the card's
+  two-hour window);
+- the ledger invariants hold: no APPLIED `v6_actions` row widened a stop, every active
+  intent has `sl > 0`, never two active intents, no entry while a position or order was
+  open, at most 8 entries per trading day.
 
 ## Appendix: per-tool setup
 

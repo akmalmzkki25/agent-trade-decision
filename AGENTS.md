@@ -55,9 +55,9 @@ Claude Code and Antigravity would inline that file.
 ## V6 operator: Claude Code, Codex and Antigravity
 
 V6 decisions come from `V6_BACKEND=rules` (shadow only) or `V6_BACKEND=operator`: an
-operator agent in a chat session submits one decision per M15 packet. Claude Code, Codex
-and Antigravity follow one identical procedure. Only the agent name and the way a tool
-runs a blocking command differ.
+operator agent in a chat session submits one decision per packet (M15 and M1). Claude
+Code, Codex and Antigravity follow one identical procedure. Only the agent name and the
+way a tool runs a blocking command differ.
 
 **Hard rule, never relaxable: the operator backend trades DEMO accounts only, for every
 agent. REAL and CONTEST accounts are refused by the config, the operator API, the intent
@@ -74,7 +74,7 @@ and tell the user. Never edit `V6_ALLOW_REAL_ACCOUNT` and never look for a worka
 ### Trigger phrases
 
 - **"Mulai trading skrg"**: run preflight, start the daily session and trade at once on
-  the DEMO account (no shadow period), then decide every M15 packet.
+  the DEMO account (no shadow period), then decide every packet (M15 and M1).
 - **"Sudah cukup hari ini"**: stop the session (disarm, cancel pending V6 orders, leave
   open positions to SL, TP or the time barrier) and report the day.
 - **"status trading"**: report the status only.
@@ -94,14 +94,16 @@ print it and never open `adapter/.env`.
    Exit 1 or 3: report `problems` and `hints`, then stop.
 2. Run `OP session start`. Stop on a `refusal`, or when `mode` is `execute` and `armed`
    is false.
-3. Repeat: run `OP wait --agent <AGENT> --timeout 240` as a blocking command. A packet
-   comes on every M15 bar that passes the hard gates while V6 is flat, and a management
-   packet on every bar while a V6 order rests or a position is open. On a packet,
-   analyse the market yourself (M15 first, M1 for timing), run `OP template`, write
-   `adapter/.v6_operator/decision.json` by the rubric (flat: HOLD, or ENTER with your own
-   `entry_plan` inside the packet's `limits`: MARKET, LIMIT or STOP, TP1-TP3, SL+
-   steps, time limit, `lots` 0.01-0.03; management: `action` MANAGE with `manage` KEEP,
-   CANCEL, CLOSE or MODIFY; always `m15_bias`), run
+3. Repeat: run `OP wait --agent <AGENT> --timeout 240` as a blocking command. An m15
+   packet comes on every M15 bar that passes the hard gates (a management packet while a
+   V6 order rests or a position is open), and an m1 packet at every other closed M1 bar
+   (EA 6.3.0). On an m1 packet with nothing to change, run
+   `OP submit --agent <AGENT> --quick`; otherwise template, edit and submit within 45 s.
+   On an m15 packet, analyse the market yourself (M15 first, M1 for timing), run
+   `OP template`, write `adapter/.v6_operator/decision.json` by the rubric (flat: HOLD,
+   or ENTER with your own `entry_plan` inside the packet's `limits`: MARKET, LIMIT or
+   STOP, TP1-TP3, SL+ steps, time limit, `lots` 0.01-0.03; management: `action` MANAGE
+   with `manage` KEEP, CANCEL, CLOSE or MODIFY; always `m15_bias`), run
    `OP submit --agent <AGENT>`, then wait again.
 4. On "Sudah cukup hari ini", run `OP session stop --reason sudah_cukup` and report the
    day. Open positions keep running.

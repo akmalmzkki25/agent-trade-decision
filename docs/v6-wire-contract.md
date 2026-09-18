@@ -3,6 +3,7 @@
 Status: **binding** for every V6 stage (adapter routes, runtime, EA, scripts). Code of
 record: `adapter/app/v6/wire.py` (signatures), `adapter/app/v6/schemas/intent.py`
 (poll, intent, execution), `adapter/app/v6/schemas/snapshot.py` (snapshot, backfill),
+`adapter/app/v6/schemas/minute.py` (minute snapshot),
 `adapter/app/models.py` (`BasketResultEvent`). Golden vectors:
 `adapter/tests/v6/golden/hmac_vectors.json`. When this document and the code disagree,
 the code plus its tests win and this document is fixed.
@@ -27,6 +28,8 @@ User decisions (2026-09-16) this contract implements:
 
   The stop moves only through those steps and actions: never a mechanical break-even or
   trailing stop.
+- Phase B (user decision of 2026-09-18): one minute snapshot per closed M1 bar (§6.7)
+  feeds one m1 packet per minute (§9); the M15 snapshot and packet keep priority.
 
 ---
 
@@ -523,24 +526,40 @@ disarm cancels undelivered intents, withdraws a pending operator packet and queu
 
 ## 9. Operator contract (adapter ↔ operator agent, not the EA)
 
-`adapter/app/v6/schemas/operator.py`:
+`adapter/app/v6/schemas/operator.py` (the full field list and the rubric are in
+`docs/v6-operator.md` sections 5 and 6):
 
-- `OperatorPacket` (`v6.operator.packet.1`): `cycle_id`, `packet_hash`,
-  `created_at_epoch`, `expires_at_epoch` (≤ bar close + `V6_OPERATOR_DEADLINE_S`),
-  `bar_open_epoch`, `bar_close_epoch`, `mode`, `session_id`, `account {trade_mode:
-  "DEMO", server, equity_band}`, `market`, `session`, `bars {M15 ≤12, H1 ≤8}` as
-  `[t, o, h, l, c]`, `gates`, `calendar`, `candidates` (1–3, with `exit` and indicative
-  `sizing`), `baseline_views`, `allowed`, `decision_template`. Built with
-  `seal_packet(OperatorPacketBody)`; only DEMO accounts can be represented.
-- `OperatorDecision` (`v6.operator.decision.1`, ≤ 64 KB): `cycle_id`, `packet_hash`,
-  `agent` (`claude_code`/`codex`/`antigravity`, must be in `V6_OPERATOR_AGENTS`), `views
-  {price_action, news_risk, liquidity, structure}`, `chief`, optional `rebuttal
-  {candidate_id: maintain|withdraw}` (PA TAKE ids only). The strict parser is
-  `parse_operator_decision(raw, packet, now=…)`; the queue validates with
-  `deliberation.operator_decision.validate_decision`, which is lenient for the risk
-  desks only: a missing or invalid news, liquidity or structure view is flagged and
-  replaced by its rules view (plan §2 rule 2), while a bad Price Action view or Chief
-  refuses the decision. Errors carry `DECISION_ERR_*`.
+- `OperatorPacket` (`v6.operator.packet.3`): `packet_kind` `m15` or `m1`, `state`
+  `flat`, `pending` or `position`, `cycle_id` (`c-…` for m15, `m-…` for m1),
+  `packet_hash`, `created_at_epoch`, `expires_at_epoch`, `bar_open_epoch`,
+  `bar_close_epoch`, `mode`, `session_id`, `account {trade_mode: "DEMO", server,
+  equity_band}`, `market`, `session`, `bars` as `[t, o, h, l, c]`, `levels`, `limits`,
+  `gates`, `calendar`, `candidates`, `baseline_views`, `allowed`, the managed
+  `pending_order` or `position`, `last_action`, `last_bias`, `m1_state`,
+  `decision_template`. Built with `seal_packet(OperatorPacketBody)`; only DEMO accounts
+  can be represented.
+  - **m15** (one per M15 bar that passes the gates): `expires_at_epoch` ≤ bar close +
+    `V6_OPERATOR_DEADLINE_S`; bars M1 ≤ 30, M5 ≤ 36, M15 ≤ 32, H1 ≤ 24, D1 ≤ 5; 0–3
+    `candidates`; `m1_state` null.
+  - **m1** (one per closed M1 bar between two M15 closes, built from the minute snapshot
+    of §6.7 and the newest M15 cycle): `expires_at_epoch` ≤ minute close +
+    `V6_M1_DEADLINE_S` (50 s); bars M1 ≤ 60 only; no `candidates`; `baseline_views` are
+    the views the newest M15 cycle used; `m1_state` (M1 ATR and range, 5- and 15-bar
+    moves, quote rate, distances to the managed trade's levels). An m15 packet withdraws
+    an open m1 packet, and no m1 packet is offered while an m15 packet is open.
+- Decision `v6.operator.decision.3` (≤ 64 KB): `packet_kind`, `cycle_id`, `packet_hash`,
+  `agent` (`claude_code`/`codex`/`antigravity`, must be in `V6_OPERATOR_AGENTS`),
+  `action` HOLD|ENTER (flat) or MANAGE (pending, position), `views {price_action,
+  news_risk, liquidity, structure}`, `entry_plan` (ENTER), `manage` (MANAGE), `m15_bias`,
+  `note`. The queue validates with `deliberation.operator_decision.validate_decision`
+  (`decision_v3` for m15, `decision_minute` for m1), which is lenient for the risk desks
+  only: a missing or invalid news, liquidity or structure view is flagged and replaced
+  by its rules view (plan §2 rule 2), while a bad Price Action view refuses the decision.
+  An m1 decision may leave `views` and `m15_bias` null: the inherited M15 views apply
+  and an ENTER counts as a Price Action TAKE at the minimum conviction. Decisions
+  `v6.operator.decision.1` and `.2` (Chief, rebuttal, lots) are retired and refused with
+  `DECISION_SCHEMA`. Errors carry `DECISION_ERR_*`.
 - Recorded as provider `operator`: `v6_agent_views.source = "operator"`,
   `v6_agent_views.model = <agent>`, `v6_intents.source = "operator"`,
-  `v6_intents.agent = <agent>`.
+  `v6_intents.agent = <agent>`. Every processed minute is one `v6_minute_cycles` row
+  (`SKIPPED` with its reason, `ANSWERED` or `UNANSWERED`, `tier0_ms`).

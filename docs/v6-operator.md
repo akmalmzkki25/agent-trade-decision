@@ -18,6 +18,12 @@
 > `action` MANAGE dengan `manage` KEEP, CANCEL, CLOSE atau MODIFY (5.9). Setiap keputusan
 > mengisi `m15_bias` (arah, level, invalidasi, skenario) yang tampil lagi di paket
 > berikutnya. News/Liquidity/Structure hanya bisa memveto atau mengecilkan (pengali ≤ 1).
+> **Tahap B (EA 6.3.0):** di antara dua close M15, setiap close M1 membawa **paket `m1`**
+> (ringkasan tiga baris, 60 bar M1, `m1_state`). Jawab dalam **45 detik** (tenggat close +
+> 50 s): bila tidak ada perubahan, `submit --quick`; bila ada, `template`, edit, `submit`.
+> Paket `m15` tetap prioritas (menggantikan paket `m1` yang terbuka); paket `m1` memakai
+> view dan bias M15 terakhir, dan veto M15 berlaku sampai paket `m15` berikutnya. Paket
+> `m1` dijeda saat rollover dan saat sesi tidak armed. Keputusan v1/v2 sudah pensiun.
 > Akun **REAL/CONTEST selalu ditolak**: berhenti dan lapor. Selama sesi: jangan edit file
 > (kecuali `decision.json`), jangan browsing untuk keputusan trading, jangan ubah setting.
 
@@ -55,6 +61,14 @@ action) that the EA checks again before it touches the order. The operator never
 touches MT5: SL and TP3 sit at the broker, and the EA enforces the SL+ steps and the time
 limit even when the adapter is down.
 
+Between two M15 closes the EA (6.3.0) sends one minute snapshot per closed M1 bar, and
+the adapter serves an **m1 packet** for every minute that passes the gates, around the
+clock: a flat m1 packet lets the agent time an entry at the levels of its M15 reading, a
+management m1 packet lets it cut or tighten a trade as the M1 structure moves. An m1
+packet reuses the newest M15 cycle's views and bias (5.12), carries 60 closed M1 bars and
+their `m1_state`, and must be answered within 50 s of the minute close; "no change" is
+one command, `submit --quick`. The M15 packet keeps priority (section 4).
+
 ## 2. Commands
 
 The agents run the CLI from the repository root as
@@ -70,9 +84,10 @@ files live in `adapter/.v6_operator/` (gitignored).
 |---|---|---|
 | `preflight [--agent A] [--allow-shadow]` | one JSON verdict: `ready`, `problems`, `hints`, `next`, and the adapter's `account_policy` | 0 ready · 1 not ready · 3 unreachable · **5 not DEMO** |
 | `session start` | opens today's session (arms it in execute mode) | 0 · 1 refused (`refusal`) · 3 |
-| `wait [--agent A] [--timeout 240] [--out F]` | blocks until the next packet; writes `packet.json`; prints a summary | **0 packet** · **3 timeout** · **4 no session** · **5 not DEMO** · 1 error |
+| `wait [--agent A] [--timeout 240] [--out F]` | blocks until the next packet (m15 or m1); writes `packet.json`; prints a summary (three lines for an m1 packet) | **0 packet** · **3 timeout** · **4 no session** · **5 not DEMO** · 1 error |
 | `template [--packet F] [--out F] [--force]` | writes `decision.json`: the packet's v3 template (baseline views, HOLD or MANAGE KEEP, the last bias, `agent: null`) and prints the limits with an `agent_entry_example` or a `manage_example` | 0 · 1 packet expired · 2 missing/bad packet or edited file |
 | `submit --agent A [--file F\|-] [--packet F]` | posts the decision; prints the verdict and, once visible, the cycle `result` | 0 accepted · 1 refused · 3 · 4 · 5 |
+| `submit --agent A --quick [--packet F]` | "no change" for the packet in `packet.json`, without a decision file: HOLD (flat) or MANAGE KEEP (pending, position); an m15 packet carries your last bias forward marked `carried: true` (or `unclear`) with the baseline views. It does not wait for the cycle result | same as `submit` |
 | `session status` / `status` | session and day summary / runtime and EA (no token) | 0 · 1 · 3 |
 | `session stop [--reason R]` | disarm, `CANCEL_PENDING`, day summary | 0 · 1 · 3 |
 | `halt [--reason R]` | kill switch (creates `adapter/V6_HALT`) | 0 · 1 · 3 |
@@ -96,16 +111,24 @@ sent). `wait` retries an unreachable adapter or a 5xx twice, then exits 1.
    - In `execute` mode, `armed: false` means no intent can be published: report it with
      `arm_reason` (`EA_NOT_SEEN`, `EA_STALE`, `HALTED`, `BREAKER`, ...) and do not run the
      loop.
-3. **Loop, once per packet.**
+3. **Loop, once per packet.** One loop serves both packet kinds; the first line of the
+   summary tells them apart (`V6 PACKET` for m15, `M1 PACKET` for m1).
    1. `wait --agent <you> --timeout 240`, in the foreground for every agent (the
       "Blocking commands" table in `AGENTS.md` says how each tool does it).
-   2. On exit 0, read the printed summary, then `adapter/.v6_operator/packet.json` when the
-      summary is not enough.
-   3. `template`, then edit `adapter/.v6_operator/decision.json` with the rubric of
-      section 5: on a flat packet HOLD or ENTER with an `entry_plan` (5.8), on a pending
-      or position packet MANAGE (5.9), and always `m15_bias` (5.11).
-   4. `submit --agent <you>`.
-   5. Run `wait` again, whatever the verdict.
+   2. **An m1 packet** (every minute): read the three-line summary. When nothing changes
+      (no entry to time, the trade still fine), run `submit --agent <you> --quick` at
+      once. Otherwise `template`, edit (`entry_plan` or `manage`, 5.12), `submit`, all
+      within 45 s of the minute close.
+   3. **An m15 packet** (every 15 minutes): read the summary, then
+      `adapter/.v6_operator/packet.json` when the summary is not enough; `template`, then
+      edit `adapter/.v6_operator/decision.json` with the rubric of section 5: on a flat
+      packet HOLD or ENTER with an `entry_plan` (5.8), on a pending or position packet
+      MANAGE (5.9), and always `m15_bias` (5.11). Then `submit --agent <you>`.
+   4. Run `wait` again, whatever the verdict.
+   5. **Reports.** One line per m15 packet, and one line per m1 packet only when something
+      happened: an entry, a modification, a cut, a fill or a close. A quick "no change"
+      needs no report. When the chat's context gets heavy, start a new chat and say
+      "Mulai trading skrg": the open session continues, nothing is stopped.
 4. **Outcomes.**
 
    | Result | Meaning | Do |
@@ -116,7 +139,7 @@ sent). `wait` retries an unreachable adapter or a 5xx twice, then exits 1.
    | `wait` 4 | no active session (stopped, or closed and not being reopened) | stop the loop, report; after a rollover close with `V6_SESSION_AUTO_RENEW` the adapter reopens the session and `wait` keeps answering 3 until it does |
    | `wait`/`submit`/`preflight` 5 | the account is not DEMO | refuse and stop (section 7) |
    | `wait` 1 | adapter down, token rejected, backend not `operator`, malformed packet | run `status`, report, stop unless the user says otherwise |
-   | `submit` 0 | accepted; `decision_action` is what you asked (with `plan_order_type` or `manage_op`), `result.status` what code made of it (`ENTER`, `ENTER_SHADOW`, `HOLD` + `hold_reason`, for a MANAGE `APP-V6-MANAGE-KEPT`, `-SENT` or `-REFUSED`; `null` if not visible yet), `flagged` lists desks replaced by their rules view | note it, run `wait` |
+   | `submit` 0 | accepted; `decision_action` is what you asked (with `plan_order_type` or `manage_op`), `result.status` what code made of it (`ENTER`, `ENTER_SHADOW`, `HOLD` + `hold_reason`, for a MANAGE `APP-V6-MANAGE-KEPT`, `-SENT` or `-REFUSED`; `null` if not visible yet, and always `null` after `--quick`), `flagged` lists desks replaced by their rules view | note it, run `wait` |
    | `submit` 1, `code` `EXPIRED` | the packet is closed: it expired, or a session stop, halt or disarm withdrew it | do not resubmit; run `wait` |
    | `submit` 1 | refused; `code` is `INVALID` (422, with `error` = `DECISION_*`) or `UNKNOWN_CYCLE`, `HASH_MISMATCH`, `ALREADY_DECIDED`, `AGENT_NOT_ALLOWED` (409) | fix and resubmit only while the packet is open (these refusals keep it pending); else run `wait` |
    | `submit` 4 | refused `EXPIRED` and `GET /v6/status` shows no active session | stop the loop, report |
@@ -163,6 +186,22 @@ sent). `wait` retries an unreachable adapter or a 5xx twice, then exits 1.
   600 s), Codex's one-shot shell call is given `timeout_ms: 300000`, and one Codex
   unified-exec poll waits up to 300 s by default. Antigravity documents no limit (see the
   runbook appendix).
+- **m1 packets.** Between two M15 closes, each closed M1 bar that passes the gates
+  brings one m1 packet (the minute that ends at an M15 close brings the m15 packet
+  instead). Its `expires_at_epoch` = the minute close + `V6_M1_DEADLINE_S` (50 s, 20-55):
+  aim to submit within 45 s. Unanswered, it counts as "no change" and the next minute's
+  packet replaces it.
+- **Priority.** An m15 packet withdraws the open m1 packet (a submit to it then answers
+  `EXPIRED`), and while an m15 packet is open no m1 packet is offered.
+- **When no m1 packet comes.** Minute packets pause while the session is not armed
+  (`NOT_ARMED`), during the rollover block (`ROLLOVER`), while an m15 packet is open
+  (`M15_PENDING`), without a recent M15 cycle to start from, e.g. right after a restart
+  (`NO_M15_CONTEXT`), and while a published intent has not yet become a resting order or
+  a position (`INTENT_ACTIVE`). A minute that fails a gate is skipped too (`GATES:<codes>`;
+  a management minute only on a gate that blocks management), and so is a minute
+  snapshot older than `V6_MINUTE_STALE_S` (10 s). `V6_MINUTE_PACKETS=false` turns m1
+  packets off (the M1 bars are still stored). The dashboard's "Minute packets" card and
+  the `v6_minute_cycles` table show every minute with its outcome or skip reason.
 - A packet stays pending until it is decided or expires, so a packet that arrives while
   the agent is deciding or replying is served by the next `wait`.
 - A long reply to the user during a session can cost a cycle: say so when it happens.
@@ -196,7 +235,7 @@ sent). `wait` retries an unreachable adapter or a 5xx twice, then exits 1.
 6. **Use only listed values.**
    - Ids come from `allowed.candidate_ids` and `allowed.event_ids`.
    - Enum values and size limits come from `allowed.enums` and `allowed.limits`.
-   - An invalid Price Action or Chief refuses the whole decision (`INVALID`,
+   - An invalid Price Action view refuses the whole decision (`INVALID`,
      `DECISION_VIEW`).
    - An invalid or missing news, liquidity or structure view is only `flagged`: that desk
      falls back to its rules view. Do not rely on this.
@@ -276,7 +315,7 @@ LIMIT|MARKET|EITHER, `reason_codes`, `note`.
   - rollover within 60 min;
   - missing cost data.
 - **Order style.** Answer `LIMIT` unless there is a specific reason not to; a liquidity
-  LIMIT overrides a Chief MARKET.
+  LIMIT turns a MARKET plan into a HOLD (5.6).
 - **Proxies are not order flow.** `dom_synthetic: 1` means the book is synthetic, and
   `tick_volume_z` is activity, never volume or direction.
 
@@ -299,12 +338,11 @@ Fields: `regime`, `counter_structure_veto`, `size_multiplier` 0..1, `named_patte
   prints sit against a continuation candidate.
 - **`named_patterns` carry weight 0.** They are logged for measurement only (kn/05).
 
-### 5.5 Rebuttal (R2, decisions v1/v2 only)
+### 5.5 Rebuttal (retired)
 
-For each candidate you ranked TAKE, when any desk shows CAUTION, a multiplier below 1 or
-a counter-structure flag, set `rebuttal[<id>]` to `maintain` or `withdraw`. Withdraw
-when the objection defeats the setup. A rebuttal may name TAKE ids only, and it never
-raises conviction.
+Decisions v1 and v2 (a Chief picking a candidate, a `rebuttal` round, `lots`) are
+retired: the adapter refuses them with `DECISION_SCHEMA`. When an objection defeats your
+setup, HOLD (or leave the entry id out of your TAKEs) instead of withdrawing it.
 
 ### 5.6 The action (decision v3)
 
@@ -334,12 +372,7 @@ the level logic, the vetoes you weighed and the m you expect.
   (0.03 × (stop + $0.40) × 100 ≤ B × m, about a $7.9 stop at m = 1). The sizer reduces an
   unaffordable request and never goes below 0.01 while B pays for it.
 
-A flat packet still accepts a version 1 or 2 decision (a Chief picking a detector
-suggestion or the agent entry, `rebuttal`, `lots`): Chief `action` ENTER|HOLD,
-`candidate_id` a PA TAKE id that was not withdrawn (HOLD: `null`), `risk_tier`
-reduced|standard, `order_style` equal to `entry_plan.order_type` for the agent entry,
-`exit_profile` STANDARD, `rationale` ≤ 300, `dissent` ≤ 200. A management packet refuses
-it (`DECISION_KIND`). With v3, trade a suggestion by designing the plan from its levels.
+To trade a detector suggestion, design your plan from its levels.
 
 ### 5.7 What code does with the decision
 
@@ -366,8 +399,8 @@ Resolution rules (`deliberation/protocol.py`, in order):
   most 1 %; **$25** at the $5,000 basis), capped at half the remaining daily loss
   allowance; the scaled budget is B × m.
 - Loss per 0.01 lot = stop distance + $0.40 friction.
-- Lots are floored to 0.01 and capped by your `entry_plan.lots` (v2: `lots`, default
-  0.01) and `V6_MAX_LOTS` (0.03); a size is never rounded up past B.
+- Lots are floored to 0.01 and capped by your `entry_plan.lots` and `V6_MAX_LOTS`
+  (0.03); a size is never rounded up past B.
 - **Minimum-lot floor.** When only m pushed the scaled budget below the minimum lot while
   B still pays for it (and m ≥ 0.25), the trade is sized at exactly 0.01 lot, labelled
   `MIN_LOT_FLOOR`: asking for less risk gives the least risk available, not a refusal.
@@ -517,35 +550,82 @@ packet as `last_bias` (with `last_bias_at_epoch`); the template starts from it, 
 restart forgets it. Update it on every packet, when you HOLD or KEEP too: it is how the
 next decision knows what you were waiting for.
 
-M15 sets the bias; the M1 bars (the last 30 in `bars.M1`) only time the entry and show
-how aggressive the current move is. An M1 signal against the M15 bias is a reason to
-wait, not to reverse.
+M15 sets the bias; the M1 bars (the last 30 in an m15 packet's `bars.M1`, the last 60 in
+an m1 packet) only time the entry and show how aggressive the current move is. An M1
+signal against the M15 bias is a reason to wait, not to reverse. The bias stays in force
+until the next m15 decision; m1 packets show it and never replace it (5.12).
+
+### 5.12 The m1 packet: M1 timing and inherited views
+
+An m1 packet (`packet_kind` `m1`) comes at a closed M1 bar between two M15 closes. It
+has the same state as an m15 packet would (`flat`, `pending` or `position`, with the
+same `position` or `pending_order` block), `market`, `session`, `gates`, `calendar` and
+`limits` recomputed at the minute close, 60 closed M1 bars in `bars.M1` (no other
+timeframe, no suggestions), and `m1_state`:
+
+| Field | Meaning |
+|---|---|
+| `atr_m1` | ATR(14) of the closed M1 bars |
+| `range_15` | high minus low of the last 15 M1 bars |
+| `last_5`, `last_15` | the move over the last 5 and 15 bars: `change` (close to close), `direction` up, down or flat, `strength` = abs(change) / `atr_m1` |
+| `quotes_per_s`, `max_gap_ms` | the quote rate and the longest quote gap of the minute |
+| `distances` | a managed trade only: each level (`entry`, `sl`, `tp1`, `tp2`, `tp3`) minus the price that triggers it (a position exits on the bid for a buy and the ask for a sell; a resting buy fills on the ask, a sell on the bid) |
+
+**What an m1 decision may do.** The same as an m15 decision in that state: HOLD or ENTER
+with an `entry_plan` inside `limits` (5.8) when flat, MANAGE (5.9) when a trade is open
+or resting. `views` and `m15_bias` may stay `null`, as the template leaves them:
+- the **inherited views** then apply: those of your last accepted m15 decision, or that
+  cycle's rules views when it went unanswered (the packet's `baseline_views`);
+- an ENTER then counts as your Price Action TAKE of `limits.agent_entry_id` at the
+  minimum conviction. Views you do send are checked like an m15 decision's;
+- a bias you send is checked but does not replace the remembered one: only an m15
+  decision updates `last_bias`, which stays in force until the next m15 packet.
+
+**The M15 veto holds.** A veto in the inherited views (news BLOCK, liquidity NO_TRADE,
+an enforced counter-structure) blocks every m1 ENTER until the next m15 packet
+(`APP-V6-VETO`), and m is the inherited multipliers.
+
+**Act on an m1 packet only for a reason the minute gives:**
+- **Time an entry** at a level your M15 bias names: the retest holds and the M1 bars turn
+  (a higher low for a buy, a lower high for a sell). Do not chase a strong 15-bar move
+  away from your level.
+- **Cut** (CLOSE) a position when the M1 structure breaks against it at a level that
+  matters to the M15 reading, and **cancel** a resting order whose level broke before the
+  fill.
+- **Tighten** (MODIFY `sl`) to a confirmed M1 higher low (buy) or lower high (sell),
+  `modify_distance` from the price.
+
+Otherwise answer `submit --quick`: no new structure, the move stays inside the recent
+range, the trade is still on plan. An M1 signal against the M15 bias is a reason to
+wait, not to reverse: a new direction needs the next m15 packet. Keep the analysis of an
+m1 packet short; the deadline is 50 s and the next packet comes a minute later.
 
 ## 6. Packet and decision
 
-The packet is `v6.operator.packet.3`; its decision is `v6.operator.decision.3` (a flat
-packet still accepts `.2` and `.1` Chief decisions, a management packet only `.3`).
+The packet is `v6.operator.packet.3`; its decision is `v6.operator.decision.3`
+(decisions `.1` and `.2` are retired and refused with `DECISION_SCHEMA`).
 `packet_hash` covers everything except `packet_hash` and `decision_template`, and the
 decision must echo it. Its top-level fields are:
 
 | Field | Content |
 |---|---|
-| `packet_kind`, `state` | `m15`; `flat` (enter or hold), `pending` or `position` (manage, 5.9) |
+| `packet_kind`, `state` | `m15` or `m1` (5.12); `flat` (enter or hold), `pending` or `position` (manage, 5.9) |
 | `cycle_id`, `session_id`, `mode` | identity; `mode` is `shadow` or `execute` |
-| `created_at_epoch`, `expires_at_epoch`, `bar_open_epoch`, `bar_close_epoch` | UTC seconds; the bar is the closed M15 bar |
+| `created_at_epoch`, `expires_at_epoch`, `bar_open_epoch`, `bar_close_epoch` | UTC seconds; the bar is the closed M15 bar (the closed M1 bar of an m1 packet) |
 | `account` | `trade_mode` (always `DEMO`), `server`, `equity_band` (never balance or login) |
 | `market` | bid, ask, spread points, ATR M5/M15/H1, tier-0 `features` |
 | `session` | phase, `quality` (prime/active/thin), main-window third and `in_main_window`, `entries_allowed`, `continuation_allowed`, `block_reasons`, `armed` |
-| `bars` | closed bars `[open_epoch, o, h, l, c]`: M1 ≤ 30, M5 ≤ 36, M15 ≤ 32, H1 ≤ 24, D1 ≤ 5 |
+| `bars` | closed bars `[open_epoch, o, h, l, c]`: M1 ≤ 30, M5 ≤ 36, M15 ≤ 32, H1 ≤ 24, D1 ≤ 5; an m1 packet has M1 ≤ 60 only |
+| `m1_state` | an m1 packet only (5.12): M1 ATR and range, the 5- and 15-bar moves, the quote rate, the distances to the managed trade's levels; `null` in an m15 packet |
 | `levels` | prior full day's high/low, nearest $10 and $50 levels, confirmed M15 and H1 pivots |
 | `limits` | the bounds of your own entry (5.8): `agent_entry_id`, passive LIMIT edges, STOP edges (`buy_stop_min`, `sell_stop_max`), entry distance, stop range, reward range, `min_tp1_r`, `modify_distance`, budget, `volume_min`/`lots_step`/`max_lots`, the holding-time and pending-expiry windows in minutes |
 | `pending_order`, `position` | management packets only (5.9): the resting V6 order (with `distance_from_quote`) or the open position (initial stop, `r_now`, minutes open, time limit), each with its `plan`; `null` otherwise |
 | `last_action`, `last_bias`, `last_bias_at_epoch` | the session's newest management action and what became of it; your last `m15_bias` and when you gave it (`null` after a restart) |
 | `gates`, `calendar` | gate results; calendar assessment and events (`event_id` for `news_risk.event_ids`) |
-| `candidates` | 0-3 detector suggestions that size at m = 1: side, entry, invalidation, codes, features, `exit`, `sizing` |
-| `baseline_views` | the rules desks' four views (null where a desk failed) |
+| `candidates` | 0-3 detector suggestions that size at m = 1: side, entry, invalidation, codes, features, `exit`, `sizing` (none in an m1 packet) |
+| `baseline_views` | the rules desks' four views (null where a desk failed); in an m1 packet the inherited views of the newest M15 cycle (5.12) |
 | `allowed` | agents, ids (suggestions, then `limits.agent_entry_id`), `pa_min_conviction`, every enum and size limit |
-| `decision_template` | a ready v3 decision: the baseline views, `action` HOLD (flat) or MANAGE with `manage` KEEP (pending/position), `entry_plan: null`, your last bias (else `unclear`), an empty `note` and the first allowed agent |
+| `decision_template` | a ready v3 decision: the baseline views, `action` HOLD (flat) or MANAGE with `manage` KEEP (pending/position), `entry_plan: null`, your last bias (else `unclear`), an empty `note` and the first allowed agent; an m1 template leaves `views` and `m15_bias` `null` |
 
 The two examples below are exact: `tests/v6/test_v6_operator_docs.py` validates them
 with the adapter's own parser. The prices are illustrative.
@@ -1352,6 +1432,32 @@ In this example the decision below ENTERs the agent's own plan instead of a sugg
 
 `agent` is set by `submit --agent`, and `template` leaves it `null`.
 
+**An m1 packet.** `wait` prints three lines (a flat packet of the 11:51 minute, after the
+m15 decision above):
+
+```text
+M1 PACKET m-3f9a0c1e7d2b5a68 | 11:52Z | flat | bid 4532.35 ask 4532.64 spr 29 | 44 s left | file adapter\.v6_operator\packet.json
+m1: atr 0.58 range15 4.90 | 5 bars up +0.85 (1.5x) | 15 bars down -3.20 (5.5x) | 3.4 q/s | bias up @11:45Z inv 4520.90
+no change: submit --agent <name> --quick | otherwise template, edit (entry_plan or manage), submit before 2026-09-17T11:52:50Z
+```
+
+A managed m1 packet adds the trade to the second line, e.g.
+`| pos buy 0.02 @ 4531.40 step 0 | to entry -2.65 sl -10.15 tp1 +2.35 tp2 +7.35 tp3 +12.35 | 98 min left`.
+Nothing changes here? `submit --agent claude_code --quick`. When the price pulls back into
+4531.1 and the M1 bars turn up, the edited template ENTERs (views and bias stay `null`;
+`packet_hash` comes from the template):
+
+```json
+{"schema_version": "v6.operator.decision.3", "packet_kind": "m1",
+ "cycle_id": "m-3f9a0c1e7d2b5a68", "packet_hash": "...", "agent": null,
+ "action": "ENTER", "views": null,
+ "entry_plan": {"side": "buy", "order_type": "LIMIT", "entry": 4531.6, "sl": 4524.1,
+                "tp1": 4536.6, "tp2": 4541.4, "tp3": 4546.6, "sl_after_tp1": 4532.1,
+                "sl_after_tp2": 4536.6, "time_limit_min": 120, "pending_expiry_min": 15,
+                "lots": 0.01, "thesis": "M1 higher low on the 4531.1 retest, M15 bias up"},
+ "manage": null, "m15_bias": null, "note": "m1: timing the pivot retest"}
+```
+
 **Refusals.** `POST /v6/operator/decision` answers 202 when it accepts. Otherwise it
 answers 409 with `code`, or 422 with `code: INVALID` and `error`:
 
@@ -1359,14 +1465,13 @@ answers 409 with `code`, or 422 with `code: INVALID` and `error`:
 |---|---|---|
 | 422 `INVALID` | `DECISION_TOO_LARGE` | over 64 KB |
 | 422 `INVALID` | `DECISION_NOT_JSON` | not JSON |
-| 422 `INVALID` | `DECISION_SCHEMA` | a missing or unknown field, a wrong type, an out-of-range value, a string too long |
-| 422 `INVALID` | `DECISION_VIEW` | Price Action (or a v2 Chief) is wrong: an unknown id, `abstain` with ranks, ENTER without a candidate, HOLD with one, a duplicate id; a v3 ENTER whose Price Action does not TAKE `limits.agent_entry_id` with at least `pa_min_conviction`; `views` missing |
-| 422 `INVALID` | `DECISION_REBUTTAL` | a rebuttal names a candidate PA did not TAKE |
-| 422 `INVALID` | `DECISION_LOTS` | `lots` (v2) or `entry_plan.lots` (v3) outside `volume_min`..`max_lots`, off the `lots_step` grid, or given without an ENTER |
-| 422 `INVALID` | `DECISION_ENTRY_PLAN` | v3: an ENTER without a valid `entry_plan`, an `entry_plan` with HOLD or in a management packet, or a plan outside `limits` (the detail names the rule); v2: `entry_plan` missing when the Chief enters `agent_entry_id`, present with another pick, malformed, `order_style` not equal to `order_type`, or outside `limits` (the codes of 5.8) |
+| 422 `INVALID` | `DECISION_SCHEMA` | a missing or unknown field, a wrong type, an out-of-range value, a string too long; a v1 or v2 decision ("decisions v1 and v2 are retired") |
+| 422 `INVALID` | `DECISION_VIEW` | Price Action is wrong: an unknown id, `abstain` with ranks, a duplicate id; an ENTER whose Price Action does not TAKE `limits.agent_entry_id` with at least `pa_min_conviction`; `views` missing on an m15 packet |
+| 422 `INVALID` | `DECISION_LOTS` | `entry_plan.lots` outside `volume_min`..`max_lots` or off the `lots_step` grid |
+| 422 `INVALID` | `DECISION_ENTRY_PLAN` | an ENTER without a valid `entry_plan`, an `entry_plan` with HOLD or in a management packet, or a plan outside `limits` (the detail names the rule of 5.8) |
 | 422 `INVALID` | `DECISION_MANAGE` | a flat packet with MANAGE or `manage`; a management packet without MANAGE and `manage`; a request that breaks a rule of 5.9 (the detail names it) |
-| 422 `INVALID` | `DECISION_BIAS` | `m15_bias` missing or invalid |
-| 422 `INVALID` | `DECISION_KIND` | a v1/v2 decision for a management packet, or a decision for another `packet_kind` |
+| 422 `INVALID` | `DECISION_BIAS` | `m15_bias` missing (m15 packet) or invalid |
+| 422 `INVALID` | `DECISION_KIND` | a decision for another `packet_kind` |
 | 409 `HASH_MISMATCH` | `DECISION_STALE_PACKET` | `packet_hash` belongs to another packet |
 | 409 `UNKNOWN_CYCLE` | | no pending cycle has this `cycle_id` |
 | 409 `EXPIRED` | `DECISION_EXPIRED` or none | the packet expired, or the cycle closed without a decision |
@@ -1447,7 +1552,8 @@ CLI against the real router and queue.
 - Replies: 202 `{"accepted": true, "code": "ACCEPTED", "flagged": [...]}`, or the
   refusals of section 6.
 - After an acceptance the CLI reads `GET /v6/status` up to 8 times, 0.5 s apart, and
-  reports `last_cycle` as `result` once its `cycle_id` matches.
+  reports `last_cycle` (for an m1 cycle `runtime.minutes.last`) as `result` once its
+  `cycle_id` matches. `submit --quick` does not wait for it.
 
 **`GET /v6/operator/status`**, read by `preflight`: `account_policy` (`POLICY_OK` or the
 refusal code), `pending.cycle_id`, and 404 when the operator queue is not running.
