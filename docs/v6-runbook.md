@@ -256,11 +256,31 @@ command or decision, the EA log lines and the `v6_actions` / `v6_plan_steps` row
 | 7 | the EA removed and attached again with a planned position open | the state log lists the record; the SL+ steps keep working |
 | 8 | the adapter stopped with a position open | SL+ steps, SL/TP and the time limit keep working; queued reports arrive once the adapter is back |
 
-**Broker quote hours.** `V6_BROKER_QUOTE_GAP_UTC` must match the daily window in which
-the broker sends no quotes (MetaQuotes-Demo: 20:00-22:00 UTC). For a new broker, find
-the weekday UTC minutes that never have an M1 bar in `v6_bars` over the last seven days
-(a read-only query on the adapter database) and set the key to that window; only the
-user edits `adapter/.env`, then the adapter is restarted.
+**Broker quote hours.** `V6_BROKER_QUOTE_GAP_UTC` must cover the daily window in which
+the broker sends no quotes. Two sources show it:
+
+- the probe's `clock.trade_sessions_server`: the broker's declared session, in server
+  time;
+- the M1 bars the EA backfills when it starts (1,440 bars) and a read-only query on
+  `v6_bars` for the nightly hole. Snapshots carry only the last 12 M1 bars of each M15
+  bar, so their 3-minute holes mean nothing. `v6_bars` has no broker column: after a
+  broker switch, count only bars the new broker sent.
+
+Results so far (summer time, UTC+3 server):
+
+| Broker | Declared session (server) | No quotes (UTC) |
+|---|---|---|
+| MetaQuotes-Demo, measured before the switch | | 20:00-22:00 |
+| Monex-Demo, measured 2026-09-18 | 01:01-23:59, Monday to Friday | 20:59-22:01 (single-tick bars at 20:59 and 22:00) |
+
+For both brokers, the default `20:00-22:00` covers the break, together with two other
+blocks:
+
+- the EA takes no entry from its 22:55 server flatten (19:55 UTC) to server midnight;
+- the rollover block (17:00-19:00 New York) blocks entries until 23:00 UTC.
+
+Measure again after a daylight-saving change (US time changes on 2026-11-01). Only the
+user edits `adapter/.env`; the adapter is then restarted.
 
 ## Appendix: per-tool setup
 

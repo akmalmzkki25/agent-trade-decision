@@ -47,10 +47,15 @@ bawah tetap berlaku, kecuali hal berikut.
   - bagian bersama keputusan ada di `deliberation/decision_parts.py`, aturan v3 di
     `decision_v3.py`;
   - `pending_review.py` dihapus.
-- **Belum selesai** (§9):
-  - drill 1–8 (runbook §6) menunggu izin pengguna;
-  - jam kuotasi Monex (§10) belum diisi. `V6_BROKER_QUOTE_GAP_UTC` masih memakai nilai
-    MetaQuotes sampai pengguna mengisinya dari hasil pengukuran.
+- **Jam kuotasi Monex** (§10) terukur pada 2026-09-18:
+  - sesi yang dinyatakan broker adalah 01:01–23:59 server (UTC+3), Senin–Jumat;
+  - bar M1 backfill tidak punya kuotasi 20:59–22:01 UTC.
+
+  Nilai default `20:00-22:00` sudah menutup jeda itu, bersama jendela tanpa entry EA
+  (flatten 22:55 server sampai tengah malam server) dan blok rollover. Ukur ulang setelah
+  pergantian DST AS (2026-11-01).
+- **Belum selesai** (§9): drill 1–8 (runbook §6) menunggu izin pengguna, lalu satu hari
+  London–NY dengan posisi yang dikelola.
 
 ## Konteks
 

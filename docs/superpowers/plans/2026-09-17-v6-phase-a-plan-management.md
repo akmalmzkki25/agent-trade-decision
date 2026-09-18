@@ -159,6 +159,34 @@ berbeda dari teks tugas di bawah (tugas berikutnya mengikuti catatan ini):
 - Penyimpangan dari spec dicatat di kepala spec, di bagian "Status dan penyimpangan saat
   implementasi".
 
+## Catatan pelaksanaan Task 20 (2026-09-18)
+
+- **Step 1 (tes dan coverage).** 4069 tes lulus. Coverage `app/v6` + `scripts` 99%.
+  `risk/*`, `protocol.py` dan `management.py` 100%. `plan_rules.py` sempat melewatkan
+  cabang `ENTRY_TOO_FAR`; tesnya ditambahkan, dan kini 100%.
+- **Step 2 (ukuran).** Ke-45 file Python yang diubah di tahap A ≤ 400 baris, tanpa fungsi
+  ≥ 50 baris. `app/ledger.py` (467) dan `app/models.py` (582) melewati 400, tetapi
+  keduanya berasal dari pekerjaan V2–V5 sebelumnya di cabang ini, bukan tahap A. EA: file
+  utama 300 baris, `.mqh` terbesar 380 baris.
+- **Step 3 (rahasia).** Pemindaian `git diff main...HEAD` bersih; tidak ada `.env` atau
+  file kunci yang dilacak git.
+- **Step 4 (jam kuotasi Monex).** `quote_gap.py` tidak bisa memakai snapshot:
+  - adapter hanya menerima snapshot Monex pukul 09:30–15:59 UTC pada 2026-09-17;
+  - setiap snapshot hanya membawa 12 dari 15 bar M1, sehingga ada lubang 3 menit.
+
+  Backfill M1 Monex (1.440 bar, 2026-09-17 13:20 UTC) mencakup jeda 2026-09-16: tidak
+  ada kuotasi 20:59–22:01 UTC, dengan bar satu tick di 20:59 dan 22:00. Ini cocok dengan
+  sesi yang dinyatakan broker (01:01–23:59 server, dari probe). Default `20:00-22:00`
+  sudah menutupnya, bersama jendela tanpa entry EA (flatten 22:55 server sampai tengah
+  malam server) dan blok rollover. `.env` tidak perlu diubah. Ukur ulang setelah
+  pergantian DST AS (2026-11-01).
+- **Step 5–7.** Drill dan satu hari London–NY menunggu dua hal: izin pengguna, dan
+  restart adapter dengan commit ini. EA 6.2.0 sudah berjalan di MT5, tetapi adapter
+  mati. Kondisi ledger pada 2026-09-18:
+  - tidak ada intent aktif;
+  - tidak ada intent dengan `sl ≤ 0`;
+  - `v6_actions` dan `v6_plan_steps` masih kosong.
+
 ## Peta file
 
 | File | Status | Tanggung jawab |
