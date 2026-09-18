@@ -133,6 +133,10 @@ class V6Settings(BaseSettings):
     time_limit_max_minutes: int = Field(default=240, ge=1)
     pending_expiry_min_minutes: int = Field(default=15, ge=1)
     pending_expiry_max_minutes: int = Field(default=60, ge=1)
+    # Phase B (spec section 4.5): one operator packet per closed M1 bar besides the M15 one.
+    minute_packets: bool = True
+    m1_deadline_s: int = Field(default=50, ge=20, le=55)
+    minute_stale_s: int = Field(default=10, ge=3, le=30)
 
     # --- deliberation ------------------------------------------------------
     pa_min_conviction: float = Field(default=0.6, ge=0.0, le=1.0)
