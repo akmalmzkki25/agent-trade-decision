@@ -4,7 +4,8 @@ Immutable records for one deliberation cycle (one closed M15 bar).
 Flow: snapshot -> MarketContext -> gates / candidates -> DeliberationInput -> views ->
 ProtocolInput -> ProtocolDecision -> exits / sizing -> CycleResult. An approved trade
 becomes a ShadowIntent (the sized order); only the runtime publishes it (execute mode,
-recorded as `CycleResult.intent_id`). `cycle_codes` is re-exported here.
+recorded as `CycleResult.intent_id`). `cycle_codes` and `calendar_types` are re-exported
+here.
 """
 
 from __future__ import annotations
@@ -19,6 +20,9 @@ from typing import Final, Literal
 
 from pydantic import BaseModel
 
+from .calendar_types import (  # noqa: F401 - re-exported: the calendar records of a cycle
+    CalendarAssessment, CalendarEvent, CalendarSource, Importance,
+)
 from .cycle_codes import *  # noqa: F403 - re-export the shared code sets
 from .cycle_codes import (
     ENTER_STATUSES, MAX_OFFERED_CANDIDATES, VETO_CODES, CandidateVerdictLabel, CycleStatus,
@@ -39,8 +43,6 @@ from .types import (
     SymbolSpec, Timeframe,
 )
 
-CalendarSource = Literal["mt5", "forexfactory", "static"]
-Importance = Literal["NONE", "LOW", "MODERATE", "HIGH"]
 ShadowOrderType = Literal["BUY_LIMIT", "SELL_LIMIT", "BUY", "SELL"]
 StructureVetoMode = Literal["log", "enforce"]
 # In-process providers (rules, scripted) read the typed input under PACKET_INPUT_KEY;
@@ -50,38 +52,6 @@ PUBLISHED_STATUS: Final[CycleStatus] = "ENTER"     # the intent went out to the 
 # A context closes an M15 bar, or the M1 bar of an m1 cycle (phase B).
 CONTEXT_BAR_SECONDS: Final[frozenset[int]] = frozenset({
     TIMEFRAME_SECONDS["M15"], TIMEFRAME_SECONDS["M1"]})
-
-
-@dataclass(frozen=True)
-class CalendarEvent:
-    """One scheduled release, reduced to ids, enums, times and numbers."""
-
-    event_id: str            # "<source>:<id>", unique across sources, matches ID_PATTERN
-    source: CalendarSource
-    time_epoch: int
-    currency: str
-    importance: Importance
-    code: str                # slug, e.g. "nonfarm-payrolls"
-    actual: float | None = None
-    forecast: float | None = None
-    previous: float | None = None
-
-
-@dataclass(frozen=True)
-class CalendarAssessment:
-    """Code-computed news veto; applies even when every LLM is down."""
-
-    as_of_epoch: int
-    blackout: bool
-    codes: tuple[str, ...]                 # CAL_* codes
-    next_event_minutes: float | None
-    last_event_minutes_ago: float | None
-    stale: bool
-    events: tuple[CalendarEvent, ...] = ()  # the events offered to the news desk
-
-    @property
-    def event_ids(self) -> frozenset[str]:
-        return frozenset(event.event_id for event in self.events)
 
 
 @dataclass(frozen=True)
