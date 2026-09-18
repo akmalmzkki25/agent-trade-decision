@@ -36,15 +36,18 @@ async def test_the_runtime_starts_and_stops_worker_and_watchdog(tmp_path: Path) 
     try:
         assert container.ledger_cycles is container.parts.ledger_cycles
         assert await start_runtime(container)
-        assert _names(container) == ["v6-heartbeat", "v6-watchdog", "v6-worker"]
+        assert _names(container) == ["v6-heartbeat", "v6-minutes", "v6-watchdog",
+                                     "v6-worker"]
         for _ in range(100):
-            if container.parts.worker.stats.running:
+            if container.parts.worker.stats.running and container.parts.minutes.stats.running:
                 break
             await asyncio.sleep(0.01)
         assert container.parts.worker.stats.running
+        assert container.parts.minutes.stats.running
         await stop_runtime(container)
         assert container.switch.take_tasks() == ()
         assert container.parts.worker.stats.running is False
+        assert container.parts.minutes.stats.running is False
     finally:
         container.close()
 

@@ -251,6 +251,7 @@ def _runtime_tasks(container: V6Container) -> tuple[asyncio.Task[None], ...]:
     parts = container.parts
     return (heartbeat,
             asyncio.create_task(parts.worker.run_forever(), name="v6-worker"),
+            asyncio.create_task(parts.minutes.run_forever(), name="v6-minutes"),
             asyncio.create_task(parts.watchdog.run_forever(), name="v6-watchdog"))
 
 

@@ -25,16 +25,17 @@ from typing import Final
 
 from ..clock import Clock
 from ..cycle_codes import CycleStatus, HoldReason
-from ..cycle_types import CalendarEvent, CycleResult
+from ..cycle_types import CalendarEvent, CycleResult, DeskViews, MarketContext
 from ..deliberation.context_builder import as_of_for
 from ..deliberation.cycle_draft import CycleDraft, CycleOutcome, CycleRequest
 from ..deliberation.engine import DeliberationEngine
+from ..deliberation.minute_flow import MinuteBase
 from ..ledger_cycles import LedgerCycles
 from ..learning.labeler import XAUUSD_POINT
 from ..ledger_cycles_schema import SessionRecord
 from ..market.bar_store import WARM_M5_DAYS, WARM_M15_DAYS, BarStore
 from ..risk.gates import HALT_SOURCE_FILE, RuntimeGateState
-from ..schemas.snapshot import ProbeBlock
+from ..schemas.snapshot import ProbeBlock, V6Snapshot
 from .breaker_feed import DayFacts
 from .ea_state import EaState, InboxItem
 from .sessions import SessionService
@@ -52,21 +53,31 @@ ABORTED_DETAIL: Final[str] = "runtime stopped during the cycle"
 
 @dataclass(frozen=True)
 class CarryOver:
-    """What one cycle hands to the next (and to the watchdog)."""
+    """What one cycle hands to the next, to the watchdog and to the minute worker."""
 
     probe: ProbeBlock | None = None
     events: tuple[CalendarEvent, ...] = ()
     point: float = XAUUSD_POINT
     day: DayFacts | None = None
+    snapshot: V6Snapshot | None = None      # the newest M15 cycle with a context
+    context: MarketContext | None = None
+    views: DeskViews | None = None
+    runtime: RuntimeGateState | None = None
 
-    def after(self, outcome: CycleOutcome, item: InboxItem) -> "CarryOver":
+    def after(self, outcome: CycleOutcome, item: InboxItem,
+              runtime: RuntimeGateState | None = None) -> "CarryOver":
         snapshot = item.snapshot
         context = outcome.context
+        fresh = context is not None
         return CarryOver(
             probe=snapshot.probe if snapshot.probe is not None else self.probe,
             events=self.events if outcome.calendar is None else outcome.calendar.events,
             point=snapshot.symbol_spec.point,
             day=self.day if context is None else DayFacts.from_context(context),
+            snapshot=snapshot if fresh else self.snapshot,
+            context=context if fresh else self.context,
+            views=outcome.result.views if fresh else self.views,
+            runtime=self.runtime if runtime is None else runtime,
         )
 
 
@@ -115,6 +126,15 @@ class DeliberationRuntime:
     def stats(self) -> WorkerStats:
         return self._stats
 
+    def minute_base(self) -> MinuteBase | None:
+        """The newest M15 cycle for the minute worker (None before the first one)."""
+        carry = self._carry
+        if carry.snapshot is None or carry.context is None:
+            return None
+        return MinuteBase(snapshot=carry.snapshot, context=carry.context,
+                          views=carry.views or DeskViews(), events=carry.events,
+                          probe=carry.probe)
+
     async def run_forever(self) -> None:
         """Consume the inbox until cancelled; a failed cycle never stops the worker."""
         self._stats = replace(self._stats, running=True)
@@ -143,7 +163,7 @@ class DeliberationRuntime:
         except asyncio.CancelledError:
             await self._record_aborted(request)
             raise
-        self._carry = self._carry.after(outcome, item)
+        self._carry = self._carry.after(outcome, item, request.runtime)
         recorded = await self._record(outcome.result)
         self._note(outcome.result, recorded)
         return outcome.result

@@ -37,6 +37,7 @@ from .poll_reply import PollReplier
 from .publisher import IntentPublisher
 from .service import DeliberationRuntime
 from .sessions import ControlPlane, build_control_plane
+from .minute_worker import MinuteDeps, MinuteRuntime
 from .watchdog import WATCHDOG_INTERVAL_S, Watchdog, WatchdogDeps
 
 
@@ -70,6 +71,7 @@ class RuntimeParts:
     replay_cache: ReplayCache
     baskets: BasketJournal
     action_desk: ActionDesk
+    minutes: MinuteRuntime
 
     @property
     def actions(self) -> ActionBoard:
@@ -122,6 +124,11 @@ def build_runtime_parts(core: CoreParts, ledger_cycles: LedgerCycles, *,
         ea_state=core.ea_state, bar_store=core.bar_store, ledger=ledger_cycles, engine=engine,
         sessions=control.sessions, clock=clock, halt_path=core.halt_path,
         is_active=core.is_active)
+    minutes = MinuteRuntime(MinuteDeps(
+        settings=settings, clock=clock, ea_state=core.ea_state, engine=engine,
+        sessions=control.sessions, queue=queue, ledger=ledger_cycles, book=desk.deps.book,
+        base=worker.minute_base, runtime=lambda: worker.carry.runtime,
+        halt_path=core.halt_path, is_active=core.is_active))
     watchdog = Watchdog(WatchdogDeps(
         settings=settings, clock=clock, ea_state=core.ea_state,
         halt_path=core.halt_path, ledger=ledger_cycles, bar_store=core.bar_store,
@@ -133,4 +140,4 @@ def build_runtime_parts(core: CoreParts, ledger_cycles: LedgerCycles, *,
         watchdog=watchdog, operator_queue=queue, intent_book=desk.deps.book, desk=desk,
         poll_replier=PollReplier(desk), replay_cache=ReplayCache(),
         baskets=BasketJournal(core.ledger_v6.path, clock),
-        action_desk=ActionDesk(ledger_cycles))
+        action_desk=ActionDesk(ledger_cycles), minutes=minutes)
