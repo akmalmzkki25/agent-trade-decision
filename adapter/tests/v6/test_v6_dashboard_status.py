@@ -266,7 +266,8 @@ def test_the_overview_shows_the_trading_day(client: TestClient, wired: ControlAp
         (SECOND, "filled", 777), (SECOND, "placed", 777)]
     orders = body["open_orders"]
     assert (orders["available"], orders["as_of_epoch"]) == (True, BAR_OPEN + 2 * M15)
-    assert orders["positions"] == [{**POSITION, "intent_id": SECOND}]
+    assert orders["positions"] == [{**POSITION, "plan_step": 0, "time_limit_epoch": 0,
+                                    "intent_id": SECOND}]
     assert orders["pending_orders"] == [{**ORDER, "intent_id": None}]
     stats = body["outcomes"]["stats"]
     assert (stats["n"], stats["wins"], stats["losses"], stats["unlinked"]) == (3, 1, 2, 1)
