@@ -54,6 +54,13 @@ def test_stop_orders_must_sit_beyond_the_quote() -> None:
     assert PROBLEM_STOP_NOT_BEYOND in codes(plan_problems_v2(near, BOUNDS))
 
 
+def test_an_entry_beyond_the_distance_limit_is_too_far() -> None:
+    far = plan(entry=4345.0, sl=4338.0, tp1=4350.5, tp2=4355.5, tp3=4359.0,
+               sl_after_tp1=4345.5, sl_after_tp2=4350.5)
+    assert ASK - far.entry > LIMITS.max_entry_distance
+    assert codes(plan_problems_v2(far, BOUNDS)) == ["ENTRY_TOO_FAR"]
+
+
 def test_a_market_plan_is_judged_from_the_quote() -> None:
     market = plan(order_type="MARKET", entry=None, pending_expiry_min=None, sl=4359.9,
                   tp1=4370.5, tp2=4374.0, tp3=4380.0, sl_after_tp1=None, sl_after_tp2=None)
