@@ -134,6 +134,19 @@ class Refusal:
 
 
 @dataclass(frozen=True)
+class TradePlan:
+    """What an agent plan adds to an exit plan (0 = no level, no expiry)."""
+
+    order_type: str            # MARKET | LIMIT | STOP
+    tp1: float
+    tp2: float
+    sl_after_tp1: float
+    sl_after_tp2: float
+    time_limit_s: int
+    pending_expiry_s: int
+
+
+@dataclass(frozen=True)
 class ExitPlan:
     side: Side
     entry: float

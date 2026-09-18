@@ -69,6 +69,8 @@ class EntryLimits:
     max_reward_r: float
     default_reward_r: float
     risk_budget_usd: float
+    # d_min: how far a stop, a target or a STOP entry stays from the price.
+    modify_distance: float = 0.0
 
     @property
     def possible(self) -> bool:
@@ -81,6 +83,17 @@ class EntryLimits:
     @property
     def sell_limit_min(self) -> float:
         return snap(self.bid + self.tick_size, self.tick_size, self.digits)
+
+    @property
+    def buy_stop_min(self) -> float:
+        """The lowest BUY STOP price: the ask plus d_min, rounded up to a tick."""
+        return round(math.ceil((self.ask + self.modify_distance) / self.tick_size - 1e-9)
+                     * self.tick_size, self.digits)
+
+    @property
+    def sell_stop_max(self) -> float:
+        """The highest SELL STOP price: the bid minus d_min, rounded down to a tick."""
+        return _floor_to_tick(self.bid - self.modify_distance, self.tick_size, self.digits)
 
 
 @dataclass(frozen=True)
@@ -117,6 +130,13 @@ def fundable_stop(budget_usd: float, friction: float, spec: SymbolSpec) -> float
     return max(0.0, budget_usd / usd_per_unit - friction)
 
 
+def modify_distance(spec: SymbolSpec, spread_price: float) -> float:
+    """d_min: how far a stop, a target or a STOP entry must stay from the price
+    (max(stops_level, freeze_level) x point + spread + MODIFY_BUFFER_PRICE)."""
+    levels = max(spec.stops_level, spec.freeze_level) * spec.point
+    return round(levels + spread_price + limits.MODIFY_BUFFER_PRICE, spec.digits + 2)
+
+
 def _atr_m15(context: MarketContext) -> float | None:
     value = context.features.get(F_ATR_M15)
     return float(value) if value is not None and math.isfinite(value) and value > 0 else None
@@ -144,7 +164,8 @@ def entry_limits(context: MarketContext, settings: V6Settings,
         stop_floor=round(math.ceil(floor / tick - 1e-9) * tick, digits),
         max_stop_distance=max(0.0, _floor_to_tick(widest - headroom, tick, digits)),
         min_reward_r=limits.MIN_AGENT_REWARD_R, max_reward_r=limits.MAX_AGENT_REWARD_R,
-        default_reward_r=settings.tp_r_multiple, risk_budget_usd=budget)
+        default_reward_r=settings.tp_r_multiple, risk_budget_usd=budget,
+        modify_distance=modify_distance(spec, spread))
 
 
 # --- checking a plan -----------------------------------------------------------------
@@ -185,7 +206,7 @@ def _entry_problems(plan: AgentEntryPlan, bounds: EntryLimits) -> list[EntryProb
     return problems
 
 
-def _stop_problems(plan: AgentEntryPlan, bounds: EntryLimits) -> list[EntryProblem]:
+def stop_problems(plan: AgentEntryPlan, bounds: EntryLimits) -> list[EntryProblem]:
     entry = resolved_entry(plan, bounds)
     stop = snap(plan.stop, bounds.tick_size, bounds.digits)
     distance = round(_DIRECTION[plan.side] * (entry - stop), bounds.digits)
@@ -206,7 +227,7 @@ def _stop_problems(plan: AgentEntryPlan, bounds: EntryLimits) -> list[EntryProbl
     return []
 
 
-def _target_problems(plan: AgentEntryPlan, bounds: EntryLimits) -> list[EntryProblem]:
+def target_problems(plan: AgentEntryPlan, bounds: EntryLimits) -> list[EntryProblem]:
     if plan.target is None:
         return []
     ratio = reward_r(plan, bounds)
@@ -224,8 +245,8 @@ def _target_problems(plan: AgentEntryPlan, bounds: EntryLimits) -> list[EntryPro
 
 def plan_problems(plan: AgentEntryPlan, bounds: EntryLimits) -> tuple[EntryProblem, ...]:
     """Every reason the plan cannot be sent as it stands (empty when it fits the limits)."""
-    stop = _stop_problems(plan, bounds)
-    target = [] if stop else _target_problems(plan, bounds)
+    stop = stop_problems(plan, bounds)
+    target = [] if stop else target_problems(plan, bounds)
     return tuple(_entry_problems(plan, bounds) + stop + target)
 
 
@@ -248,4 +269,5 @@ def limits_from_packet(packet: "OperatorPacket") -> EntryLimits:
         bid=market.bid, ask=market.ask, max_entry_distance=block.max_entry_distance,
         stop_floor=block.stop_floor, max_stop_distance=block.max_stop_distance,
         min_reward_r=block.min_reward_r, max_reward_r=block.max_reward_r,
-        default_reward_r=block.default_reward_r, risk_budget_usd=block.risk_budget_usd)
+        default_reward_r=block.default_reward_r, risk_budget_usd=block.risk_budget_usd,
+        modify_distance=getattr(block, "modify_distance", 0.0))
