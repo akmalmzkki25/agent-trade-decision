@@ -43,6 +43,7 @@ from ..cycle_codes import (
 )
 from ..cycle_types import CalendarAssessment, MarketContext
 from ..market.broker_hours import entry_block
+from ..market.sessions import entry_blocks
 from ..types import TIMEFRAME_SECONDS, GateResult, SymbolSpec
 from . import limits
 from .breakers import BreakerStatus
@@ -223,16 +224,19 @@ def _spread_gate(context: MarketContext, settings: V6Settings) -> GateResult:
 
 
 def _session_gate(context: MarketContext, settings: V6Settings) -> GateResult:
-    """Hard session blocks, plus the broker quote gap: an order placed now must not be
-    able to rest into the gap (it could fill while nobody can manage it)."""
+    """The session blocks of the configured entry hours, plus the broker quote gap: an
+    order placed now must not be able to rest into the gap (it could fill while nobody
+    can manage it)."""
     session = context.session
-    lifetime_s = settings.pending_expiry_bars * TIMEFRAME_SECONDS["M15"]
-    reasons = session.block_reasons + entry_block(
+    lifetime_s = max(settings.pending_expiry_bars * TIMEFRAME_SECONDS["M15"],
+                     settings.pending_expiry_bounds_s[1])
+    reasons = entry_blocks(session, settings.entry_hours) + entry_block(
         context.as_of_epoch, settings.quote_gap, lifetime_s)
-    return GateResult(code=GATE_SESSION, passed=session.entries_allowed and not reasons,
+    return GateResult(code=GATE_SESSION, passed=not reasons,
                       value=",".join(reasons) or VALUE_OK,
                       detail=f"phase={session.phase} quality={session.quality} "
-                             f"third={session.main_window_third}")
+                             f"third={session.main_window_third} "
+                             f"hours={settings.entry_hours}")
 
 
 def _news_gate(context: MarketContext, calendar: CalendarAssessment) -> GateResult:

@@ -37,6 +37,7 @@ from ..cycle_codes import (
 from ..cycle_types import (
     CalendarAssessment, CalendarEvent, CandidateAssessment, DeskViews, MarketContext,
 )
+from ..market.sessions import entry_blocks
 from ..risk.policy import (
     OPERATOR_MODES, OPERATOR_SOURCE, check_settings_policy, evaluate_account_policy,
 )
@@ -224,7 +225,7 @@ def _body(request: PacketRequest, settings: V6Settings, window: tuple[int, int],
                     "server": _text(context.server, MAX_SERVER_CHARS),
                     "equity_band": equity_band(context.account.equity)},
         "market": _market(context),
-        "session": _session(context, request.armed),
+        "session": _session(context, request.armed, settings),
         "bars": bars_block(context),
         "levels": levels_block(context),
         "limits": limits,
@@ -247,12 +248,13 @@ def _market(context: MarketContext) -> Document:
             "atr_h1": _positive(features.get(F_ATR_H1)), "features": features}
 
 
-def _session(context: MarketContext, armed: bool) -> Document:
+def _session(context: MarketContext, armed: bool, settings: V6Settings) -> Document:
     state = context.session
+    blocks = entry_blocks(state, settings.entry_hours)
     return {"phase": state.phase, "main_window_third": state.main_window_third,
-            "entries_allowed": state.entries_allowed,
+            "entries_allowed": not blocks,
             "continuation_allowed": state.continuation_allowed,
-            "block_reasons": _codes(state.block_reasons), "armed": bool(armed),
+            "block_reasons": _codes(blocks), "armed": bool(armed),
             "quality": state.quality, "in_main_window": bool(state.in_main_window)}
 
 

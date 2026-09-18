@@ -76,6 +76,11 @@ BLOCK_OUTSIDE_TRADING_HOURS: Final[str] = "OUTSIDE_TRADING_HOURS"
 BLOCK_LBMA_PAUSE: Final[str] = "LBMA_PAUSE"
 BLOCK_US_DATA_BAR: Final[str] = "US_DATA_BAR"
 
+# With entry_hours=all_day (user decision 2026-09-17) the cost gates decide when to trade;
+# these blocks still stop every entry.
+ALL_DAY_ENTRY_BLOCKS: Final[frozenset[str]] = frozenset({
+    BLOCK_WEEKEND, BLOCK_ROLLOVER, BLOCK_LBMA_PAUSE, BLOCK_US_DATA_BAR})
+
 QUALITY_PRIME: Final[SessionQuality] = "prime"
 QUALITY_ACTIVE: Final[SessionQuality] = "active"
 QUALITY_THIN: Final[SessionQuality] = "thin"
@@ -130,6 +135,14 @@ class OpeningRange:
 
 
 # --- public API ----------------------------------------------------------------
+
+
+def entry_blocks(state: SessionState, entry_hours: str) -> tuple[str, ...]:
+    """The session blocks that stop an entry: all of them for london_ny, all but
+    OUTSIDE_TRADING_HOURS for all_day."""
+    if entry_hours == "london_ny":
+        return state.block_reasons
+    return tuple(code for code in state.block_reasons if code in ALL_DAY_ENTRY_BLOCKS)
 
 
 def session_state(epoch: int) -> SessionState:
