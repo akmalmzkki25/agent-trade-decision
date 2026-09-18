@@ -104,6 +104,28 @@ def test_no_partial_close_and_modifications_only_in_orders() -> None:
     assert "req.position = ticket;" in close
 
 
+def test_actions_are_demo_fresh_and_tracked() -> None:
+    actions = include("Actions.mqh")
+    guard = function_body(actions, "string ActionGuard(")
+
+    for check in ("!AccountIsDemo()", "ACTION_MAX_AGE_S", "LocalHaltActive()",
+                  "ACT_REASON_UNKNOWN_TICKET"):
+        assert check in guard, check
+    assert "ActionSeen(p.action_id)" in function_body(actions, "void ApplyActionCommand(")
+    levels = function_body(actions, "string PositionLevelsRefusal(")
+    assert "ACT_REASON_SL_WIDER" in levels and "SaferStop(" in levels
+
+
+def test_the_sl_plus_ladder_only_tightens() -> None:
+    plan = include("Plan.mqh")
+    step = function_body(plan, "void PlanStepFor(")
+
+    assert "SaferStop(buy, target, current)" in step
+    assert "OutsideModifyDistance(buy, target, bid, ask)" in step
+    assert "LocalHaltActive()" in function_body(plan, "void PlanTick(")
+    assert "PlanTick();" in function_body(read(EA_MAIN), "void OnTick(")
+
+
 def test_order_send_lives_in_one_module() -> None:
     users = sorted(path.name for path in all_files()
                    if re.search(r"\bOrderSend\s*\(", read(path)))

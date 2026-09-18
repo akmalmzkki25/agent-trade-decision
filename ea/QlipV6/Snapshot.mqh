@@ -16,7 +16,7 @@
 #include "Persist.mqh"
 #include "Exposure.mqh"
 
-#define V6_EA_VERSION        "6.1.0"
+#define V6_EA_VERSION        "6.2.0"
 #define SHORT_TEXT_MAX       80
 #define SPEC_DIGITS          10
 #define CALENDAR_HORIZON_S   86400

@@ -175,6 +175,25 @@ bool IntentVectorsOk(void)
    return ok;
 }
 
+// schemas.intent._ladder_checks: an ordered ladder passes, a TP1 past TP2 does not.
+bool LadderRulesOk(void)
+{
+   PollReply p;
+   ZeroMemory(p);
+   p.side = INTENT_SIDE_BUY;
+   p.entry = 4540.0;
+   p.sl = 4533.0;
+   p.tp = 4554.0;
+   p.tp1 = 4544.0;
+   p.tp2 = 4548.0;
+   p.sl_after_tp1 = 4540.5;
+   p.sl_after_tp2 = 4544.0;
+   bool ok = LadderProblem(p) == "";
+   p.tp1 = 4549.0;
+   ok = LadderProblem(p) != "" && ok;
+   return NoteVector(ok, "ladder-rules");
+}
+
 // Every vector runs even after a failure; g_selftest_failed names the first.
 bool HmacSelfTest(void)
 {
@@ -185,6 +204,7 @@ bool HmacSelfTest(void)
    ok = FingerprintOk() && ok;
    ok = IntentTamperRejected() && ok;
    ok = IntegerReaderStrict() && ok;
+   ok = LadderRulesOk() && ok;
    return ok;
 }
 

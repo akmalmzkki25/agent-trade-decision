@@ -125,6 +125,23 @@ berbeda dari teks tugas di bawah (tugas berikutnya mengikuti catatan ini):
 - Tes keamanan: `TRADE_ACTION_SLTP`/`TRADE_ACTION_MODIFY` kini boleh, tapi hanya di
   `Orders.mqh`; partial close, `CTrade`, `OrderModify`, `PositionModify` tetap dilarang.
 
+## Catatan pelaksanaan Task 15 (2026-09-18)
+
+- `OrderSend` menjawab `false` dengan `TRADE_RETCODE_NO_CHANGES` bila tidak ada yang
+  berubah: `ModifyDone(sent, res)` menerimanya sebagai selesai, dan MODIFY_POSITION yang hanya
+  mengubah tangga atau batas waktu tidak memanggil broker sama sekali.
+- SL dan TP posisi hanya diperiksa (SL_WIDER, TOO_CLOSE) bila nilainya berubah; TP lama yang
+  kini dekat dengan harga tidak menghalangi perpanjangan waktu.
+- Tiket aksi dicari lewat kunci record, lalu lewat `POSITION_IDENTIFIER` bila tiket posisi
+  berbeda dari identifiernya (`ActionTrackIndex`).
+- MODIFY_PENDING dengan expiry yang sudah lewat ditolak `BAD_ACTION`; penolakan broker karena
+  pasar tutup dilaporkan `REJECTED/MARKET_CLOSED`, bukan `FAILED/BROKER_ERROR`.
+- `QueuePlanStepReport` menerima nilai (intent id, tiket, langkah, SL lama/baru, harga), bukan
+  `TrackRecord`, supaya `Report.mqh` tidak bergantung pada `Track.mqh`.
+- `ACTION_MAX_AGE_S` hanya didefinisikan di `Intent.mqh` (tidak diulang di `Actions.mqh`).
+- `Plan.mqh` dan `Actions.mqh` masuk lewat `Poll.mqh`; file utama tepat 300 baris (batas tes).
+- Self-test `LadderRulesOk` (Task 14 Step 6) ditambahkan di sini.
+
 ---
 
 ## Peta file

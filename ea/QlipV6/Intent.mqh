@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //| QlipV6/Intent.mqh                                                |
-//| The flat v6.intent.1 poll reply: strict parsing, the canonical   |
+//| The flat v6.intent.2 poll reply: strict parsing, the canonical   |
 //| string of app/v6/wire.py (intent_canonical) and its HMAC check,  |
 //| plus the symbol-independent intent rules of contract §6.3.       |
 //|                                                                  |

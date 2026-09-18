@@ -3,7 +3,8 @@
 //| The heartbeat to /v6/intent/poll and what the EA does with the   |
 //| reply: nothing at all unless its signature verifies (contract    |
 //| §8.1 check 1). A signed reply may carry a command (FLATTEN,      |
-//| CANCEL_PENDING) or one intent, never both.                       |
+//| CANCEL_PENDING, or a management action) or one intent, never     |
+//| both.                                                            |
 //+------------------------------------------------------------------+
 #ifndef QLIPV6_POLL_MQH
 #define QLIPV6_POLL_MQH
@@ -21,6 +22,7 @@
 #include "Breaker.mqh"
 #include "Manage.mqh"
 #include "Execute.mqh"
+#include "Actions.mqh"
 
 #define PATH_POLL              "/v6/intent/poll"
 #define POLL_LOG_THROTTLE_S    60
@@ -122,7 +124,7 @@ void HandlePollResponse(const string json, const ulong received_ms)
    PollReply reply;
    if(!ParsePollReply(json, reply) || !IsKnownCommand(reply.command))
    {
-      LogPollProblem("V6 poll: the reply is not a flat v6.intent.1 object; ignored");
+      LogPollProblem("V6 poll: the reply is not a flat v6.intent.2 object; ignored");
       return;
    }
    bool trusted = ReplyTrusted(reply);
@@ -133,7 +135,12 @@ void HandlePollResponse(const string json, const ulong received_ms)
       return;
    }
    if(CommandFresh(reply))
-      ManageApplyCommand(reply.command);
+   {
+      if(IsActionCommand(reply.command))
+         ApplyActionCommand(reply);
+      else
+         ManageApplyCommand(reply.command);
+   }
    if(reply.has_intent)
       ExecuteIntent(reply, received_ms);
 }

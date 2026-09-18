@@ -27,6 +27,7 @@
 #define CLOSE_BY_TIME            1
 #define CLOSE_BY_FLATTEN         2
 #define CLOSE_BY_ROLLOVER        3
+#define CLOSE_BY_AGENT           4
 #define CANCEL_BY_NONE           0
 #define CANCEL_BY_COMMAND        1
 #define CANCEL_BY_HALT           2

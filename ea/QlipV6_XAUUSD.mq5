@@ -13,7 +13,7 @@
 //| Magic 250570 (250570..250579 reserved), globals prefix QlipV6_.  |
 //+------------------------------------------------------------------+
 #property copyright   "Qlip"
-#property version     "6.10"
+#property version     "6.20"
 #property description "Qlip V6 XAUUSD - executes signed adapter intents on DEMO accounts only; snapshots and backfill."
 
 #include "QlipV6/Config.mqh"
@@ -273,6 +273,7 @@ void OnDeinit(const int reason)
 void OnTimer(void)
 {
    EnsureAccountState();
+   PlanTick();
    ManageTick();
    DomTrackerSample();
    ServiceSnapshot();
@@ -280,6 +281,9 @@ void OnTimer(void)
    g_outbox.Service();
    g_backfill.Service();
 }
+
+// The SL+ ladder reacts to every tick; the timer covers quiet markets.
+void OnTick(void) { PlanTick(); }
 
 // Only a flag: reports and basket results are built in the timer.
 void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request,

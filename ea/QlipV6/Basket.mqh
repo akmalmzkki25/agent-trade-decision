@@ -96,6 +96,8 @@ string CloseReasonName(const int ea_reason, const long deal_reason)
       return "FLATTEN";
    if(ea_reason == CLOSE_BY_ROLLOVER)
       return "ROLLOVER";
+   if(ea_reason == CLOSE_BY_AGENT)
+      return "AGENT";
    if(deal_reason == DEAL_REASON_CLIENT || deal_reason == DEAL_REASON_MOBILE
       || deal_reason == DEAL_REASON_WEB)
       return "MANUAL";

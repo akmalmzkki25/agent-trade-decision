@@ -1,8 +1,10 @@
 """
 The V6 EA's messages and signatures against the wire contract (docs/v6-wire-contract.md).
 
-- execution reports, basket results and the poll-reply parser name every
-  model field, in model order, with the right number kind;
+- execution reports, action reports, basket results and the poll-reply parser
+  name every model field, in model order, with the right number kind;
+- action kinds and reasons are the contract's, and the SL+ buffer and the action age
+  equal the adapter's limits;
 - the canonical intent string follows `wire.CANONICAL_FIELDS`, with prices as
   integer points and lots as integer hundredths;
 - requests are signed as the contract says;
@@ -13,13 +15,17 @@ from __future__ import annotations
 
 import json
 import re
+from typing import get_args
 
 import pytest
 from pydantic import BaseModel
 
 from app.models import BasketResultEvent
 from app.v6 import wire
-from app.v6.schemas.intent import ExecutionReport, PollResponse
+from app.v6.risk import limits
+from app.v6.schemas.intent import (
+    ACTION_SCHEMA, ActionKind, ActionReason, ActionReport, ExecutionReport, PollResponse,
+)
 
 from .ea_source_fixtures_v6 import (
     CANONICAL_SOURCE, EA_MAIN, PRICE_FIELDS, STRING_LITERAL, VECTORS, all_sources,
@@ -32,6 +38,7 @@ from .ea_source_fixtures_v6 import (
 @pytest.mark.parametrize(
     ("header", "model"),
     [("string ExecutionReportJson(", ExecutionReport),
+     ("string ActionReportJson(", ActionReport),
      ("string BasketResultJson(", BasketResultEvent)],
 )
 def test_ea_messages_emit_every_model_field_in_order(header: str, model: type[BaseModel]) -> None:
@@ -50,6 +57,7 @@ def test_execution_report_order_matches_the_golden_request_body() -> None:
 @pytest.mark.parametrize(
     ("header", "model"),
     [("string ExecutionReportJson(", ExecutionReport),
+     ("string ActionReportJson(", ActionReport),
      ("string BasketResultJson(", BasketResultEvent)],
 )
 def test_ea_messages_write_contract_number_kinds(header: str, model: type[BaseModel]) -> None:
@@ -62,6 +70,30 @@ def test_ea_messages_write_contract_number_kinds(header: str, model: type[BaseMo
             wrong[name] = (kind, sorted(expected))
 
     assert wrong == {}
+
+
+def test_action_report_order_matches_the_golden_request_body() -> None:
+    body = json.loads(named("requests")["action"]["body"])
+    source = function_body(all_sources(), "string ActionReportJson(")
+
+    assert [name for name, _ in emitted(source)] == list(body)
+    assert define_string("ACTION_SCHEMA") == ACTION_SCHEMA
+
+
+def _prefixed(prefix: str) -> set[str]:
+    return {define_string(name) for name in ea_defines() if name.startswith(prefix)}
+
+
+def test_action_kinds_and_reasons_are_the_contract_values() -> None:
+    assert _prefixed("ACTION_KIND_") == set(get_args(ActionKind))
+    assert _prefixed("ACT_REASON_") == set(get_args(ActionReason))
+
+
+def test_the_ea_uses_the_adapter_limits_for_actions() -> None:
+    defines = ea_defines()
+
+    assert float(defines["PLAN_BUFFER_PRICE"]) == limits.MODIFY_BUFFER_PRICE
+    assert int(defines["ACTION_MAX_AGE_S"]) == limits.ACTION_MAX_AGE_S
 
 
 def test_basket_positions_is_written_as_an_integer() -> None:
@@ -126,7 +158,9 @@ def test_the_reply_is_verified_before_any_command_or_intent() -> None:
 
     trusted = body.index("ReplyTrusted(")
     assert trusted < body.index("ManageApplyCommand(")
+    assert trusted < body.index("ApplyActionCommand(")
     assert trusted < body.index("ExecuteIntent(")
+    assert "CommandFresh(reply)" in body
     assert "PollReplySignatureOk(" in function_body(include("Poll.mqh"), "bool ReplyTrusted(")
 
 

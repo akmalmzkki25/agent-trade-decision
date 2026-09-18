@@ -7,8 +7,9 @@
 //|                                                                  |
 //| Triggers only mark a record (close_reason / cancel_reason, both  |
 //| persisted); ExecuteMarkedExits acts on the marks, with a retry   |
-//| throttle, until the broker confirms. Nothing here modifies an    |
-//| order: no break-even, no trailing stop, no partial close.        |
+//| throttle, until the broker confirms. The SL+ ladder lives in     |
+//| Plan.mqh and agent actions in Actions.mqh; nothing here trails   |
+//| or closes part of a position.                                    |
 //+------------------------------------------------------------------+
 #ifndef QLIPV6_MANAGE_MQH
 #define QLIPV6_MANAGE_MQH

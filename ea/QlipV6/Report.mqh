@@ -1,8 +1,10 @@
 //+------------------------------------------------------------------+
 //| QlipV6/Report.mqh                                                |
-//| v6.execution.1 reports: what the EA did with one intent. A       |
-//| report is built once (sent_at_epoch is its build time), queued   |
-//| in the outbox and resent unchanged until the adapter answers.    |
+//| v6.execution.1 reports: what the EA did with one intent, and     |
+//| v6.action.1 reports: what it did with a management action or an  |
+//| SL+ step it took. A report is built once (sent_at_epoch is its   |
+//| build time), queued in the outbox and resent unchanged until the |
+//| adapter answers.                                                 |
 //+------------------------------------------------------------------+
 #ifndef QLIPV6_REPORT_MQH
 #define QLIPV6_REPORT_MQH
@@ -44,6 +46,24 @@
 #define REASON_BROKER_ERROR       "BROKER_ERROR"
 #define REASON_EXECUTE_DISABLED   "EXECUTE_DISABLED"
 #define REASON_COMMAND            "COMMAND"
+
+// ActionReport in app/v6/schemas/intent.py: ActionKind and ActionReason.
+#define ACTION_SCHEMA               "v6.action.1"
+#define ACTION_KIND_APPLIED         "APPLIED"
+#define ACTION_KIND_REJECTED        "REJECTED"
+#define ACTION_KIND_FAILED          "FAILED"
+#define ACTION_KIND_PLAN_STEP       "PLAN_STEP"
+#define ACT_REASON_NONE             "NONE"
+#define ACT_REASON_UNKNOWN_TICKET   "UNKNOWN_TICKET"
+#define ACT_REASON_STALE            "STALE"
+#define ACT_REASON_SL_WIDER         "SL_WIDER"
+#define ACT_REASON_TOO_CLOSE        "TOO_CLOSE"
+#define ACT_REASON_BARRIER          "BARRIER"
+#define ACT_REASON_DEMO_REQUIRED    "DEMO_REQUIRED"
+#define ACT_REASON_HALTED           "HALTED"
+#define ACT_REASON_MARKET_CLOSED    "MARKET_CLOSED"
+#define ACT_REASON_BROKER_ERROR     "BROKER_ERROR"
+#define ACT_REASON_BAD_ACTION       "BAD_ACTION"
 
 struct ExecReport
 {
@@ -146,6 +166,48 @@ bool QueueExecutionReport(const ExecReport &r)
       return false;
    }
    return g_outbox.Enqueue(PATH_EXECUTION, ExecutionReportJson(r));
+}
+
+//--- v6.action.1 ---------------------------------------------------------
+
+string ActionReportJson(const string kind, const string action_id, const string command,
+                        const string intent_id, const long ticket, const string reason,
+                        const long retcode, const int step, const double old_sl,
+                        const double new_sl, const double price)
+{
+   CJsonObject o;
+   o.AddStr("schema_version", ACTION_SCHEMA);
+   o.AddStr("kind", kind);
+   o.AddStr("action_id", action_id);
+   o.AddStr("command", command);
+   o.AddStr("intent_id", intent_id);
+   o.AddInt("ticket", MathMax(ticket, (long)0));
+   o.AddStr("reason_code", reason);
+   o.AddInt("retcode", MathMax(retcode, (long)0));
+   o.AddInt("step", step);
+   o.AddNum("old_sl", MathMax(old_sl, 0.0), _Digits);
+   o.AddNum("new_sl", MathMax(new_sl, 0.0), _Digits);
+   o.AddNum("price", MathMax(price, 0.0), _Digits);
+   o.AddInt("sent_at_epoch", (long)TimeGMT());
+   return o.Text();
+}
+
+// What the EA did with a management action (the new stop is the action's).
+bool QueueActionReport(const string kind, const PollReply &p, const string reason,
+                       const uint retcode, const double old_sl)
+{
+   string json = ActionReportJson(kind, p.action_id, p.command, "", p.action_ticket, reason,
+                                  (long)retcode, 0, old_sl, p.action_sl, p.action_price);
+   return g_outbox.Enqueue(PATH_ACTION, json);
+}
+
+// An SL+ step the EA took on its own.
+bool QueuePlanStepReport(const string intent_id, const long ticket, const int step,
+                         const double old_sl, const double new_sl, const double price)
+{
+   string json = ActionReportJson(ACTION_KIND_PLAN_STEP, "", CMD_NONE, intent_id, ticket,
+                                  ACT_REASON_NONE, 0, step, old_sl, new_sl, price);
+   return g_outbox.Enqueue(PATH_ACTION, json);
 }
 
 #endif // QLIPV6_REPORT_MQH

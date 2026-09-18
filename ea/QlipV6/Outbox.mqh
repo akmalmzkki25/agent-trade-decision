@@ -1,6 +1,7 @@
 //+------------------------------------------------------------------+
 //| QlipV6/Outbox.mqh                                                |
-//| Durable queue for execution reports and basket results.          |
+//| Durable queue for execution reports, action reports and basket   |
+//| results.                                                         |
 //|                                                                  |
 //| MQL5\Files\QlipV6\outbox.jsonl holds one {"path","body"} object  |
 //| per line and is only appended to; a byte offset in a global      |
@@ -22,6 +23,7 @@
 #include "Persist.mqh"
 
 #define PATH_EXECUTION          "/v6/execution"
+#define PATH_ACTION             "/v6/action"
 #define PATH_BASKET_RESULT      "/v6/basket-result"
 #define OUTBOX_DIR              "QlipV6"
 #define OUTBOX_FILE             "QlipV6\\outbox.jsonl"
@@ -263,7 +265,8 @@ int COutbox::ReadHead(string &path, string &body, long &next_head)
       return OUTBOX_READ_BAD;
    string line = CharArrayToString(buf, 0, end, CP_UTF8);
    bool known = JsonGetString(line, "path", path) && JsonGetString(line, "body", body)
-                && (path == PATH_EXECUTION || path == PATH_BASKET_RESULT);
+                && (path == PATH_EXECUTION || path == PATH_ACTION
+                    || path == PATH_BASKET_RESULT);
    return known ? OUTBOX_READ_OK : OUTBOX_READ_BAD;
 }
 

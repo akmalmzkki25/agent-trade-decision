@@ -164,12 +164,14 @@ bool ClosePositionByTicket(const ulong ticket, const string comment, double &req
    return ok;
 }
 
-// A modification the server applied, or found already in place.
-bool ModifyDone(const MqlTradeResult &res)
+// A modification the server applied, or found already in place (OrderSend
+// answers false with TRADE_RETCODE_NO_CHANGES when nothing changes).
+bool ModifyDone(const bool sent, const MqlTradeResult &res)
 {
-   return RetcodeIs(res.retcode, TRADE_RETCODE_DONE)
-          || RetcodeIs(res.retcode, TRADE_RETCODE_NO_CHANGES)
-          || RetcodeIs(res.retcode, TRADE_RETCODE_PLACED);
+   if(RetcodeIs(res.retcode, TRADE_RETCODE_NO_CHANGES))
+      return true;
+   return sent && (RetcodeIs(res.retcode, TRADE_RETCODE_DONE)
+                   || RetcodeIs(res.retcode, TRADE_RETCODE_PLACED));
 }
 
 // TRADE_ACTION_SLTP: the new stop and target of an open V6 position (never its size).
@@ -191,7 +193,7 @@ bool ModifyPositionStops(const ulong ticket, const double sl, const double tp, u
    ResetLastError();
    bool sent = OrderSend(req, res);
    retcode = res.retcode;
-   return sent && ModifyDone(res);
+   return ModifyDone(sent, res);
 }
 
 // TRADE_ACTION_MODIFY: the new price, stop, target and expiry of a V6 pending order.
@@ -216,7 +218,7 @@ bool ModifyPendingOrder(const ulong ticket, const double price, const double sl,
    ResetLastError();
    bool sent = OrderSend(req, res);
    retcode = res.retcode;
-   return sent && ModifyDone(res);
+   return ModifyDone(sent, res);
 }
 
 bool DeletePendingOrder(const ulong ticket, uint &retcode)
