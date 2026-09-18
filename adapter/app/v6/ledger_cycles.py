@@ -1,10 +1,9 @@
 """
-Runtime persistence: cycles, agent views, candidates, breakers, sessions and intents.
+Runtime persistence: cycles, views, candidates, breakers, sessions, intents and minutes.
 
-Same SQLite file as `LedgerV6`, own connection (WAL, busy_timeout), one lock,
-bound parameters only. Records returned here are frozen; JSON columns refuse
-credential-shaped keys exactly like the V6 control log does. Published intents
-live in `self.intents` (`ledger_intents.IntentStore`, same connection and lock).
+Same SQLite file as `LedgerV6`, own connection (WAL, busy_timeout), one lock, bound
+parameters only; JSON columns refuse credential-shaped keys like the V6 control log.
+`self.intents`, `self.actions` and `self.minutes` share the connection and the lock.
 """
 
 from __future__ import annotations
@@ -31,6 +30,7 @@ from .ledger_cycles_schema import (
 )
 from .ledger_actions import ACTION_SCHEMA_DDL, ActionStore
 from .ledger_intents import INTENT_COLUMN_MIGRATIONS, INTENT_SCHEMA_DDL, IntentStore
+from .ledger_minutes import MINUTE_SCHEMA_DDL, MinuteStore
 from .ledger_v6 import BUSY_TIMEOUT_MS, _find_secret_key  # shared credential-key rule
 
 logger = logging.getLogger(__name__)
@@ -143,7 +143,8 @@ class LedgerCycles:
             # PRAGMA values cannot be bound; this one is a module constant.
             self._conn.execute(f"PRAGMA busy_timeout={int(BUSY_TIMEOUT_MS)}")
             apply_schema(self._conn,
-                         (*CYCLE_SCHEMA_DDL, *INTENT_SCHEMA_DDL, *ACTION_SCHEMA_DDL),
+                         (*CYCLE_SCHEMA_DDL, *INTENT_SCHEMA_DDL, *ACTION_SCHEMA_DDL,
+                          *MINUTE_SCHEMA_DDL),
                          (*CYCLE_COLUMN_MIGRATIONS, *INTENT_COLUMN_MIGRATIONS))
         except sqlite3.Error:
             logger.error("ledger_cycles: schema initialisation failed for %s", self.path)
@@ -151,6 +152,7 @@ class LedgerCycles:
             raise
         self.intents = IntentStore(self._write, self._fetchall)
         self.actions = ActionStore(self._write, self._fetchall)
+        self.minutes = MinuteStore(self._write, self._fetchall)
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
