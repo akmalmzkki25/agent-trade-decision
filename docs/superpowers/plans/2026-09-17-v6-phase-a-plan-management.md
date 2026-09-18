@@ -180,9 +180,14 @@ berbeda dari teks tugas di bawah (tugas berikutnya mengikuti catatan ini):
   sudah menutupnya, bersama jendela tanpa entry EA (flatten 22:55 server sampai tengah
   malam server) dan blok rollover. `.env` tidak perlu diubah. Ukur ulang setelah
   pergantian DST AS (2026-11-01).
-- **Step 5–7.** Drill dan satu hari London–NY menunggu dua hal: izin pengguna, dan
-  restart adapter dengan commit ini. EA 6.2.0 sudah berjalan di MT5, tetapi adapter
-  mati. Kondisi ledger pada 2026-09-18:
+- **Step 5–7.** Drill dan satu hari London–NY menunggu tiga hal:
+  - izin pengguna;
+  - adapter dijalankan dengan commit ini;
+  - EA dimuat ulang di MT5.
+
+  EA 6.2.1 sudah disalin dan dikompilasi, tetapi MT5 masih menjalankan 6.1.0 (dimuat
+  2026-09-17 20:18 waktu lokal). Kompilasi lewat baris perintah tidak memuat ulang EA
+  yang sedang berjalan. Adapter mati. Kondisi ledger pada 2026-09-18:
   - tidak ada intent aktif;
   - tidak ada intent dengan `sl ≤ 0`;
   - `v6_actions` dan `v6_plan_steps` masih kosong.

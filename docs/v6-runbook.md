@@ -98,7 +98,10 @@ re-sync the key (section 2).
       ```
 
    4. Require `Result: 0 errors, 0 warnings`; the exit code means nothing.
-   5. The Experts log shows `V6 EA 6.2.1 started`. EA 6.2.x (phase A) places LIMIT,
+   5. Reload the EA. A command-line compile does not reload an EA that is already
+      running. Remove it from the chart and attach it again (its inputs return to the
+      defaults in step 4), or restart MT5, which keeps the chart's inputs.
+   6. The Experts log (`MQL5\Logs`) shows `V6 EA 6.2.1 started`. EA 6.2.x (phase A) places LIMIT,
       STOP and market orders, runs the SL+ ladder itself (`Plan.mqh`) and applies
       signed management actions (`Actions.mqh`). Deploy it together with the adapter of
       the same commit: an older adapter cannot parse its snapshots, and an older EA
