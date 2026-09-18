@@ -160,6 +160,9 @@ def _add_loop_commands(commands: Any) -> None:
     _add_agent(submit, required=True)
     submit.add_argument("--file", type=json_path_or_stdin, default=DECISION_FILE,
                         help="decision JSON file, or - for standard input")
+    submit.add_argument("--quick", action="store_true",
+                        help="no change for the packet (HOLD, or KEEP the managed trade); "
+                             "reads packet.json, writes no decision file")
     submit.add_argument("--packet", type=json_path, default=PACKET_FILE,
                         help="packet file used for warnings only")
 
@@ -226,7 +229,7 @@ def dispatch(args: argparse.Namespace, ctx: Context) -> int:
                                       force=args.force)
     if args.command == "submit":
         return decisions.run_submit(ctx, agent=args.agent, decision_path=args.file,
-                                    packet_path=args.packet)
+                                    packet_path=args.packet, quick=args.quick)
     return run(build_call(args), ctx)
 
 

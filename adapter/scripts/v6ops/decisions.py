@@ -56,7 +56,9 @@ MAX_DECISION_BYTES: Final[int] = 64 * 1024
 RESULT_POLLS: Final[int] = 8
 RESULT_POLL_S: Final[float] = 0.5
 RESULT_KEYS: Final[tuple[str, ...]] = (
-    "status", "hold_reason", "hold_detail", "failed_gates", "shadow_intent", "intent")
+    "status", "hold_reason", "hold_detail", "failed_gates", "shadow_intent", "intent",
+    "outcome", "action")
+QUICK_NOTE: Final[str] = "quick: no change"
 NEXT_EDIT: Final[str] = (
     "edit action, views, m15_bias and entry_plan or manage in the decision file (keep "
     "cycle_id, packet_hash, packet_kind and schema_version), then run: submit --agent "
@@ -124,13 +126,14 @@ def fallback_template(packet: Mapping[str, Any]) -> dict[str, Any]:
     """The adapter's DecisionTemplate rebuilt from the packet (a packet without one)."""
     manage = _keep(packet)
     bias = packet.get("last_bias")
+    m15 = packet.get("packet_kind", "m15") == "m15"
+    m15_bias = _plain(bias) if isinstance(bias, Mapping) else _plain(UNCLEAR_BIAS)
     return {
         "schema_version": DECISION_SCHEMA, "packet_kind": packet.get("packet_kind", "m15"),
         "cycle_id": packet.get("cycle_id"), "packet_hash": packet.get("packet_hash"),
         "agent": None, "action": "HOLD" if manage is None else "MANAGE",
-        "views": _baseline_or_defaults(packet.get("baseline_views")),
-        "entry_plan": None, "manage": manage,
-        "m15_bias": _plain(bias) if isinstance(bias, Mapping) else _plain(UNCLEAR_BIAS),
+        "views": _baseline_or_defaults(packet.get("baseline_views")) if m15 else None,
+        "entry_plan": None, "manage": manage, "m15_bias": m15_bias if m15 else None,
         "note": "",
     }
 
@@ -221,6 +224,19 @@ def run_template(ctx: Context, *, packet_path: Path, out_path: Path, force: bool
 
 
 # --- submit --------------------------------------------------------------------------
+def quick_decision(packet: Mapping[str, Any], agent: str) -> dict[str, Any]:
+    """`submit --quick`: no change for the packet (HOLD, or KEEP the managed trade); an
+    m15 packet carries the last bias forward marked `carried` (or unclear)."""
+    decision = with_agent(build_template(packet), agent)
+    if decision.get("packet_kind", "m15") == "m15":
+        bias = decision.get("m15_bias")
+        decision["m15_bias"] = {**(bias if isinstance(bias, Mapping) else UNCLEAR_BIAS),
+                                "carried": True}
+    managed = decision.get("manage") is not None
+    return {**decision, "action": "MANAGE" if managed else "HOLD", "entry_plan": None,
+            "note": QUICK_NOTE}
+
+
 def with_agent(decision: Mapping[str, Any], agent: str) -> dict[str, Any]:
     if agent not in AGENTS:
         raise UsageError(f"--agent must be one of {', '.join(AGENTS)}")
@@ -333,9 +349,18 @@ def cycle_result(ctx: Context, cycle_id: object) -> dict[str, object] | None:
             reply = ctx.client.send("GET", STATUS_PATH, auth=False)
         except TransportError:
             return None
-        cycle = get_path(reply.json(), "last_cycle")
-        if isinstance(cycle, Mapping) and cycle.get("cycle_id") == cycle_id:
+        cycle = _cycle_in(reply.json(), cycle_id)
+        if cycle is not None:
             return {key: cycle[key] for key in RESULT_KEYS if key in cycle}
+    return None
+
+
+def _cycle_in(status: object, cycle_id: object) -> Mapping[str, Any] | None:
+    """The finished cycle in a status reply: the M15 worker's, or the minute worker's."""
+    for path in (("last_cycle",), ("runtime", "minutes", "last")):
+        cycle = get_path(status, *path)
+        if isinstance(cycle, Mapping) and cycle.get("cycle_id") == cycle_id:
+            return cycle
     return None
 
 
@@ -346,9 +371,16 @@ def with_result(ctx: Context, summary: dict[str, object]) -> dict[str, object]:
             "next": NEXT_ACCEPTED if result is not None else NEXT_RESULT_UNKNOWN}
 
 
-def run_submit(ctx: Context, *, agent: str, decision_path: Path, packet_path: Path) -> int:
-    decision = with_agent(read_decision(ctx, decision_path), agent)
-    warnings = submission_warnings(decision, _optional_packet(packet_path), ctx.clock())
+def run_submit(ctx: Context, *, agent: str, decision_path: Path, packet_path: Path,
+               quick: bool = False) -> int:
+    """Send the decision file, or with `quick` "no change" built from the packet file
+    (no decision file, and no wait for the cycle result: the next packet comes soon)."""
+    if quick:
+        decision = quick_decision(load_json_file(packet_path, "packet file"), agent)
+        warnings: list[str] = []
+    else:
+        decision = with_agent(read_decision(ctx, decision_path), agent)
+        warnings = submission_warnings(decision, _optional_packet(packet_path), ctx.clock())
     body = encode_decision(decision)
     try:
         reply = ctx.client.send("POST", DECISION_PATH, body)
@@ -358,5 +390,6 @@ def run_submit(ctx: Context, *, agent: str, decision_path: Path, packet_path: Pa
     summary, code = verdict(reply, decision, warnings)
     if code == EXIT_ERROR and summary["code"] == CLOSED_CODE and session_ended(ctx):
         summary, code = {**summary, "next": NEXT_NO_SESSION}, EXIT_NO_SESSION
-    emit(ctx.stdout, with_result(ctx, summary) if code == EXIT_OK else summary)
+    done = code == EXIT_OK and not quick
+    emit(ctx.stdout, with_result(ctx, summary) if done else summary)
     return code

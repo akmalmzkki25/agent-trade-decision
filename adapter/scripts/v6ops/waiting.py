@@ -39,7 +39,7 @@ from .context import (
     EXIT_TIMEOUT, OPERATOR_BACKEND, Context, clean, emit, emit_error, get_path,
 )
 from .files import archive, write_json_atomic
-from .packet_view import render_packet
+from .minute_view import render_any
 from .transport import HttpReply, TransportError
 
 WAIT_PATH: Final[str] = "/v6/operator/wait"
@@ -47,6 +47,7 @@ STATUS_PATH: Final[str] = "/v6/status"
 PACKET_SCHEMA: Final[str] = "v6.operator.packet.3"
 PACKET_KEYS: Final[tuple[str, ...]] = ("pending", "packet")
 PACKET_STATES: Final[tuple[str, ...]] = ("flat", "pending", "position")
+PACKET_KINDS: Final[tuple[str, ...]] = ("m15", "m1")
 WAIT_POLL_S: Final[float] = 25.0            # the route's MAX_WAIT_S
 HTTP_MARGIN_S: Final[float] = 10.0
 # What every operator agent passes (`wait --timeout 240`): with the worst-case overrun
@@ -160,6 +161,7 @@ def packet_problems(packet: Mapping[str, Any]) -> list[str]:
         (isinstance(packet.get("candidates"), list), "candidates"),
         (isinstance(packet.get("limits"), Mapping), "limits"),
         (packet.get("state") in PACKET_STATES, "state"),
+        (packet.get("packet_kind", "m15") in PACKET_KINDS, "packet_kind"),
         (packet.get("state") != "position" or isinstance(packet.get("position"), Mapping),
          "position"),
         (packet.get("state") != "pending" or isinstance(packet.get("pending_order"), Mapping),
@@ -302,7 +304,7 @@ def finish(ctx: Context, plan: WaitPlan, outcome: WaitOutcome) -> int:
         except (OSError, ValueError) as exc:
             emit_error(ctx, "write_failed", f"{type(exc).__name__}: {plan.out_path}")
             return EXIT_ERROR
-        ctx.stdout.write(render_packet(outcome.packet, now=ctx.clock(), path=plan.out_path))
+        ctx.stdout.write(render_any(outcome.packet, now=ctx.clock(), path=plan.out_path))
         return EXIT_OK
     if outcome.kind == KIND_NO_SESSION:
         emit(ctx.stdout, {"outcome": KIND_NO_SESSION, "detail": outcome.detail,
