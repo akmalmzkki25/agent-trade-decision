@@ -10,6 +10,7 @@ Each API surface lives in its own router under `app/routes/`:
     /v4/plan                    liquidity-zone entry     routes/plans_v4.py
     /v5/burst                   scalping burst           routes/burst_v5.py
     /v6/*                       V6 EA plane (signed)     routes/v6_ea.py
+    /v6/minute                  V6 minute snapshots      routes/v6_minute.py
     /v6/control/*               V6 operator controls     routes/v6_control.py
     /v6/operator/*              V6 operator agents       routes/v6_operator.py
     /v6, /v6/api/overview       V6 dashboard             routes/v6_dashboard.py
@@ -36,7 +37,7 @@ from .deps import decider_name, ledger, logger
 from .host_guard import LOOPBACK_HOSTS, HostGuardMiddleware, normalise_host
 from .routes import (
     burst_v5, dashboard, decision, events, plans_v2, plans_v3, plans_v4, v6_control,
-    v6_dashboard, v6_ea, v6_operator,
+    v6_dashboard, v6_ea, v6_minute, v6_operator,
 )
 from .routes.v6_control import install_control_plane
 from .routes.v6_operator import install_operator_queue
@@ -100,6 +101,7 @@ ROUTERS: Final[tuple[APIRouter, ...]] = (
     plans_v4.router,
     burst_v5.router,
     v6_ea.router,
+    v6_minute.router,
     v6_control.router,
     v6_operator.router,
     v6_dashboard.router,

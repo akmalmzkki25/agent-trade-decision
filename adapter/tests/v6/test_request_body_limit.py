@@ -35,6 +35,7 @@ SMALL_PIECE_BYTES: Final[int] = 7
 JSON_HEADERS: Final[dict[str, str]] = {"Content-Type": "application/json"}
 V6_POST_PATHS: Final[tuple[str, ...]] = (
     "/v6/bars/backfill", "/v6/snapshot", "/v6/intent/poll", "/v6/execution", "/v6/action",
+    "/v6/minute",
 )
 
 

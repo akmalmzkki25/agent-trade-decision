@@ -40,7 +40,7 @@ from .payloads_v6 import (
 
 JSON_HEADERS = {"Content-Type": "application/json"}
 V6_POST_PATHS = ("/v6/bars/backfill", "/v6/snapshot", "/v6/intent/poll", "/v6/execution",
-                 "/v6/action")
+                 "/v6/action", "/v6/minute")
 OPERATOR_TOKEN = "operator-token-" + "q" * 40
 EA_KEY = "ea-hmac-key-" + "z" * 40
 SECRET_FRAGMENTS = ("token", "secret", "password", "api_key")
