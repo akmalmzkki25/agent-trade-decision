@@ -11,6 +11,7 @@ sizing and the operator packet builder). Live-only inputs are synthesized in
     synth     replay settings, the synthetic snapshot, breaker status and bar reader
     evaluate  one bar -> BarRecord (insufficient data, gates, candidates, packet)
     runner    the sequential loop with the one-position / trades-per-day simulation
+    minutes   the minute rhythm: every closed M1 bar between two M15 closes as an m1 cycle
     tally     counts per day, per UTC hour band and in total
     render    the markdown summary
 """

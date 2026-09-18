@@ -33,7 +33,7 @@ from app.v6.market.bar_store import (
 from app.v6.market.feature_map import ADX_PERIOD, ATR_WINDOW_BARS
 from app.v6.risk.gates import RuntimeGateState, evaluate_gates, failed_codes
 from app.v6.runtime.ea_state import cycle_id_for
-from app.v6.schemas.snapshot import CalendarEventBlock
+from app.v6.schemas.snapshot import CalendarEventBlock, V6Snapshot
 from app.v6.setups import detect_all
 from app.v6.types import TIMEFRAME_SECONDS, Bar, Refusal
 
@@ -174,6 +174,29 @@ def _candidate_records(context: MarketContext, assessments: Sequence[CandidateAs
     return tuple(records)
 
 
+def _context_at(bar: Bar, bars: BarSet, stored_events: Sequence[CalendarEventBlock],
+                settings: V6Settings, exposure: Exposure
+                ) -> tuple[V6Snapshot, MarketContext, float]:
+    as_of = bar.t + M15_S
+    snapshot = synth_snapshot(bar, stored_events, exposure)
+    now = float(as_of + RECEIVE_DELAY_S)
+    window = load_bars(CutReader(bars, as_of), snapshot)
+    context = build_context(ContextRequest(
+        cycle_id=cycle_id_for(snapshot.snapshot_id), snapshot=snapshot, received_at=now),
+        window, settings, now)
+    return snapshot, context, now
+
+
+def bar_context(bar: Bar, bars: BarSet, stored_events: Sequence[CalendarEventBlock],
+                settings: V6Settings, exposure: Exposure
+                ) -> tuple[V6Snapshot, MarketContext, float] | None:
+    """(snapshot, context, now) of M15 `bar` at its close, as the engine builds them from
+    bars closed by then; None when the stored history is insufficient."""
+    if insufficiency(bars, bar.t + M15_S):
+        return None
+    return _context_at(bar, bars, stored_events, settings, exposure)
+
+
 def evaluate_bar(bar: Bar, bars: BarSet, stored_events: Sequence[CalendarEventBlock],
                  settings: V6Settings, exposure: Exposure) -> BarRecord:
     """The tier-0 outcome of M15 `bar` at its close; reads only bars closed by then."""
@@ -184,21 +207,16 @@ def evaluate_bar(bar: Bar, bars: BarSet, stored_events: Sequence[CalendarEventBl
     reasons = insufficiency(bars, as_of)
     if reasons:
         return replace(base, insufficient=reasons)
-    snapshot = synth_snapshot(bar, stored_events, exposure)
-    now = as_of + RECEIVE_DELAY_S
-    window = load_bars(CutReader(bars, as_of), snapshot)
-    context = build_context(ContextRequest(
-        cycle_id=cycle_id_for(snapshot.snapshot_id), snapshot=snapshot,
-        received_at=float(now)), window, settings, float(now))
+    _, context, now = _context_at(bar, bars, stored_events, settings, exposure)
     breakers = healthy_breakers(context, settings)
     gates = evaluate_gates(context, context.calendar, RuntimeGateState(warmed_up=True),
-                           settings, breakers, float(now))
+                           settings, breakers, now)
     pool = assess_candidates(context, detect_all(context), settings,
                              friction_price=cycle_friction(settings, context))
     packet = build_packet(PacketRequest(
         context=context, gates=gates, offered=pool.offered, baseline=DeskViews(),
         remaining_loss_usd=breakers.remaining_loss_usd, session_id=REPLAY_SESSION_ID,
-        armed=True, now=float(now), deadline_epoch=float(as_of + settings.operator_deadline_s),
+        armed=True, now=now, deadline_epoch=float(as_of + settings.operator_deadline_s),
     ), settings)
     refused = isinstance(packet, PacketRefusal)
     packet_ids = frozenset() if refused else frozenset(packet.allowed.candidate_ids)

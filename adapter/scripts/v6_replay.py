@@ -5,6 +5,7 @@ V6 tier-0 replay: how many packets would reach the operator agent, and what stop
     python scripts/v6_replay.py [--db trade_ledger.db | --csv-dir DIR [--symbol XAUUSD]]
                                 [--events-db DB] [--from YYYY-MM-DD] [--to YYYY-MM-DD]
                                 [--set KEY=VALUE ...] [--json OUT.json] [--no-records]
+                                [--minutes]
 
 Every closed M15 bar is rebuilt as the live engine would see it at its close,
 from bars closed by then only, and run through the real tier-0 modules (see
@@ -12,7 +13,9 @@ scripts/v6replay). Settings come from explicit values only (never adapter/.env):
 backend operator, mode shadow, V6_SIZING_EQUITY_BASIS_USD=5000, plus --set
 overrides such as `--set V6_MAX_SPREAD_POINTS=30`. The ledger is opened
 read-only. Prints a markdown summary; --json writes the full counts and the
-per-bar records. Exit codes: 0 ok, 2 usage or input problem.
+per-bar records. --minutes also replays the minute rhythm (v6replay.minutes): the m1
+packets a day would bring and the adapter time per minute. Exit codes: 0 ok, 2 usage or
+input problem.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import json
 import logging
 import sys
 from collections.abc import Sequence
+from dataclasses import asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Final, TextIO
@@ -36,7 +40,8 @@ from pydantic import ValidationError  # noqa: E402
 
 from v6replay.data import BarSet, load_csv_dir, load_sqlite, load_stored_events  # noqa: E402
 from v6replay.evaluate import gate_order  # noqa: E402
-from v6replay.render import render_markdown  # noqa: E402
+from v6replay.minutes import run_minute_replay  # noqa: E402
+from v6replay.render import render_markdown, render_minutes  # noqa: E402
 from v6replay.runner import ReplayWindow, run_replay  # noqa: E402
 from v6replay.synth import (  # noqa: E402
     ASSUMPTIONS, parse_overrides, replay_settings, settings_view,
@@ -72,6 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", dest="json_path", type=Path, default=None)
     parser.add_argument("--no-records", action="store_true",
                         help="leave the per-bar records out of the JSON")
+    parser.add_argument("--minutes", action="store_true",
+                        help="also replay the minute rhythm: m1 packets per day and the "
+                             "adapter time per minute")
     return parser
 
 
@@ -131,10 +139,16 @@ def main(argv: Sequence[str] | None = None, stdout: TextIO = sys.stdout,
     records = run_replay(bars, events, settings, window)
     summary = summarise(records)
     meta = _meta(args, label, bars, records, events)
-    stdout.write(render_markdown(summary, meta, gate_order()) + "\n")
+    text = render_markdown(summary, meta, gate_order())
+    minutes = asdict(run_minute_replay(bars, events, settings, window)) if args.minutes else None
+    if minutes is not None:
+        text += "\n" + render_minutes(minutes)
+    stdout.write(text + "\n")
     if args.json_path is not None:
         document = {"schema": SCHEMA, "meta": meta, "settings": settings_view(settings),
                     "summary": summary}
+        if minutes is not None:
+            document["minutes"] = minutes
         if not args.no_records:
             document["records"] = [record_view(record) for record in records]
         _write_json(args.json_path, document)

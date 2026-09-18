@@ -80,6 +80,23 @@ def _codes(title: str, counts: Mapping[str, int]) -> list[str]:
     return [f"## {title}"] + _table(["code", "count"], rows)
 
 
+def _pairs(counts: Mapping[str, int]) -> str:
+    return ", ".join(f"{key} {value}" for key, value in counts.items()) or "none"
+
+
+def render_minutes(tally: Mapping[str, Any]) -> str:
+    """The --minutes section: m1 packets per day, what stopped the other minutes (most
+    frequent first) and the adapter time per minute."""
+    blocked = dict(sorted(tally["blocked_by"].items(), key=lambda item: (-item[1], item[0])))
+    return "\n".join((
+        "## Minute rhythm",
+        f"- minutes evaluated: {tally['minutes']}, m1 packets: {tally['packets']}",
+        f"- m1 packets per day: {_pairs(tally['per_day'])}",
+        f"- first failed gate: {_pairs(blocked)}",
+        f"- adapter time per minute: p50 {tally['build_ms_p50']} ms, "
+        f"p95 {tally['build_ms_p95']} ms"))
+
+
 def render_markdown(summary: Mapping[str, Any], meta: Mapping[str, Any],
                     gate_codes: Sequence[str]) -> str:
     total = summary["total"]
