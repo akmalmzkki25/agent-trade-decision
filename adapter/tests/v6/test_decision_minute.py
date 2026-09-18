@@ -12,6 +12,7 @@ from app.v6.schemas.operator import OperatorPacket
 from app.v6.schemas.operator_plan import M15Bias
 
 from . import engine_fixtures_v6 as ef
+from .cycle_fixtures_v6 import liquidity_payload, news_payload, pa_payload, structure_payload
 from .test_engine_operator import OPERATOR
 from .test_minute_packet import MINUTE_CLOSE, sealed_minute_packet
 
@@ -71,3 +72,39 @@ def test_a_carried_bias_keeps_the_remembered_one() -> None:
     fresh = BiasMemory()
     fresh.remember(M15Bias(direction="unclear", carried=True), 300)
     assert fresh.latest()[1] == 300
+
+
+def sent_views(packet: OperatorPacket, conviction: float) -> dict[str, Any]:
+    """The four views an agent may still send on an m1 packet."""
+    return {"price_action": pa_payload(packet.limits.agent_entry_id, conviction=conviction),
+            "news_risk": news_payload(), "liquidity": liquidity_payload(),
+            "structure": structure_payload()}
+
+
+def test_sent_views_are_checked_like_an_m15_decision() -> None:
+    packet = sealed_minute_packet()
+    decision = submit(packet, action="ENTER", entry_plan=plan(packet),
+                      views=sent_views(packet, 0.8))
+    assert isinstance(decision, ValidatedDecision), decision
+    assert (decision.price_action.ranked[0].conviction, decision.flags) == (0.8, ())
+    weak = submit(packet, action="ENTER", entry_plan=plan(packet), views=sent_views(packet, 0.3))
+    assert isinstance(weak, DecisionError) and (weak.code, weak.role) == (
+        "DECISION_VIEW", "price_action")
+
+
+def test_a_sent_price_action_view_that_fails_refuses_the_decision() -> None:
+    packet = sealed_minute_packet()
+    views = sent_views(packet, 0.8)
+    views["price_action"] = {"abstain": True, "ranked": views["price_action"]["ranked"]}
+    decision = submit(packet, views=views)
+    assert isinstance(decision, DecisionError) and decision.code == "DECISION_VIEW"
+
+
+def test_an_invalid_bias_and_an_expired_packet_are_refused() -> None:
+    packet = sealed_minute_packet()
+    bad_bias = submit(packet, m15_bias={"direction": "sideways"})
+    assert isinstance(bad_bias, DecisionError) and bad_bias.code == "DECISION_BIAS"
+    document = {**packet.decision_template.model_dump(mode="json"), "agent": "claude_code"}
+    late = validate_decision(packet, json.dumps(document).encode("utf-8"),
+                             ef.settings(**OPERATOR), now=float(packet.expires_at_epoch + 1))
+    assert isinstance(late, DecisionError) and late.code == "DECISION_EXPIRED"
