@@ -18,10 +18,13 @@ from ..cycle_types import (
 from ..providers.base import MS_PER_SECOND, PROVIDER_STATUS_SKIPPED, RULES_PROVIDER_NAME
 from ..risk.gates import RuntimeGateState
 from ..schemas.agents import ChiefDecision
+from ..schemas.minute import MinuteSnapshot
+from ..schemas.operator_parts import PacketKind
 from ..schemas.snapshot import ProbeBlock, V6Snapshot
-from ..types import ExitPlan, GateResult, Refusal, SizingResult
+from ..types import TIMEFRAME_SECONDS, ExitPlan, GateResult, Refusal, SizingResult
 
 MAX_HOLD_DETAIL_CHARS: Final[int] = 300
+M15_S: Final[int] = TIMEFRAME_SECONDS["M15"]
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,27 @@ class CycleRequest:
     carried_events: tuple[CalendarEvent, ...] = ()
     probe: ProbeBlock | None = None
     session_armed: bool = False          # the active session may publish (execute mode)
+    minute: MinuteSnapshot | None = None     # an m1 cycle: the minute it decides on
+
+    @property
+    def packet_kind(self) -> PacketKind:
+        return "m15" if self.minute is None else "m1"
+
+    @property
+    def snapshot_id(self) -> str:
+        return self.snapshot.snapshot_id if self.minute is None else self.minute.snapshot_id
+
+    @property
+    def bar_open_epoch(self) -> int:
+        return (self.snapshot.bar_open_epoch if self.minute is None
+                else self.minute.bar_open_epoch)
+
+    @property
+    def as_of_epoch(self) -> int:
+        """The close of the bar this cycle decides on."""
+        if self.minute is None:
+            return self.snapshot.bar_open_epoch + M15_S
+        return self.minute.bar_close_epoch
 
 
 @dataclass(frozen=True)
@@ -83,8 +107,8 @@ class CycleDraft:
                                finished_at=max(finished_at, self.started_at),
                                tier0_ms=self.tier0_ms, deliberation_ms=self.deliberation_ms)
         result = CycleResult(
-            cycle_id=request.cycle_id, snapshot_id=request.snapshot.snapshot_id,
-            bar_open_epoch=request.snapshot.bar_open_epoch, status=status,
+            cycle_id=request.cycle_id, snapshot_id=request.snapshot_id,
+            bar_open_epoch=request.bar_open_epoch, status=status,
             hold_reason=hold_reason, backend=self.backend, provider=self.provider,
             provider_status=self.provider_status, timings=timings,
             hold_detail=detail[:MAX_HOLD_DETAIL_CHARS], session_id=request.session_id,

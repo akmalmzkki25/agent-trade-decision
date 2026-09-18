@@ -82,7 +82,8 @@ class OperatorFlow:
             baseline=tier0.baseline.views, remaining_loss_usd=tier0.breakers.remaining_loss_usd,
             session_id=request.session_id, armed=request.session_armed, now=self._now(),
             deadline_epoch=self._deadline(request), state=state, record=record,
-            last_action=last_action, last_bias=bias, last_bias_at=bias_at)
+            last_action=last_action, last_bias=bias, last_bias_at=bias_at,
+            kind=request.packet_kind)
         outcome = await operator_round(queue, packet_request, deps.settings, tier0.baseline,
                                        deps.clock)
         if isinstance(outcome, PacketRefusal):

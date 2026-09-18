@@ -56,6 +56,7 @@ from .context_builder import (
     BarReader, ContextRequest, as_of_for, build_context, cycle_friction, load_bars,
 )
 from .cycle_draft import CycleDraft, CycleOutcome, CycleRequest, elapsed_ms
+from .minute_flow import MinuteFlow
 from .operator_flow import DETAIL_LATE, DETAIL_NO_SESSION, OperatorFlow
 from .operator_tier import OperatorRound
 from .panel import Baseline, PanelResult, rules_baseline, run_panel
@@ -137,7 +138,7 @@ def build_engine(settings: V6Settings, clock: Clock, bars: BarReader,
         plans=plans if uses_operator else None))
 
 
-class DeliberationEngine(OperatorFlow):
+class DeliberationEngine(OperatorFlow, MinuteFlow):
     def __init__(self, deps: EngineDeps) -> None:
         self._deps = deps
 
@@ -154,6 +155,8 @@ class DeliberationEngine(OperatorFlow):
 
     def _deadline(self, request: CycleRequest) -> float:
         settings = self._deps.settings
+        if request.minute is not None:
+            return float(request.as_of_epoch + settings.m1_deadline_s)
         budget = (settings.operator_deadline_s if settings.backend == OPERATOR_PROVIDER_NAME
                   else settings.decision_deadline_s)
         return float(as_of_for(request.snapshot) + budget)
