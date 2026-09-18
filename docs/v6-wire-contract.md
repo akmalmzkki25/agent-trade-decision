@@ -15,10 +15,18 @@ User decisions (2026-09-16) this contract implements:
 - **The operator backend decides for DEMO accounts only. REAL and CONTEST are refused
   at config, operator API, intent builder and EA. This is never relaxable.**
 - `V6_MODE=execute` requires the operator backend, `V6_EA_HMAC_KEY` and
-  `V6_MAX_LOTS <= 0.01`, and publishes intents only while a daily session is active
-  **and armed**. `shadow` never publishes an intent.
-- One position, no layering, limit orders preferred, SL/TP at the broker, time barrier
-  8 × M15 (max 4 h), no break-even, no trailing, no partial closes.
+  `V6_MAX_LOTS <= 0.03` (0.01 before phase A), and publishes intents only while a daily
+  session is active **and armed**. `shadow` never publishes an intent.
+- One position, no layering, SL and TP3 at the broker, no partial closes.
+- Phase A (user decisions of 2026-09-17):
+  - MARKET, LIMIT or STOP entries of 0.01-0.03 lots;
+  - the SL+ steps at TP1 and TP2, run by the EA (section 8.2);
+  - a holding time of 60-240 min chosen by the agent;
+  - agent management actions: close a position, modify it, modify or cancel a pending
+    order.
+
+  The stop moves only through those steps and actions: never a mechanical break-even or
+  trailing stop.
 
 ---
 
@@ -211,7 +219,7 @@ One per closed M15 bar, timeout 1 500 ms, retried for `InpSnapshotRetryS`. Block
 `account` (login, trade_mode, server, currency, leverage, balance, equity, margin,
 free_margin, margin_level), `symbol_spec` (… `calc_profit_per_price`,
 `calc_loss_per_price` from `OrderCalcProfit` — sizing uses these because the server
-reports `tick_value` 0.1 on XAUUSD), `quote`, `bars` (M1×12, M5×48, M15×16, H1×8, D1×3,
+reports `tick_value` 0.1 on XAUUSD), `quote`, `bars` (M1×30 since EA 6.2.1, 12 before; M5×48, M15×16, H1×8, D1×3,
 closed only), `ticks`, `positions` and `pending_orders` (V6 magic only, comment
 `Q6:<intent_id>`; since EA 6.2.0 each position also carries `plan_step`, the last SL+
 step the EA took (0-2), and `time_limit_epoch`, when its time limit closes it (UTC); both

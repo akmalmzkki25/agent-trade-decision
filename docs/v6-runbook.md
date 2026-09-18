@@ -98,7 +98,7 @@ re-sync the key (section 2).
       ```
 
    4. Require `Result: 0 errors, 0 warnings`; the exit code means nothing.
-   5. The Experts log shows `V6 EA 6.2.0 started`. EA 6.2.0 (phase A) places LIMIT,
+   5. The Experts log shows `V6 EA 6.2.1 started`. EA 6.2.x (phase A) places LIMIT,
       STOP and market orders, runs the SL+ ladder itself (`Plan.mqh`) and applies
       signed management actions (`Actions.mqh`). Deploy it together with the adapter of
       the same commit: an older adapter cannot parse its snapshots, and an older EA
@@ -241,7 +241,7 @@ Where to look:
 
 ## 6. Phase A: drills and broker measurements
 
-Run the drills after deploying the adapter and EA 6.2.0 of the same commit, **with the
+Run the drills after deploying the adapter and EA 6.2.1 of the same commit, **with the
 user's approval**, on the demo account, one at a time. Record for each: the time, the
 command or decision, the EA log lines and the `v6_actions` / `v6_plan_steps` rows.
 
@@ -262,8 +262,8 @@ the broker sends no quotes. Two sources show it:
 - the probe's `clock.trade_sessions_server`: the broker's declared session, in server
   time;
 - the M1 bars the EA backfills when it starts (1,440 bars) and a read-only query on
-  `v6_bars` for the nightly hole. Snapshots carry only the last 12 M1 bars of each M15
-  bar, so their 3-minute holes mean nothing. `v6_bars` has no broker column: after a
+  `v6_bars` for the nightly hole. Before EA 6.2.1, snapshots carried only the last 12
+  M1 bars of each M15 bar, so bars stored from them have meaningless 3-minute holes. `v6_bars` has no broker column: after a
   broker switch, count only bars the new broker sent.
 
 Results so far (summer time, UTC+3 server):

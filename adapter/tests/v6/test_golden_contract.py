@@ -20,6 +20,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from app.v6.schemas.intent import PollRequest
+from app.v6.schemas.operator_parts import MAX_PACKET_M1_BARS
 from app.v6.schemas.snapshot import BackfillRequest, V6Snapshot
 from app.v6.types import TIMEFRAME_SECONDS
 
@@ -30,7 +31,7 @@ EA_INCLUDE_DIR: Final[Path] = REPO_ROOT / "ea" / "QlipV6"
 PROBE_SCRIPT: Final[Path] = REPO_ROOT / "ea" / "Scripts" / "QlipV6_Probe.mq5"
 
 # Bars the EA puts in every snapshot, per timeframe (plan §5).
-EXPECTED_BAR_COUNTS: Final[dict[str, int]] = {"M1": 12, "M5": 48, "M15": 16, "H1": 8, "D1": 3}
+EXPECTED_BAR_COUNTS: Final[dict[str, int]] = {"M1": 30, "M5": 48, "M15": 16, "H1": 8, "D1": 3}
 MAX_EA_MAIN_LINES: Final[int] = 300
 MAX_INCLUDE_LINES: Final[int] = 400
 # The probe is a standalone, self-contained script; plan section 5 caps EA files at 800.
@@ -162,6 +163,15 @@ def test_snapshot_golden_bar_counts_match_the_ea() -> None:
     snapshot = V6Snapshot.model_validate_json(_read_golden("snapshot_sample.json"))
 
     assert {tf: len(rows) for tf, rows in snapshot.bars.items()} == EXPECTED_BAR_COUNTS
+
+
+def test_the_ea_sends_the_expected_bar_counts() -> None:
+    source = (EA_INCLUDE_DIR / "Snapshot.mqh").read_text(encoding="utf-8")
+    counts = {tf: int(n) for tf, n in re.findall(r"#define SNAP_BARS_(\w+)\s+(\d+)", source)}
+
+    assert counts == EXPECTED_BAR_COUNTS
+    # The packet's M1 window comes whole from the newest snapshot.
+    assert counts["M1"] >= MAX_PACKET_M1_BARS
 
 
 def test_snapshot_golden_ids_and_times_are_consistent() -> None:

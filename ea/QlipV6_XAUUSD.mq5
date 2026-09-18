@@ -13,7 +13,7 @@
 //| Magic 250570 (250570..250579 reserved), globals prefix QlipV6_.  |
 //+------------------------------------------------------------------+
 #property copyright   "Qlip"
-#property version     "6.20"
+#property version     "6.21"
 #property description "Qlip V6 XAUUSD - executes signed adapter intents on DEMO accounts only; snapshots and backfill."
 
 #include "QlipV6/Config.mqh"

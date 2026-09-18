@@ -186,6 +186,11 @@ berbeda dari teks tugas di bawah (tugas berikutnya mengikuti catatan ini):
   - tidak ada intent aktif;
   - tidak ada intent dengan `sl ≤ 0`;
   - `v6_actions` dan `v6_plan_steps` masih kosong.
+- **Perbaikan setelah verifikasi: EA 6.2.1.** Snapshot hanya membawa 12 bar M1 per bar
+  M15 (`SNAP_BARS_M1`). Akibatnya menit :00–:02 setiap kuartal tidak pernah tersimpan,
+  dan 30 bar M1 di paket operator berlubang. Kini snapshot membawa 30 bar M1, sama
+  dengan jendela M1 paket. Tes `test_the_ea_sends_the_expected_bar_counts` membaca
+  `SNAP_BARS_*` langsung dari `Snapshot.mqh`.
 
 ## Peta file
 

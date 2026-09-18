@@ -6,7 +6,7 @@ pada hari yang sama. Rencana implementasi tahap A ada di
 
 ## Status dan penyimpangan saat implementasi (2026-09-18)
 
-Tahap A sudah dikerjakan (adapter dan EA 6.2.0). Tahap B belum: snapshot menit (§3.1),
+Tahap A sudah dikerjakan (adapter dan EA 6.2.1). Tahap B belum: snapshot menit (§3.1),
 `MinuteInbox` (§4.2), paket `m1` (§2.5, §2.6) dan `v6_minute_cycles` (§4.6). Desain di
 bawah tetap berlaku, kecuali hal berikut.
 

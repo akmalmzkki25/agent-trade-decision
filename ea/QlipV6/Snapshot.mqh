@@ -16,7 +16,7 @@
 #include "Persist.mqh"
 #include "Exposure.mqh"
 
-#define V6_EA_VERSION        "6.2.0"
+#define V6_EA_VERSION        "6.2.1"
 #define SHORT_TEXT_MAX       80
 #define SPEC_DIGITS          10
 #define CALENDAR_HORIZON_S   86400
@@ -28,8 +28,10 @@
 #define SPEC_CALC_LOTS       1.0
 #define SPEC_CALC_MOVE       1.0
 
-// Bars per timeframe in every snapshot (plan §5), all closed.
-#define SNAP_BARS_M1   12
+// Bars per timeframe in every snapshot (plan §5), all closed. M1 covers the snapshot's
+// M15 bar and the one before (the operator packet shows the last 30 M1 bars), so a
+// dropped snapshot leaves no hole in the adapter's M1 history.
+#define SNAP_BARS_M1   30
 #define SNAP_BARS_M5   48
 #define SNAP_BARS_M15  16
 #define SNAP_BARS_H1   8
