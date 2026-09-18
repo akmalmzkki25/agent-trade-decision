@@ -126,6 +126,14 @@
     </div>
 
     <section class="rounded-xl border border-slate-800 bg-slate-900/40">
+      {{ card_head('Plan & actions', 'The active intent’s TP ladder and SL+ steps, and every management action the agent sent.') }}
+      <div id="v6-plan" class="px-5 py-4"></div>
+      <div class="border-t border-slate-800">
+        {{ data_table('v6-actions', [('Sent', ''), ('Action', ''), ('Command', ''), ('Ticket', R), ('Status', ''), ('Detail', ''), ('Settled', '')], 'No management action yet.') }}
+      </div>
+    </section>
+
+    <section class="rounded-xl border border-slate-800 bg-slate-900/40">
       {{ card_head('Closed positions', 'Realised R beside the counterfactual label of the chosen candidate.') }}
       {{ data_table('v6-outcomes', [('Closed', ''), ('Intent', ''), ('Agent', ''), ('Side', ''), ('Exit', ''), ('Net P&L', R), ('R', R), ('Label', ''), ('Gap', R)], 'No V6 position has closed yet.') }}
     </section>

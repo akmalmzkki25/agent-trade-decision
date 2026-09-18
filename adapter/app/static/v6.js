@@ -191,6 +191,35 @@
     [N, (o) => signedR(o.r_gap)],
   ];
 
+  const ACTION_COLUMNS = [
+    [F, (a) => utc(a.created_at)],
+    [MONO, (a) => stacked(a.action_id, a.agent)],
+    [MONO, (a) => a.command],
+    [N, (a) => a.ticket],
+    [C, (a) => statusBadge(a.status)],
+    [MONO, (a) => a.detail || '—'],
+    [C, (a) => (a.status === 'PUBLISHED' ? 'waiting' : utc(a.updated_at))],
+  ];
+  const STEP_LABELS = ['no step yet', 'TP1 reached: stop at SL+ 1', 'TP2 reached: stop at SL+ 2'];
+  const level = (value) => (isNumber(value) && value > 0 ? num(value) : '—');
+
+  function renderPlan(plan) {
+    const node = byId('v6-plan');
+    if (!plan) {
+      node.replaceChildren(el('p', 'text-xs text-slate-500', 'No active V6 intent.'));
+      return;
+    }
+    node.replaceChildren(pairs([
+      ['Intent', group(plan.intent_id, statusBadge(plan.status))],
+      ['Order', group(sideBadge(plan.side), plan.order_type)],
+      ['Entry · SL · TP3', level(plan.entry) + ' · ' + level(plan.sl) + ' · ' + level(plan.tp)],
+      ['TP1 → SL+ 1', level(plan.tp1) + ' → ' + level(plan.sl_after_tp1)],
+      ['TP2 → SL+ 2', level(plan.tp2) + ' → ' + level(plan.sl_after_tp2)],
+      ['Step', STEP_LABELS[plan.plan_step] || String(plan.plan_step)],
+      ['Time limit', Math.round((plan.time_barrier_s || 0) / 60) + ' min from the open'],
+    ]));
+  }
+
   function renderOpenOrders(orders) {
     setText('v6-orders-asof', orders.available ? 'as of ' + utc(orders.as_of_epoch) : 'no snapshot yet');
     renderTable('v6-positions', POSITION_COLUMNS, orders.positions, 'No open V6 position.');
@@ -247,6 +276,8 @@
       'No intent published yet. Shadow mode never publishes one.');
     renderTable('v6-executions', EXECUTION_COLUMNS, data.executions, 'No execution report yet.');
     renderOpenOrders(data.open_orders);
+    renderPlan(data.plan);
+    renderTable('v6-actions', ACTION_COLUMNS, data.actions, 'No management action yet.');
     R.renderGates(data.last_cycle);
     R.renderBreakers(data.breakers);
     R.renderRealised(data.outcomes.realised);

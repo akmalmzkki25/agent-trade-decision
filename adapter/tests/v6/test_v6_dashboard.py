@@ -35,6 +35,7 @@ from app.v6.dashboard_queries import (
 )
 from app.v6.ledger_cycles import LedgerCycles
 from app.v6.ledger_cycles_schema import CycleRecord, CycleSummary, CycleWithViews
+from app.v6.ledger_intents import NewIntent
 from app.v6.ledger_v6 import SnapshotRecord
 from app.v6.runtime.ea_state import EaState
 from app.v6.runtime.sessions import ControlPlane, build_control_plane
@@ -42,6 +43,7 @@ from app.v6.schemas.agents import validate_view
 from app.v6.types import SymbolSpec
 
 from .cycle_fixtures_v6 import CANDIDATE_ID, enter_result, hold_result, pa_payload
+from .test_ledger_plan_actions import ACTION_ID, INTENT_ID, action_row
 from .payloads_v6 import (
     BAR_OPEN, M15, RECEIVED_AT, as_poll, as_snapshot, poll_payload, snapshot_payload,
 )
@@ -211,6 +213,7 @@ def test_overview_before_any_data(client: TestClient) -> None:
     assert (body["last_cycle"], body["breakers"], body["recent_cycles"]) == (None, [], [])
     assert (body["label_stats"], body["hold_reasons_7d"]) == ([], {})
     assert (body["intents"], body["executions"]) == ([], [])
+    assert (body["actions"], body["plan"]) == ([], None)
     assert body["open_orders"]["available"] is False and body["open_orders"]["positions"] == []
     outcomes = body["outcomes"]
     assert (outcomes["stats"]["n"], outcomes["recent"], outcomes["realised"]) == (0, [], None)
@@ -220,6 +223,27 @@ def test_overview_before_any_data(client: TestClient) -> None:
         "pending_cycle_id": None, "pending_seconds_left": None}
     assert "operator_token" not in response.text and "k" * 40 not in response.text
     assert "budget" not in response.text.lower() and "openrouter" not in response.text.lower()
+
+
+def test_the_overview_lists_actions_and_the_active_plan(client: TestClient,
+                                                        wired: ControlApp) -> None:
+    assert wired.ledger is not None
+    wired.ledger.intents.insert(NewIntent(
+        intent_id=INTENT_ID, cycle_id="c-0123456789abcdef", session_id="a1b2c3d4e5f6",
+        agent="claude_code", source="operator", side="buy", order_type="BUY_STOP",
+        entry=4303.5, sl=4296.5, tp=4317.5, lots=0.01, risk_usd=7.4,
+        valid_until_epoch=int(RECEIVED_AT) + 120, pending_expiry_epoch=int(RECEIVED_AT) + 1800,
+        time_barrier_s=9000, created_at=RECEIVED_AT, tp1=4307.5, tp2=4311.5,
+        sl_after_tp1=4304.0, sl_after_tp2=4307.5))
+    wired.ledger.actions.insert(action_row(detail=HOSTILE_NOTE))
+    body = client.get("/v6/api/overview").json()
+    (action,) = body["actions"]
+    assert (action["action_id"], action["status"], action["detail"]) == (
+        ACTION_ID, "PUBLISHED", HOSTILE_NOTE)
+    plan = body["plan"]
+    assert (plan["intent_id"], plan["order_type"], plan["tp1"], plan["sl_after_tp2"]) == (
+        INTENT_ID, "BUY_STOP", 4307.5, 4307.5)
+    assert (plan["plan_step"], plan["time_barrier_s"]) == (0, 9000)
 
 
 def _seed_day(client: TestClient, wired: ControlApp) -> None:
