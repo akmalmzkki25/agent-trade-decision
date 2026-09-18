@@ -7,6 +7,8 @@ V6 EA-facing endpoints (docs/v6-wire-contract.md).
     POST /v6/intent/poll     heartbeat: the pending command (FLATTEN, CANCEL_PENDING) or,
                              in execute mode for an armed session, the signed intent
     POST /v6/execution       what the EA did with an intent; moves the intent along
+    POST /v6/action          what the EA did with a management action, or an SL+ step it
+                             took (`v6.action.1`); settles the action, stores the new plan
     POST /v6/basket-result   a closed V6 position (version "v6"); closes its intent
     GET  /v6/status          runtime, session, operator, active intent, EA, bar coverage
 
@@ -39,7 +41,7 @@ from ..v6.runtime.poll_reply import PollFacts
 from ..v6.runtime.reconcile import Exposure
 from ..v6.runtime.sessions import session_to_dict
 from ..v6.schemas.basket import V6BasketResultEvent
-from ..v6.schemas.intent import ExecutionReport, PollRequest, PollResponse
+from ..v6.schemas.intent import ActionReport, ExecutionReport, PollRequest, PollResponse
 from ..v6.schemas.snapshot import BackfillRequest, BarRow, V6Snapshot, rows_to_bars
 from . import v6_status_view as view
 from .v6_ea_auth import read_ea_body
@@ -181,6 +183,26 @@ async def v6_execution(request: Request, container: ActiveContainer) -> dict[str
     except LIFECYCLE_ERRORS as exc:
         logger.error("v6 execution report for %s not applied (%s)", report.intent_id,
                      type(exc).__name__)
+    return {"ok": True}
+
+
+# --- management actions --------------------------------------------------------
+@router.post("/v6/action")
+async def v6_action(request: Request, container: ActiveContainer) -> dict[str, bool]:
+    report = _parse(ActionReport, await read_ea_body(request, container))
+    now = container.clock.now_epoch()
+    container.ea_state.touch(now)
+    parts = container.parts
+    if report.action_id:
+        parts.actions.settle(report.action_id)
+    try:
+        result = await _storage(parts.action_desk.apply, report, now)
+    except LIFECYCLE_ERRORS as exc:
+        logger.error("v6 action report %s/%s not applied (%s)", report.kind,
+                     report.action_id or report.ticket, type(exc).__name__)
+        return {"ok": True}
+    logger.info("v6 action report %s %s ticket=%s -> %s", report.kind,
+                report.action_id or "-", report.ticket, result)
     return {"ok": True}
 
 

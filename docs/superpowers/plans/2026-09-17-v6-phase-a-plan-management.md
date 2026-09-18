@@ -97,6 +97,21 @@ berbeda dari teks tugas di bawah (tugas berikutnya mengikuti catatan ini):
 - `IntentPublisher.manage` belum ada sampai Task 12: jangan jalankan adapter baru untuk
   trading sebelum Task 12–15 selesai.
 
+## Catatan pelaksanaan Task 12 (2026-09-18)
+
+- Kedaluwarsa aksi dijalankan di `ExecutionDesk.supervise` (langkah watchdog `supervise`
+  yang sudah ada, di samping kedaluwarsa intent), bukan langkah watchdog baru: papan aksi
+  milik desk (`DeskDeps.actions`), `RuntimeParts.actions` menunjuk ke sana.
+- `ActionBoard.queue(action)` mengembalikan aksi yang digantikan; publisher menandainya
+  `EXPIRED` ("superseded by ...") supaya tidak ada baris yang tertinggal PUBLISHED.
+- `publisher.manage` memvalidasi aksi terhadap aturan wire (`action_response`) sebelum
+  menyimpannya; aksi yang melanggar ditolak dengan `ACTION_INVALID` dan tidak disimpan.
+- MODIFY_PENDING yang APPLIED juga memperbarui `entry`, `sl`, `tp` intent
+  (`IntentStore.update_levels`), supaya risiko awal posisi yang terisi kemudian diukur dari
+  level order yang benar.
+- `/v6/action` masuk daftar rute di tes keamanan, rute EA dan batas body; paritas path EA
+  (`test_ea_safety_parity.py`) menunggu Task 15, saat EA mulai mengirim ke rute ini.
+
 ---
 
 ## Peta file

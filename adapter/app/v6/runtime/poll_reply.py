@@ -3,6 +3,9 @@ The answer to one EA poll (wire contract section 6.3).
 
   command  FLATTEN (a new breaker trip) outranks CANCEL_PENDING (session stop, a
            disarm, a halt or a tripped breaker); a command repeats until done.
+  action   only when no command is due: the waiting management action (CLOSE_POSITION,
+           MODIFY_POSITION, MODIFY_PENDING), repeated until the EA reports it or it is
+           too old (`actions.ActionBoard`); it outranks a new intent.
   intent   only when no command is due, in execute mode, for the active ARMED
            execute session whose arming checks pass on this very poll
            (`ExecutionDesk.arm_decision`), while that session's intent is PUBLISHED
@@ -25,11 +28,13 @@ from dataclasses import dataclass
 from functools import partial
 
 from .. import wire
+from ..deliberation.publication import ManagementAction
 from ..ledger_cycles_schema import SessionRecord
 from ..ledger_intents import IntentRecord
 from ..risk.intent_builder import to_poll_response
 from ..risk.policy import EXECUTE_MODE
 from ..schemas.intent import PollRequest, PollResponse
+from .actions import action_response
 from .commands import NO_COMMAND, poll_command
 from .desk import ExecutionDesk
 from .intent_states import DELIVERABLE_STATUSES
@@ -58,7 +63,10 @@ class PollReplier:
                                open_v6_positions=poll.open_v6_positions, now=now)
         idle = PollResponse(server_time_epoch=int(now), command=command)
         response = idle
-        if command == NO_COMMAND and deps.settings.mode == EXECUTE_MODE:
+        action = deps.actions.for_poll(now) if command == NO_COMMAND else None
+        if action is not None:
+            response = self._with_action(idle, action, now)
+        elif command == NO_COMMAND and deps.settings.mode == EXECUTE_MODE:
             response = await self._with_intent(idle, now, facts.point)
         try:
             return wire.sign_intent(deps.settings.ea_hmac_key, response, facts.point)
@@ -66,6 +74,15 @@ class PollReplier:
             # Unsigned: an EA that requires a signature ignores the answer, which is safe.
             logger.error("v6 poll answer could not be signed (point %s); answering idle",
                          facts.point)
+            return idle
+
+    @staticmethod
+    def _with_action(idle: PollResponse, action: ManagementAction, now: float) -> PollResponse:
+        try:
+            return action_response(action, int(now))
+        except ValueError as exc:  # checked when queued; never expected here
+            logger.error("v6 action %s cannot be served: %s", action.action_id,
+                         type(exc).__name__)
             return idle
 
     def _deliverable(self, now: float) -> tuple[SessionRecord, IntentRecord] | None:

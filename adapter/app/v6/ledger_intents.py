@@ -259,6 +259,7 @@ _PLAN_SQL: Final[str] = (
     " time_barrier_s = ? WHERE intent_id = ?")
 _STEP_SQL: Final[str] = (
     "UPDATE v6_intents SET plan_step = ? WHERE intent_id = ? AND plan_step < ?")
+_LEVELS_SQL: Final[str] = "UPDATE v6_intents SET entry = ?, sl = ?, tp = ? WHERE intent_id = ?"
 _EXISTS_SQL: Final[str] = "SELECT 1 FROM v6_intents WHERE intent_id = ?"
 _ACTIVE_ID_SQL: Final[str] = f"SELECT intent_id FROM v6_intents WHERE status IN ({_ACTIVE_LIST})"
 _BY_ID_SQL: Final[str] = f"{_SELECT_SQL} WHERE intent_id = ?"
@@ -349,6 +350,12 @@ class IntentStore:
         with self._write() as conn:
             changed = conn.execute(_PLAN_SQL, (tp1, tp2, sl_after_tp1, sl_after_tp2,
                                                time_barrier_s, intent_id)).rowcount
+        return changed == 1
+
+    def update_levels(self, intent_id: str, *, entry: float, sl: float, tp: float) -> bool:
+        """Store the price, stop and target a MODIFY_PENDING gave the resting order."""
+        with self._write() as conn:
+            changed = conn.execute(_LEVELS_SQL, (entry, sl, tp, intent_id)).rowcount
         return changed == 1
 
     def set_plan_step(self, intent_id: str, step: int) -> bool:

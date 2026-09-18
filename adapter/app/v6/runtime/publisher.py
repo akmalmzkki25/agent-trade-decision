@@ -1,12 +1,17 @@
 """
 Publishing an approved operator entry (plan sections 3.3, 5 and 6).
 
-The engine hands over the protocol's ENTER with the sized exit plan and the agent
-that decided (`deliberation.publication`). Only for an armed execute session
-whose arming checks still pass right now does `risk.intent_builder.build_intent`
-make the intent and `IntentBook.publish` store it as PUBLISHED; the EA's next
-signed poll carries it. A refusal keeps its code in `PublishOutcome.code` and
-becomes either a shadow record (the session cannot publish at all) or a hold.
+The engine hands over the protocol's ENTER with the sized exit plan, the agent's plan
+(order type, TP ladder, SL+ steps, windows) and the agent that decided
+(`deliberation.publication`). Only for an armed execute session whose arming checks
+still pass right now does `risk.intent_builder.build_intent` make the intent and
+`IntentBook.publish` store it as PUBLISHED; the EA's next signed poll carries it. A
+refusal keeps its code in `PublishOutcome.code` and becomes either a shadow record
+(the session cannot publish at all) or a hold.
+
+`manage` queues a management decision under the same arming rule: CANCEL becomes the
+EA's CANCEL_PENDING command, CLOSE and MODIFY a `ManagementAction` stored in v6_actions
+(PUBLISHED) and served on the next polls (`actions.ActionBoard`).
 """
 
 from __future__ import annotations
@@ -17,15 +22,23 @@ from types import MappingProxyType
 from typing import Final
 
 from ..cycle_codes import HoldReason
-from ..deliberation.publication import PublishOutcome, PublishRequest
+from ..deliberation.publication import (
+    ManageDispatch, ManagementAction, ManageOutcome, PublishOutcome, PublishRequest,
+)
+from ..ledger_actions import ActionRow
 from ..risk import intent_builder as ib
 from ..risk.policy import EXECUTE_MODE
 from ..types import Refusal
 from . import arming
 from . import intent_book as book
+from .actions import action_response
 from .desk import ExecutionDesk
 
 NOT_ARMED: Final[str] = "SESSION_NOT_ARMED"
+REASON_AGENT_CANCEL: Final[str] = "AGENT_CANCEL"
+CODE_CANCEL_PENDING: Final[str] = "CANCEL_PENDING"
+CODE_ACTION_INVALID: Final[str] = "ACTION_INVALID"
+STATUS_SUPERSEDED: Final[str] = "EXPIRED"
 MAX_DETAIL_CHARS: Final[int] = 240
 
 # Why publishing was refused -> the hold the cycle records (POLICY_* codes are GATE).
@@ -84,7 +97,7 @@ class IntentPublisher:
         quote = ib.ReferenceQuote.from_poll(observed.poll, observed.received_at)
         draft = ib.build_intent(request.decision, request.candidate, request.exit_plan,
                                 request.sizing, request.context, deps.settings, session, now,
-                                agent=request.agent, quote=quote)
+                                agent=request.agent, quote=quote, trade=request.plan)
         if isinstance(draft, Refusal):
             return refused(next(iter(draft.codes), ib.BAD_INPUT), draft.detail)
         occupancy = book.Occupancy.from_poll(observed.poll)
@@ -94,10 +107,50 @@ class IntentPublisher:
         return PublishOutcome(intent_id=draft.row.intent_id, code=booked.code)
 
     async def cancel_pending(self, reason: str) -> tuple[str, ...]:
-        """The agent's review CANCEL: the EA deletes the V6 pending orders on its next poll
-        and reports them; an intent it never received is cancelled here."""
+        """The agent's CANCEL: the EA deletes the V6 pending orders on its next poll and
+        reports them; an intent it never received is cancelled here."""
         deps = self._desk.deps
         now = deps.clock.now_epoch()
         deps.commands.request_cancel_pending(reason, now)
         cancelled = await asyncio.to_thread(deps.book.cancel_all, reason, now)
         return tuple(record.intent_id for record in cancelled)
+
+    async def manage(self, dispatch: ManageDispatch) -> ManageOutcome:
+        """Queue a management action (or CANCEL_PENDING) for the armed session."""
+        deps = self._desk.deps
+        now = deps.clock.now_epoch()
+        session = await asyncio.to_thread(deps.ledger.active_session)
+        if session is None or not session.armed or session.mode != EXECUTE_MODE:
+            return ManageOutcome(False, NOT_ARMED, "no armed execute session")
+        arm = await self._desk.arm_decision(session, now)
+        if not arm.armed:
+            return ManageOutcome(False, arm.reason, "the session fails its arming checks")
+        action = dispatch.action
+        if dispatch.request.op == "CANCEL" or action is None:
+            cancelled = await self.cancel_pending(REASON_AGENT_CANCEL)
+            return ManageOutcome(True, CODE_CANCEL_PENDING,
+                                 f"cancel queued ({len(cancelled)} undelivered intents "
+                                 "cancelled)")
+        try:
+            action_response(action, int(now))
+        except ValueError:
+            return ManageOutcome(False, CODE_ACTION_INVALID,
+                                 f"{action.command} breaks the wire rules of its command")
+        await self._store(action, dispatch, session.session_id, now)
+        return ManageOutcome(True, action.command,
+                             f"{action.command} {action.action_id} queued for ticket "
+                             f"{action.ticket}")
+
+    async def _store(self, action: ManagementAction, dispatch: ManageDispatch,
+                     session_id: str, now: float) -> None:
+        """Record the action as PUBLISHED, then serve it (a waiting one is superseded)."""
+        deps = self._desk.deps
+        row = ActionRow(action_id=action.action_id, cycle_id=action.cycle_id,
+                        session_id=session_id, agent=dispatch.agent, command=action.command,
+                        ticket=action.ticket, intent_id=action.intent_id,
+                        payload=action.payload(), created_at=now, updated_at=now)
+        await asyncio.to_thread(deps.ledger.actions.insert, row)
+        replaced = deps.actions.queue(action)
+        if replaced is not None:
+            await asyncio.to_thread(deps.ledger.actions.mark, replaced.action_id,
+                                    STATUS_SUPERSEDED, f"superseded by {action.action_id}", now)

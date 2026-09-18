@@ -26,6 +26,8 @@ from ..ledger_v6 import LedgerV6
 from ..market.bar_store import BarStore
 from ..providers.operator_queue import OperatorQueue
 from ..wire import ReplayCache
+from .action_desk import ActionDesk
+from .actions import ActionBoard
 from .breaker_feed import BreakerFeed, DayFacts, MarksReader
 from .commands import CommandBoard
 from .desk import DeskDeps, ExecutionDesk
@@ -67,6 +69,12 @@ class RuntimeParts:
     poll_replier: PollReplier
     replay_cache: ReplayCache
     baskets: BasketJournal
+    action_desk: ActionDesk
+
+    @property
+    def actions(self) -> ActionBoard:
+        """The management action waiting for the EA (owned by the desk)."""
+        return self.desk.deps.actions
 
 
 @dataclass(frozen=True)
@@ -123,4 +131,5 @@ def build_runtime_parts(core: CoreParts, ledger_cycles: LedgerCycles, *,
         ledger_cycles=ledger_cycles, control=control, breakers=breakers, worker=worker,
         watchdog=watchdog, operator_queue=queue, intent_book=desk.deps.book, desk=desk,
         poll_replier=PollReplier(desk), replay_cache=ReplayCache(),
-        baskets=BasketJournal(core.ledger_v6.path, clock))
+        baskets=BasketJournal(core.ledger_v6.path, clock),
+        action_desk=ActionDesk(ledger_cycles))

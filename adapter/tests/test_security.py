@@ -66,6 +66,7 @@ V6_WRITE_ENDPOINTS = [
     "/v6/snapshot",
     "/v6/intent/poll",
     "/v6/execution",
+    "/v6/action",
 ]
 
 

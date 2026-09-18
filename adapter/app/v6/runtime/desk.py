@@ -9,8 +9,9 @@ The execution desk: arming, disarming and their side effects (plan sections 4, 4
   disarm        the session disarmed with its reason, undelivered intents cancelled
                 (`IntentBook.cancel_all`), a pending operator packet withdrawn; the
                 caller queues the EA command
-  supervise     the watchdog tick: undelivered intents past their validity expire, and
-                an armed session whose checks fail is disarmed (never re-armed here)
+  supervise     the watchdog tick: undelivered intents past their validity expire, a
+                management action the EA never reported expires (`actions.ActionBoard`),
+                and an armed session whose checks fail is disarmed (never re-armed here)
 
 Shadow mode never arms. Open positions are never touched: they keep their
 broker-side SL/TP and the EA's time barrier. SQLite work runs in worker threads.
@@ -22,7 +23,7 @@ import asyncio
 import logging
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Final
@@ -33,6 +34,7 @@ from ..ledger_cycles import LedgerCycles
 from ..ledger_cycles_schema import SessionRecord
 from ..providers.operator_queue import OperatorQueue
 from ..risk.policy import EXECUTE_MODE
+from .actions import ActionBoard
 from .arming import ARM, DISARM, ArmDecision, BreakerView, arm_action, decide_arm
 from .breaker_feed import BreakerFeed, DayFacts
 from .commands import CommandBoard
@@ -42,6 +44,8 @@ from .intent_book import IntentBook
 logger = logging.getLogger(__name__)
 
 HALT_UNREADABLE: Final[str] = "halt file cannot be checked; treated as halted"
+ACTION_EXPIRED: Final[str] = "EXPIRED"
+DETAIL_ACTION_EXPIRED: Final[str] = "no EA report before the action went stale"
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,7 @@ class DeskDeps:
     breakers: BreakerFeed
     day: Callable[[], DayFacts | None]       # the newest snapshot's day facts
     queue: OperatorQueue | None = None
+    actions: ActionBoard = field(default_factory=ActionBoard)   # the action for the EA
 
 
 class ExecutionDesk:
@@ -148,11 +153,21 @@ class ExecutionDesk:
                        session.session_id, decision.reason, decision.detail)
 
     # --- watchdog ------------------------------------------------------------------------
+    async def _expire_action(self, now: float) -> None:
+        expired = self._deps.actions.pop_expired(now)
+        if expired is None:
+            return
+        await asyncio.to_thread(self._deps.ledger.actions.mark, expired.action_id,
+                                ACTION_EXPIRED, DETAIL_ACTION_EXPIRED, now)
+        logger.warning("v6 action %s %s for ticket %s expired without an EA report",
+                       expired.action_id, expired.command, expired.ticket)
+
     async def supervise(self, now: float, *, halted: bool,
                         breakers: BreakerView | None) -> ArmDecision | None:
         """Expire stale intents; disarm an armed session whose checks fail now."""
         deps = self._deps
         await asyncio.to_thread(deps.book.expire_due, now)
+        await self._expire_action(now)
         session = await asyncio.to_thread(deps.ledger.active_session)
         if session is None or not session.armed:
             return None
