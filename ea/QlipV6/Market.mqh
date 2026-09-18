@@ -1,7 +1,8 @@
 //+------------------------------------------------------------------+
 //| QlipV6/Market.mqh                                                |
-//| Clock conversion, closed-bar rows, 15-minute tick statistics and |
-//| a depth-of-market liveness tracker.                              |
+//| Clock conversion, closed-bar rows, tick statistics over a window |
+//| (the M15 bar or the M1 bar) and a depth-of-market liveness       |
+//| tracker.                                                         |
 //|                                                                  |
 //| Every time that leaves the EA is UTC epoch seconds. Bar and tick |
 //| times in MT5 are server time, so they are shifted by the server  |
@@ -14,6 +15,7 @@
 
 #define HALF_HOUR_SECONDS   1800
 #define M15_SECONDS         900
+#define M1_SECONDS          60
 #define MS_PER_SECOND       1000
 #define TICK_WINDOW_SECONDS 900
 #define SPREAD_P50          0.50
@@ -119,10 +121,24 @@ string ClosedBarsJson(const ENUM_TIMEFRAMES tf, const datetime close_server, con
    return BarRowsJson(rates, 0, copied, offset_s, digits, written);
 }
 
+// The closed bar of `tf` that ends at `close_server` as one row [t,o,h,l,c,tv,spr],
+// or "" when that bar is not in the history yet (or failed validation).
+string ClosedBarRowJson(const ENUM_TIMEFRAMES tf, const datetime close_server,
+                        const int offset_s, const int digits)
+{
+   MqlRates rates[];
+   int copied = CopyClosedRates(tf, close_server, 1, rates);
+   if(copied != 1 || rates[0].time != close_server - PeriodSeconds(tf)
+      || !BarRowIsValid(rates[0]))
+      return "";
+   return BarRowJson(rates[0], offset_s, digits);
+}
+
 //--- tick statistics -----------------------------------------------
 
 struct TickStats
 {
+   int               window_s;
    int               quote_count;
    long              max_gap_ms;
    double            spread_p50;
@@ -189,11 +205,13 @@ double MidRealizedVariance(const MqlTick &ticks[], const int n)
    return MathIsValidNumber(rv) ? rv : 0.0;
 }
 
-// Quote activity of the M15 bar that just closed, [close - 900 s, close).
-void ComputeTickStats(const datetime close_server, TickStats &stats)
+// Quote activity over the `window_s` seconds before `close_server`,
+// [close - window_s, close).
+void ComputeTickStatsOver(const datetime close_server, const int window_s, TickStats &stats)
 {
+   stats.window_s = window_s;
    long to_msc = (long)close_server * MS_PER_SECOND - 1;
-   long from_msc = ((long)close_server - TICK_WINDOW_SECONDS) * MS_PER_SECOND;
+   long from_msc = ((long)close_server - window_s) * MS_PER_SECOND;
    MqlTick ticks[];
    ResetLastError();
    int n = CopyTicksRange(_Symbol, ticks, COPY_TICKS_INFO, (ulong)from_msc, (ulong)to_msc);
@@ -208,10 +226,16 @@ void ComputeTickStats(const datetime close_server, TickStats &stats)
    stats.mid_rv = MidRealizedVariance(ticks, n);
 }
 
+// Quote activity of the M15 bar that just closed, [close - 900 s, close).
+void ComputeTickStats(const datetime close_server, TickStats &stats)
+{
+   ComputeTickStatsOver(close_server, TICK_WINDOW_SECONDS, stats);
+}
+
 string TickStatsJson(const TickStats &stats)
 {
    CJsonObject o;
-   o.AddInt("window_s", TICK_WINDOW_SECONDS);
+   o.AddInt("window_s", stats.window_s);
    o.AddInt("quote_count", stats.quote_count);
    o.AddInt("max_gap_ms", stats.max_gap_ms);
    o.AddNum("spread_p50_points", stats.spread_p50, SPREAD_DIGITS);

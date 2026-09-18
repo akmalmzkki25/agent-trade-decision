@@ -78,8 +78,9 @@ hashed with SHA-256 first, shorter keys are zero-padded. MQL5 has only
 
 ## 3. Request signatures (EA → adapter)
 
-Every V6 EA route (`/v6/bars/backfill`, `/v6/snapshot`, `/v6/intent/poll`,
-`/v6/execution`, `/v6/action`, `/v6/basket-result`) carries two headers:
+Every V6 EA route (`/v6/bars/backfill`, `/v6/snapshot`, `/v6/minute`,
+`/v6/intent/poll`, `/v6/execution`, `/v6/action`, `/v6/basket-result`) carries two
+headers:
 
 ```
 X-Qlip6-Ts:  <unix seconds, decimal, no sign, no leading zeros>
@@ -370,6 +371,33 @@ row; `ledger_baskets.py`, so `metrics(version="v6")` works) and moves the intent
 `FILLED → CLOSED` with `outcome_pnl=net_pnl` and `basket_id`. The result feeds the
 outcome journal and the realised V6 P&L the breakers read (`runtime/realised_pnl.py`).
 A result naming no known intent is stored unlinked. Response 200 `{"ok": true}`.
+
+### 6.7 `POST /v6/minute` — `v6.minute.1`
+
+One per closed M1 bar since EA 6.3.0 (input `InpMinuteSnapshots`, default on), timeout
+`InpMinuteTimeoutMs` (800 ms, 200-1500). Sent once and **never resent**: the next minute
+replaces a lost one. A failure is logged at most once per 15 minutes. At an M15 close the
+M15 snapshot (§6.2) goes out first. A previous M1 bar that closed more than a minute ago
+(quiet market, gap) and a minute that is not yet in the terminal's history are skipped.
+
+| Field | Type | Notes |
+|---|---|---|
+| `schema_version` | `"v6.minute.1"` | |
+| `snapshot_id` | string | `Q6M-<login>-<bar_open_epoch>` |
+| `symbol` | string | as in §6.2 |
+| `sent_at_epoch` | int ≥ `bar_open_epoch` | |
+| `server_gmt_offset_s` | int | a multiple of 1 800 |
+| `bar_open_epoch` | int | open of the closed M1 bar, UTC |
+| `bar` | `[t, o, h, l, c, tick_volume, spread_points]` | the closed M1 bar, `t` = `bar_open_epoch` |
+| `account`, `quote`, `positions`, `pending_orders`, `day`, `ea_state` | blocks | the same blocks as §6.2 |
+| `ticks` | block | as in §6.2, over the minute: `window_s` = 60 |
+
+Field list: `schemas/minute.py`; EA ↔ schema sync: `tests/v6/test_golden_contract.py`
+(golden `minute_sample.json`). The adapter stores the M1 bar in the bar store before it
+queues the minute for the minute worker (one slot, the newest minute wins), so a minute
+that is never processed still leaves its bar. Responses: 202
+`{"accepted": true, "cycle_id": "m-…", "server_time_epoch"}`; a repeat is 200
+`{"accepted": false, "duplicate": true, "cycle_id"}`; an invalid body is 400 (§1).
 
 ---
 

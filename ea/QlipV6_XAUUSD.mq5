@@ -5,6 +5,7 @@
 //| - Every tick of the 1 s timer, before any HTTP: time barrier,    |
 //|   pre-rollover flatten, local daily breaker, trade bookkeeping   |
 //| - Every M15 close: v6.snapshot.1 to /v6/snapshot                 |
+//| - Every M1 close: v6.minute.1 to /v6/minute, sent once           |
 //| - Every 2 s: v6.poll.1; a signed intent passes the checks of     |
 //|   docs/v6-wire-contract.md §8.1 before it is placed, and every   |
 //|   outcome is reported through MQL5\Files\QlipV6\outbox.jsonl     |
@@ -13,7 +14,7 @@
 //| Magic 250570 (250570..250579 reserved), globals prefix QlipV6_.  |
 //+------------------------------------------------------------------+
 #property copyright   "Qlip"
-#property version     "6.21"
+#property version     "6.30"
 #property description "Qlip V6 XAUUSD - executes signed adapter intents on DEMO accounts only; snapshots and backfill."
 
 #include "QlipV6/Config.mqh"
@@ -48,6 +49,8 @@ input int    InpOutboxTimeoutMs    = 1000;    // Report and basket-result timeou
 input int    InpBackfillTimeoutMs  = 3000;    // Backfill timeout per chunk, ms
 input int    InpPollIntervalMs     = 2000;    // Poll interval, ms
 input int    InpSnapshotRetryS     = 30;      // Keep retrying a failed snapshot for, s
+input bool   InpMinuteSnapshots    = true;    // Send one minute snapshot per closed M1 bar
+input int    InpMinuteTimeoutMs    = 800;     // Minute snapshot timeout, ms
 input bool   InpBackfillEnabled    = true;    // Send history on start
 input int    InpBackfillDaysM1     = 1;       // Backfill days, M1
 input int    InpBackfillDaysM5     = 5;       // Backfill days, M5
@@ -60,14 +63,11 @@ input int    InpBackfillChunkRows  = 2500;    // Rows per backfill request (<= 2
 #define TIMER_PERIOD_MS    1000
 #define NO_LOGIN           (-1)
 #define PATH_BACKFILL      "/v6/bars/backfill"
-#define PATH_SNAPSHOT      "/v6/snapshot"
+#define MINUTE_TIMEOUT_MIN_MS 200
+#define MINUTE_TIMEOUT_MAX_MS 1500
 
 //--- state
 CBackfill g_backfill;
-datetime  g_last_m15_open = 0;    // server open time of the forming M15 bar
-datetime  g_pending_bar = 0;      // closed M15 bar still waiting to be sent
-datetime  g_pending_since = 0;    // UTC time the pending bar was detected
-bool      g_probe_sent = false;   // probe block goes out once per EA session
 long      g_state_login = NO_LOGIN;
 
 //+------------------------------------------------------------------+
@@ -96,6 +96,8 @@ bool InputsAreValid(void)
 {
    ApplyConfig();
    bool ok = ConfigIsValid(g_cfg);
+   ok = ConfigCheck(InpMinuteTimeoutMs >= MINUTE_TIMEOUT_MIN_MS && InpMinuteTimeoutMs <= MINUTE_TIMEOUT_MAX_MS,
+                    "InpMinuteTimeoutMs must be within 200..1500 ms") && ok;
    return ConfigCheck(InpBackfillChunkRows >= 1 && InpBackfillChunkRows <= BACKFILL_MAX_CHUNK_ROWS,
                       "InpBackfillChunkRows must be within 1..2500") && ok;
 }
@@ -163,70 +165,12 @@ void LogStartup(void)
                V6_EA_VERSION, ExecutionModeText(), _Symbol, InpMagic, LoginText(), TradeModeName(),
                ServerGmtOffsetSeconds(), InpAdapterBase);
    PrintFormat("V6 limits: lots<=%.2f risk<=%.2f breaker=%.1f%% flatten=%s server time; outbox %d pending; "
-               "AutoTrading %s", InpMaxLots, InpMaxRiskUsd, InpDailyBreakerPct, InpFlattenServerTime,
-               g_outbox.Pending(), TradingPermitted() ? "on" : "OFF (the EA can neither enter nor exit)");
+               "minute snapshots %s; AutoTrading %s", InpMaxLots, InpMaxRiskUsd, InpDailyBreakerPct,
+               InpFlattenServerTime, g_outbox.Pending(), InpMinuteSnapshots ? "on" : "off",
+               TradingPermitted() ? "on" : "OFF (the EA can neither enter nor exit)");
 }
 
-//+------------------------------------------------------------------+
-//| Snapshot on every M15 close                                      |
-//+------------------------------------------------------------------+
-bool TrySendSnapshot(const datetime bar_open_server)
-{
-   EaStatus status;
-   FillEaStatus(status);
-   string body = BuildSnapshotJson(InpMagic, bar_open_server, !g_probe_sent, status);
-   if(body == "")
-      return false;
-   HttpResult result;
-   if(!HttpPostJson(AdapterUrl(PATH_SNAPSHOT), body, InpHttpTimeoutMs, 1, result))
-   {
-      Print(HttpDescribeFailure("snapshot", AdapterUrl(PATH_SNAPSHOT), result));
-      return false;
-   }
-   PrintFormat("V6 snapshot sent: bar %s (server) HTTP %d, %d bytes%s",
-               TimeToString(bar_open_server, TIME_DATE | TIME_MINUTES), result.status,
-               StringLen(body), g_probe_sent ? "" : ", with probe");
-   g_probe_sent = true;
-   return true;
-}
-
-// A new forming bar means the previous one closed. After a gap (weekend,
-// feed outage) the previous bar closed long ago and is not reported.
-void DetectClosedBar(void)
-{
-   datetime forming = iTime(_Symbol, PERIOD_M15, 0);
-   if(forming == 0 || forming == g_last_m15_open)
-      return;
-   bool first_sighting = (g_last_m15_open == 0);
-   g_last_m15_open = forming;
-   if(first_sighting)
-      return;
-   datetime closed = iTime(_Symbol, PERIOD_M15, 1);
-   if(closed == 0 || (long)TimeTradeServer() - ((long)closed + M15_SECONDS) > M15_SECONDS)
-   {
-      PrintFormat("V6 snapshot skipped: previous M15 bar %s is not the one that just closed",
-                  TimeToString(closed, TIME_DATE | TIME_MINUTES));
-      return;
-   }
-   g_pending_bar = closed;
-   g_pending_since = TimeGMT();
-}
-
-void ServiceSnapshot(void)
-{
-   DetectClosedBar();
-   if(g_pending_bar == 0)
-      return;
-   if((long)TimeGMT() - (long)g_pending_since > InpSnapshotRetryS)
-   {
-      PrintFormat("V6 snapshot dropped: bar %s could not be delivered within %d s",
-                  TimeToString(g_pending_bar, TIME_DATE | TIME_MINUTES), InpSnapshotRetryS);
-      g_pending_bar = 0;
-      return;
-   }
-   if(TrySendSnapshot(g_pending_bar))
-      g_pending_bar = 0;
-}
+#include "QlipV6/Cadence.mqh"
 
 //+------------------------------------------------------------------+
 //| Event handlers                                                   |
@@ -246,6 +190,7 @@ int OnInit(void)
    g_outbox.Init(InpAdapterBase, InpOutboxTimeoutMs);
    ConfigureBackfill();
    g_last_m15_open = iTime(_Symbol, PERIOD_M15, 0);
+   g_last_m1_open = iTime(_Symbol, PERIOD_M1, 0);
    g_pending_bar = 0;
    g_probe_sent = false;
 
@@ -277,6 +222,7 @@ void OnTimer(void)
    ManageTick();
    DomTrackerSample();
    ServiceSnapshot();
+   ServiceMinute();
    ServicePoll();
    g_outbox.Service();
    g_backfill.Service();

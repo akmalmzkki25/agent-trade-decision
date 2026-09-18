@@ -20,6 +20,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from app.v6.schemas.intent import PollRequest
+from app.v6.schemas.minute import MinuteSnapshot
 from app.v6.schemas.operator_parts import M15_PACKET_M1_BARS
 from app.v6.schemas.snapshot import BackfillRequest, V6Snapshot
 from app.v6.types import TIMEFRAME_SECONDS
@@ -122,6 +123,7 @@ def test_snapshot_without_probe_validates() -> None:
         ("snapshot_sample.json", V6Snapshot),
         ("poll_sample.json", PollRequest),
         ("backfill_sample.json", BackfillRequest),
+        ("minute_sample.json", MinuteSnapshot),
     ],
 )
 def test_golden_emits_every_top_level_field(golden: str, model: type[BaseModel]) -> None:
@@ -172,6 +174,12 @@ def test_the_ea_sends_the_expected_bar_counts() -> None:
     assert counts == EXPECTED_BAR_COUNTS
     # The m15 packet's M1 window comes whole from the newest snapshot.
     assert counts["M1"] >= M15_PACKET_M1_BARS
+
+
+def test_minute_golden_validates_against_minute_snapshot() -> None:
+    minute = MinuteSnapshot.model_validate_json(_read_golden("minute_sample.json"))
+    assert minute.snapshot_id == f"Q6M-{minute.account.login}-{minute.bar_open_epoch}"
+    assert minute.ticks.window_s == 60
 
 
 def test_snapshot_golden_ids_and_times_are_consistent() -> None:
@@ -283,7 +291,7 @@ def test_poll_rejects_shapes_the_ea_must_not_emit(dotted: str, value: Any) -> No
 # --- the EA sources name every contract field --------------------------------
 
 
-@pytest.mark.parametrize("model", [V6Snapshot, PollRequest, BackfillRequest])
+@pytest.mark.parametrize("model", [V6Snapshot, PollRequest, BackfillRequest, MinuteSnapshot])
 def test_ea_sources_emit_every_contract_field(model: type[BaseModel]) -> None:
     source = _ea_sources()
     missing = sorted(name for name in _model_field_names(model) if f'"{name}"' not in source)
@@ -329,7 +337,7 @@ def _emitted_field_kinds() -> dict[str, set[str]]:
     return kinds
 
 
-@pytest.mark.parametrize("model", [V6Snapshot, PollRequest, BackfillRequest])
+@pytest.mark.parametrize("model", [V6Snapshot, PollRequest, BackfillRequest, MinuteSnapshot])
 def test_ea_writes_every_field_with_the_contract_number_kind(model: type[BaseModel]) -> None:
     """An int written as 17.0 (or a float as 17) passes review but fails strict validation."""
     emitted = _emitted_field_kinds()
@@ -345,7 +353,7 @@ def test_ea_writes_every_field_with_the_contract_number_kind(model: type[BaseMod
 def test_ea_emits_the_contract_schema_versions() -> None:
     source = _ea_sources()
 
-    for version in ("v6.snapshot.1", "v6.backfill.1", "v6.poll.1"):
+    for version in ("v6.snapshot.1", "v6.backfill.1", "v6.poll.1", "v6.minute.1"):
         assert f'"{version}"' in source
 
 

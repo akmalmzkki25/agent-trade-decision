@@ -28,7 +28,7 @@ def test_ea_routes_are_contract_routes() -> None:
     paths = set(re.findall(r'"(/v6/[a-z/_-]+)"', all_sources()))
 
     assert paths == {"/v6/bars/backfill", "/v6/snapshot", "/v6/intent/poll", "/v6/action",
-                     "/v6/execution", "/v6/basket-result"}
+                     "/v6/execution", "/v6/basket-result", "/v6/minute"}
     for path in paths:
         assert f"`{path}`" in doc, path
 

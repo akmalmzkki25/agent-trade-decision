@@ -16,7 +16,7 @@
 #include "Persist.mqh"
 #include "Exposure.mqh"
 
-#define V6_EA_VERSION        "6.2.1"
+#define V6_EA_VERSION        "6.3.0"
 #define SHORT_TEXT_MAX       80
 #define SPEC_DIGITS          10
 #define CALENDAR_HORIZON_S   86400
@@ -307,6 +307,41 @@ string BuildSnapshotJson(const long magic, const datetime bar_open_server,
 }
 
 // Heartbeat for /v6/intent/poll. Returns "" when there is no quote.
+// Minute snapshot for the M1 bar that opened at `bar_open_server` and has closed.
+// Returns "" when there is no quote or the bar is not in the history yet.
+string BuildMinuteJson(const long magic, const datetime bar_open_server, const EaStatus &status)
+{
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick) || tick.bid <= 0.0 || tick.ask <= 0.0)
+      return "";
+   int offset = ServerGmtOffsetSeconds();
+   datetime close_server = bar_open_server + M1_SECONDS;
+   string bar = ClosedBarRowJson(PERIOD_M1, close_server, offset, _Digits);
+   if(bar == "")
+      return "";
+   datetime now_utc = TimeGMT();
+   long bar_open_utc = ServerToUtc(bar_open_server, offset);
+   TickStats stats;
+   ComputeTickStatsOver(close_server, M1_SECONDS, stats);
+
+   CJsonObject o;
+   o.AddStr("schema_version", "v6.minute.1");
+   o.AddStr("snapshot_id", "Q6M-" + LoginText() + "-" + JInt(bar_open_utc));
+   o.AddStr("symbol", _Symbol);
+   o.AddInt("sent_at_epoch", (long)now_utc);
+   o.AddInt("server_gmt_offset_s", offset);
+   o.AddInt("bar_open_epoch", bar_open_utc);
+   o.AddRaw("bar", bar);
+   o.AddRaw("account", AccountJson());
+   o.AddRaw("quote", QuoteJson(tick, offset));
+   o.AddRaw("ticks", TickStatsJson(stats));
+   o.AddRaw("positions", PositionsJson(magic, offset));
+   o.AddRaw("pending_orders", PendingOrdersJson(magic, offset));
+   o.AddRaw("day", DayJson(magic, now_utc, offset));
+   o.AddRaw("ea_state", EaStateJson(status));
+   return o.Text();
+}
+
 string BuildPollJson(const long magic, const EaStatus &status)
 {
    MqlTick tick;
