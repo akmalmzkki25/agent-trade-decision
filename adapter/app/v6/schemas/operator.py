@@ -5,9 +5,8 @@ Each cycle that reaches tier 1 is served to an operator agent (Claude Code, Code
 Antigravity, in a chat session) as one `OperatorPacket`. A packet has a state: `flat`
 (the agent may HOLD or ENTER, its own plan included), `pending` or `position` (a V6
 order rests or a V6 position is open: the agent manages it). The agent answers with a
-decision v3 (`deliberation.decision_v3`); a v2 decision (`OperatorDecision`: four desk
-views and a Chief) is still accepted for a flat packet. Packets exist for DEMO accounts
-only.
+decision v3 (`deliberation.decision_v3`, `deliberation.decision_minute`); decisions v1
+and v2 are retired. Packets exist for DEMO accounts only.
 
 `packet_hash` is the sha256 of the canonical JSON (sorted keys, no whitespace, ASCII)
 of the packet without its `packet_hash` and `decision_template` keys; a decision must
@@ -27,8 +26,7 @@ from ..config import OperatorAgent
 from ..cycle_codes import MAX_OFFERED_CANDIDATES
 from ..types import TIMEFRAME_SECONDS
 from .agents import (
-    MAX_RANKED, ChiefDecision, ItemId, LiquidityView, NewsRiskView, PriceActionView,
-    StructureView,
+    ChiefDecision, ItemId, LiquidityView, NewsRiskView, PriceActionView, StructureView,
 )
 from .agents import _printable as printable
 from .operator_parts import (
@@ -46,32 +44,29 @@ from .operator_plan import (
 )
 
 __all__ = [
-    "PACKET_SCHEMA", "DECISION_SCHEMA", "DECISION_SCHEMA_V2", "HASH_EXCLUDED_KEYS",
+    "PACKET_SCHEMA", "DECISION_SCHEMA", "HASH_EXCLUDED_KEYS",
     "MAX_DECISION_BYTES", "MAX_PACKET_M15_BARS", "MAX_PACKET_H1_BARS", "MAX_GATES",
     "MAX_EVENTS", "MAX_CODES", "MAX_FEATURES", "ENUM_CHOICES", "LIMIT_VALUES", "EQUITY_BANDS",
     "TOP_EQUITY_BAND", "DECISION_ERR_TOO_LARGE", "DECISION_ERR_NOT_JSON",
     "DECISION_ERR_SCHEMA", "DECISION_ERR_STALE", "DECISION_ERR_EXPIRED", "DECISION_ERR_AGENT",
-    "DECISION_ERR_VIEW", "DECISION_ERR_REBUTTAL", "DECISION_ERR_ENTRY_PLAN",
+    "DECISION_ERR_VIEW", "DECISION_ERR_ENTRY_PLAN",
     "DECISION_ERR_LOTS", "DECISION_ERR_MANAGE", "DECISION_ERR_BIAS", "DECISION_ERR_KIND",
     "DECISION_SCHEMAS", "AgentEntryPlan", "PacketLimits", "PacketLevels",
     "PacketPendingOrder", "PacketPosition", "PacketAction", "M15Bias", "ManageRequest",
-    "decision_extras_problem", "EquityBand", "RebuttalStance", "CompactBar",
+    "EquityBand", "RebuttalStance", "CompactBar",
     "PacketAccount", "PacketMarket", "PacketSession", "PacketBars", "PacketGate",
     "PacketEvent", "PacketCalendar", "CandidateExit", "CandidateSizing", "PacketCandidate",
     "BaselineViews", "AllowedValues", "OperatorPacketBody", "OperatorPacket", "OperatorViews",
-    "OperatorDecision", "DecisionTemplate", "OperatorDecisionError", "ABSTAIN_VIEW",
+    "DecisionTemplate", "ABSTAIN_VIEW",
     "UNKNOWN_NEWS_VIEW", "UNKNOWN_LIQUIDITY_VIEW", "UNKNOWN_STRUCTURE_VIEW", "HOLD_DECISION",
     "allowed_values", "canonical_json", "equity_band", "packet_hash", "decision_template",
-    "seal_packet", "parse_operator_decision", "entry_plan_problem",
+    "seal_packet",
 ]
 
 PACKET_SCHEMA: Final[str] = "v6.operator.packet.3"
-DECISION_SCHEMA_V2: Final[str] = "v6.operator.decision.2"
 DECISION_SCHEMA: Final[str] = "v6.operator.decision.3"
-# Version 1 and 2 decisions are still accepted for a flat packet.
-DECISION_SCHEMAS: Final[tuple[str, ...]] = (
-    "v6.operator.decision.1", DECISION_SCHEMA_V2, DECISION_SCHEMA)
-DecisionSchema = Literal["v6.operator.decision.1", "v6.operator.decision.2"]
+# Decisions v1 and v2 are retired (decision_parts.RETIRED_SCHEMAS).
+DECISION_SCHEMAS: Final[tuple[str, ...]] = (DECISION_SCHEMA,)
 HASH_EXCLUDED_KEYS: Final[frozenset[str]] = frozenset({"packet_hash", "decision_template"})
 M15_S: Final[int] = TIMEFRAME_SECONDS["M15"]
 M1_S: Final[int] = TIMEFRAME_SECONDS["M1"]
@@ -89,7 +84,6 @@ DECISION_ERR_STALE: Final[str] = "DECISION_STALE_PACKET"
 DECISION_ERR_EXPIRED: Final[str] = "DECISION_EXPIRED"
 DECISION_ERR_AGENT: Final[str] = "DECISION_AGENT_NOT_ALLOWED"
 DECISION_ERR_VIEW: Final[str] = "DECISION_VIEW"
-DECISION_ERR_REBUTTAL: Final[str] = "DECISION_REBUTTAL"
 DECISION_ERR_ENTRY_PLAN: Final[str] = "DECISION_ENTRY_PLAN"
 DECISION_ERR_LOTS: Final[str] = "DECISION_LOTS"
 DECISION_ERR_MANAGE: Final[str] = "DECISION_MANAGE"
@@ -174,29 +168,6 @@ class OperatorViews(Frozen):
     news_risk: NewsRiskView
     liquidity: LiquidityView
     structure: StructureView
-
-
-class OperatorDecision(Frozen):
-    """A version 1 or 2 answer to a flat packet: four views and a Chief.
-
-    `entry_plan` is required exactly when the Chief ENTERs the packet's agent entry id.
-    """
-
-    schema_version: DecisionSchema
-    cycle_id: ItemId
-    packet_hash: Hash
-    agent: OperatorAgent
-    views: OperatorViews
-    chief: ChiefDecision
-    rebuttal: dict[ItemId, RebuttalStance] = Field(default_factory=dict, max_length=MAX_RANKED)
-    entry_plan: AgentEntryPlan | None = None
-    # The size the agent wants for an ENTER (limits.volume_min..max_lots; null = volume_min).
-    lots: float | None = Field(default=None, gt=0)
-
-    @property
-    def withdrawn_ids(self) -> frozenset[str]:
-        """For ProtocolInput.withdrawn_ids."""
-        return frozenset(cid for cid, stance in self.rebuttal.items() if stance == "withdraw")
 
 
 class DecisionTemplate(Frozen):
@@ -296,10 +267,3 @@ def seal_packet(body: OperatorPacketBody) -> OperatorPacket:
     template = decision_template(body, digest).model_dump(mode="json")
     sealed = {**document, "packet_hash": digest, "decision_template": template}
     return OperatorPacket.model_validate_json(canonical_json(sealed))
-
-
-# The v2 decision checks live in operator_checks; they are re-exported here, after every
-# name they need is defined.
-from .operator_checks import (  # noqa: E402
-    OperatorDecisionError, decision_extras_problem, entry_plan_problem, parse_operator_decision,
-)

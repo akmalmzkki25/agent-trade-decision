@@ -304,23 +304,18 @@ class DeliberationEngine(OperatorFlow, MinuteFlow):
         if decision is None:
             return await self._enter(draft, tier0, panel, protocol, None, item)
         plan = decision.plan
-        lots = plan.lots if plan is not None else (
-            decision.lots or tier0.context.spec.volume_min)
+        lots = plan.lots if plan is not None else tier0.context.spec.volume_min
         return await self._enter(draft, tier0, panel, protocol, decision.agent, item, lots,
                                  None if plan is None else trade_plan(plan))
 
     def _entry_item(self, tier0: Tier0, protocol: ProtocolDecision,
                     operator: OperatorRound | None) -> CandidateAssessment | None:
-        """The protocol's pick: a suggestion, else the agent's own plan (v3) or entry (v2)."""
+        """The protocol's pick: a suggestion, else the agent's own plan."""
         item = tier0.pool.find(protocol.candidate_id)
         decision = None if operator is None else operator.decision
-        if item is not None or decision is None:
+        if item is not None or decision is None or decision.plan is None:
             return item
-        if decision.plan is not None:
-            return self._plan_item(tier0, operator.packet, decision.plan)
-        if decision.entry_plan is not None:
-            return self._agent_item(tier0, operator.packet, decision.entry_plan)
-        return None
+        return self._plan_item(tier0, operator.packet, decision.plan)
 
     async def _enter(self, draft: CycleDraft, tier0: Tier0, panel: PanelResult,
                      protocol: ProtocolDecision, agent: str | None,

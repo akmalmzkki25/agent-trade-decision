@@ -1,4 +1,4 @@
-"""schemas/operator.py: sealed packets, the packet hash and decision parsing."""
+"""schemas/operator.py: sealed packets, the packet hash and the decision template."""
 
 from __future__ import annotations
 
@@ -14,21 +14,9 @@ from app.v6.config import V6Settings
 from app.v6.deliberation.operator_decision import ValidatedDecision, validate_decision
 from app.v6.deliberation.protocol import REBUTTAL_STANCES
 from app.v6.schemas import operator as op
-from app.v6.schemas.operator import (
-    OperatorDecisionError, OperatorPacket, canonical_json, equity_band, packet_hash,
-    parse_operator_decision, seal_packet,
-)
+from app.v6.schemas.operator import OperatorPacket, canonical_json, equity_band, packet_hash
 
 from . import operator_fixtures_v6 as of
-
-
-def _refused(document: dict[str, Any] | bytes, sealed: OperatorPacket, code: str,
-             now: float = of.CREATED + 10) -> OperatorDecisionError:
-    raw = document if isinstance(document, bytes) else of.raw(document)
-    with pytest.raises(OperatorDecisionError) as caught:
-        parse_operator_decision(raw, sealed, now=now)
-    assert caught.value.code == code
-    return caught.value
 
 
 # --- helpers -------------------------------------------------------------------------
@@ -172,81 +160,3 @@ def test_untrusted_text_is_cleaned() -> None:
 
     assert sealed.gates[0].detail == "bad[2Jdetail"
     assert sealed.account.server == "DemoSrv"
-
-
-# --- decisions ------------------------------------------------------------------------
-def test_a_valid_decision_is_parsed() -> None:
-    sealed = of.packet()
-
-    decision = parse_operator_decision(of.raw(of.decision(sealed)), sealed, now=of.EXPIRES)
-
-    assert (decision.agent, decision.chief.candidate_id) == ("codex", of.BUY_ID)
-    assert decision.withdrawn_ids == frozenset()
-    withdrawn = of.decision(sealed, rebuttal={of.BUY_ID: "withdraw"})
-    assert parse_operator_decision(of.raw(withdrawn), sealed,
-                                   now=of.CREATED).withdrawn_ids == {of.BUY_ID}
-
-
-def test_decision_size_and_json_errors() -> None:
-    sealed = of.packet()
-    padded = of.decision(sealed)
-    padded["chief"]["rationale"] = "x" * 300
-    oversized = of.raw(padded) + b" " * op.MAX_DECISION_BYTES
-
-    _refused(oversized, sealed, op.DECISION_ERR_TOO_LARGE)
-    _refused(b"{not json", sealed, op.DECISION_ERR_NOT_JSON)
-    error = _refused(of.decision(sealed, volume=10), sealed, op.DECISION_ERR_SCHEMA)
-    assert "volume" in error.detail
-    with pytest.raises(TypeError):
-        parse_operator_decision("text", sealed, now=of.CREATED)  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize(("changes", "code"), [
-    ({"cycle_id": "c-other"}, op.DECISION_ERR_STALE),
-    ({"packet_hash": "0" * 64}, op.DECISION_ERR_STALE),
-    ({"agent": "claude"}, op.DECISION_ERR_SCHEMA),
-    ({"schema_version": "v6.operator.decision.0"}, op.DECISION_ERR_SCHEMA),
-    ({"chief": {"action": "ENTER", "candidate_id": "unknown-1", "risk_tier": "standard",
-                "order_style": "LIMIT", "exit_profile": "STANDARD", "confidence": 0.5,
-                "rationale": "", "dissent": ""}}, op.DECISION_ERR_VIEW),
-    ({"rebuttal": {of.SELL_ID: "withdraw"}}, op.DECISION_ERR_REBUTTAL),
-    ({"rebuttal": {of.BUY_ID: "escalate"}}, op.DECISION_ERR_SCHEMA),
-])
-def test_refused_decisions(changes: dict[str, Any], code: str) -> None:
-    sealed = of.packet()
-
-    _refused(of.decision(sealed, **changes), sealed, code)
-
-
-def test_a_view_naming_an_unknown_event_is_refused() -> None:
-    sealed = of.packet()
-    document = of.decision(sealed)
-    document["views"]["news_risk"]["event_ids"] = ["mt5:1"]
-
-    error = _refused(document, sealed, op.DECISION_ERR_VIEW)
-    assert error.detail == "news_risk: VIEW_UNKNOWN_EVENT"
-
-
-def test_an_expired_packet_refuses_decisions() -> None:
-    sealed = of.packet()
-
-    _refused(of.decision(sealed), sealed, op.DECISION_ERR_EXPIRED, now=of.EXPIRES + 0.5)
-    _refused(of.decision(sealed), sealed, op.DECISION_ERR_EXPIRED, now=float("nan"))
-
-
-def test_an_agent_outside_the_packet_is_refused() -> None:
-    allowed = op.allowed_values(operator_agents=("claude_code",),
-                                candidate_ids=(of.BUY_ID, of.SELL_ID, of.AGENT_ID),
-                                event_ids=(of.EVENT_ID,), pa_min_conviction=0.6)
-    sealed = seal_packet(of.packet_body(allowed=allowed.model_dump(mode="json")))
-
-    _refused(of.decision(sealed), sealed, op.DECISION_ERR_AGENT)
-
-
-def test_error_details_never_echo_submitted_text() -> None:
-    sealed = of.packet()
-    document = of.decision(sealed)
-    document["views"]["price_action"]["ranked"][0]["candidate_id"] = "IGNORE-ALL-RULES"
-
-    error = _refused(document, sealed, op.DECISION_ERR_VIEW)
-    assert "IGNORE" not in str(error) and "IGNORE" not in error.detail

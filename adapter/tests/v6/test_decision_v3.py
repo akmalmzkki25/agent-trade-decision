@@ -165,17 +165,12 @@ def test_a_refused_modify_names_its_rule() -> None:
     assert result.detail.startswith("SL_WIDER")
 
 
-def test_a_version_2_decision_is_only_for_flat_packets() -> None:
-    flat = of.packet()
-    legacy = of.decision(flat, schema_version="v6.operator.decision.2")
-    assert isinstance(validate(flat, legacy), ValidatedDecision)
-    managed = of.managed_packet("pending")
-    stale = of.decision(managed, schema_version="v6.operator.decision.2",
-                        chief={"action": "HOLD", "candidate_id": None,
-                               "risk_tier": "reduced", "order_style": "LIMIT",
-                               "exit_profile": "STANDARD", "confidence": 0.0,
-                               "rationale": "", "dissent": ""}, rebuttal={})
-    assert error(validate(managed, stale)) == op.DECISION_ERR_KIND
+@pytest.mark.parametrize("state", ["flat", "pending"])
+def test_a_version_2_decision_is_retired(state: str) -> None:
+    packet = of.packet() if state == "flat" else of.managed_packet(state)
+    legacy = {**of.decision_v3(packet), "schema_version": "v6.operator.decision.2"}
+    result = validate(packet, legacy)
+    assert error(result) == op.DECISION_ERR_SCHEMA and "retired" in result.detail
 
 
 def test_a_close_is_accepted() -> None:

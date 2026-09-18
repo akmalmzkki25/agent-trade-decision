@@ -6,11 +6,13 @@ operator API.
 Every signed EA request first moves the clock one second, so no two requests share
 a (timestamp, signature) pair. The detectors are replaced by one fixed candidate
 (`engine_fixtures_v6.candidate`: buy 4300.00, stop 4292.00, target 4316.00) so the
-cycle always has something the $2,000 / 0.5% budget can size at 0.01 lots.
+cycle always has something the $2,000 / 0.5% budget can size at 0.01 lots; the agent
+enters those levels as its own plan (`enter_decision`).
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import sqlite3
 import time
@@ -36,7 +38,6 @@ from app.v6.schemas.intent import PollResponse, basket_id_for
 
 from . import engine_fixtures_v6 as ef
 from .fixtures_v6 import to_rows
-from .operator_fixtures_v6 import as_v2
 from .payloads_v6 import backfill_payload, poll_payload
 
 TOKEN: Final[str] = "operator-" + "x" * 40
@@ -50,6 +51,7 @@ WAIT_S: Final[float] = 15.0
 WAIT_STEP_S: Final[float] = 0.02
 CANDIDATE_ID: Final[str] = ef.CANDIDATE_ID
 ENTRY, STOP, TARGET = 4300.0, 4292.0, 4316.0
+TP1, TP2 = 4306.0, 4311.0
 
 ResultT = TypeVar("ResultT")
 
@@ -212,19 +214,25 @@ def published(adapter: Adapter) -> tuple[str, str]:
     return cycle_id, intent_id
 
 
+def enter_plan(**changes: Any) -> dict[str, Any]:
+    """The fixed candidate as the agent's own plan: buy LIMIT 4300, SL 4292, TP3 4316 (2R)."""
+    plan: dict[str, Any] = {
+        "side": "buy", "order_type": "LIMIT", "entry": ENTRY, "sl": STOP, "tp1": TP1,
+        "tp2": TP2, "tp3": TARGET, "sl_after_tp1": None, "sl_after_tp2": None,
+        "time_limit_min": 120, "pending_expiry_min": 30, "lots": 0.01,
+        "thesis": "retest of the breakout"}
+    return {**plan, **changes}
+
+
 def enter_decision(packet: dict[str, Any], agent: str = "codex") -> dict[str, Any]:
-    """The packet's own template, with Price Action taking and the Chief entering."""
-    decision = as_v2(packet["decision_template"])
-    candidate_id = packet["candidates"][0]["candidate_id"]
-    decision["agent"] = agent
+    """The packet's template answered ENTER: Price Action takes the agent entry id and the
+    plan is the fixed candidate's levels."""
+    decision = copy.deepcopy(packet["decision_template"])
+    decision.update(agent=agent, action="ENTER", entry_plan=enter_plan())
     decision["views"]["price_action"] = {"abstain": False, "ranked": [{
-        "candidate_id": candidate_id, "verdict": "TAKE", "conviction": 0.8,
-        "reason_codes": ["LEVEL_CONFLUENCE", "CONFIRMED_CLOSE"], "note": "clean break"}]}
-    decision["chief"] = {
-        "action": "ENTER", "candidate_id": candidate_id, "risk_tier": "standard",
-        "order_style": "LIMIT", "exit_profile": "STANDARD", "confidence": 0.7,
-        "rationale": "PA take, no veto", "dissent": ""}
-    decision["rebuttal"] = {candidate_id: "maintain"}
+        "candidate_id": packet["limits"]["agent_entry_id"], "verdict": "TAKE",
+        "conviction": 0.8, "reason_codes": ["LEVEL_CONFLUENCE", "CONFIRMED_CLOSE"],
+        "note": "clean break"}]}
     return decision
 
 

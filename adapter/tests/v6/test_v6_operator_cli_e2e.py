@@ -85,7 +85,7 @@ def test_the_cli_trades_a_demo_session_and_stops_it(adapter: Adapter, tmp_path: 
 
     adapter.poll()                                    # the quote the builder judges by
     verdict = decide(adapter, packet_file, decision_file)
-    assert (verdict["code"], verdict["chief_action"]) == ("ACCEPTED", "ENTER")
+    assert (verdict["code"], verdict["decision_action"]) == ("ACCEPTED", "ENTER")
     assert adapter.cycle(cycle_id) == ("ENTER", None, "operator", "ok")
     delivered = adapter.poll()
     assert (delivered["has_intent"], delivered["order_type"]) == (True, "BUY_LIMIT")

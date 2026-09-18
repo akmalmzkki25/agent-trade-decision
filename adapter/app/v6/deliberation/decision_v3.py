@@ -1,12 +1,13 @@
 """
 Decision v3 against the packet it answers (spec section 2).
 
-Checked role by role like v2: the Price Action view refuses, a risk desk view is only
-flagged. The v3 action replaces the v2 Chief, which is derived here so that the protocol,
-the exit plan, the sizer and the intent builder keep their authority. An ENTER therefore
-needs the agent's own Price Action view to TAKE the packet's agent entry id with the
-minimum conviction, exactly what the protocol will ask. Error details name fields,
-pydantic error types and rule codes only; submitted text is never echoed.
+Checked role by role: the Price Action view refuses, a risk desk view is only flagged.
+The action takes the place of the Chief of the retired v1/v2 decisions; the Chief is
+derived here so that the protocol, the exit plan, the sizer and the intent builder keep
+their authority. An ENTER therefore needs the agent's own Price Action view to TAKE the
+packet's agent entry id with the minimum conviction, exactly what the protocol will ask.
+Error details name fields, pydantic error types and rule codes only; submitted text is
+never echoed.
 """
 
 from __future__ import annotations

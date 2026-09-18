@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -22,7 +23,6 @@ from app.v6.providers.operator_queue import OperatorQueue
 
 from . import engine_fixtures_v6 as ef
 from .execute_fixtures_v6 import enter_decision
-from .operator_fixtures_v6 import as_v2
 
 OPERATOR: dict[str, Any] = {
     "backend": "operator", "mode": "execute", "operator_token": SecretStr("operator-" + "o" * 40),
@@ -78,9 +78,9 @@ def rig(*candidates: Any, publisher: FakePublisher | None = None,
     return Rig(engine=engine, queue=queue, clock=fake)
 
 
-def withdraw_all(decision: dict[str, Any]) -> dict[str, Any]:
-    candidate_id = decision["chief"]["candidate_id"]
-    return decision | {"rebuttal": {candidate_id: "withdraw"}}
+def hold_instead(decision: dict[str, Any]) -> dict[str, Any]:
+    """The same views, but the agent answers HOLD."""
+    return decision | {"action": "HOLD", "entry_plan": None}
 
 
 async def answer(setup: Rig, decide: Callable[[dict[str, Any]], dict[str, Any]] | None,
@@ -113,7 +113,8 @@ async def test_an_operator_enter_is_published_with_its_intent_id() -> None:
     assert (result.provider, result.provider_status) == ("operator", "ok")
     (sent,) = publisher.requests
     assert (sent.agent, sent.candidate.candidate_id, sent.sizing.lots) == (
-        "codex", ef.CANDIDATE_ID, 0.01)
+        "codex", f"agent-{ef.T_BAR}", 0.01)
+    assert (sent.candidate.setup, sent.plan.tp1, sent.plan.time_limit_s) == ("agent", 4306.0, 7200)
     assert sent.decision.risk_tier == "standard"
     operator_views = [(r.role, r.model) for r in result.view_records if r.source == "operator"]
     assert operator_views == [(role, "codex") for role in (
@@ -149,9 +150,9 @@ async def test_shadow_mode_never_asks_the_publisher() -> None:
 
 # --- the decision -----------------------------------------------------------------------------
 @pytest.mark.anyio
-async def test_a_withdrawn_candidate_holds() -> None:
-    result = await run(rig(ef.candidate()), withdraw_all)
-    assert (result.status, result.hold_reason) == ("HOLD", HoldReason.NO_TAKE)
+async def test_a_hold_decision_holds() -> None:
+    result = await run(rig(ef.candidate()), hold_instead)
+    assert (result.status, result.hold_reason) == ("HOLD", HoldReason.CHIEF_HOLD)
 
 
 @pytest.mark.anyio
@@ -186,30 +187,35 @@ async def test_an_unsizable_suggestion_is_left_out_but_the_agent_is_still_asked(
 
 
 # --- agent-designed entries ---------------------------------------------------------------
+def ladder(side: str, entry: float, distance: float, reward_r: float) -> dict[str, Any]:
+    """A LIMIT plan: SL `distance` away, TP1 0.6R, TP2 0.9R, TP3 `reward_r`, no SL+ steps."""
+    sign = 1 if side == "buy" else -1
+    return {"side": side, "order_type": "LIMIT", "entry": entry,
+            "sl": round(entry - sign * distance, 2),
+            "tp1": round(entry + sign * 0.6 * distance, 2),
+            "tp2": round(entry + sign * 0.9 * distance, 2),
+            "tp3": round(entry + sign * reward_r * distance, 2),
+            "time_limit_min": 120, "pending_expiry_min": 30, "lots": 0.01}
+
+
 def agent_plan(packet: dict[str, Any]) -> dict[str, Any]:
-    """A sell LIMIT 10 above the bid whose 1.5R target stays in front of the $4300 level
+    """A sell LIMIT 10 above the bid whose 1.5R TP3 stays in front of the $4300 level
     (a target beyond a $50 level would be pulled in front of it)."""
     distance = round(packet["limits"]["stop_floor"] + 0.5, 2)
     entry = round(packet["market"]["bid"] + 10.0, 2)
-    return {"side": "sell", "order_type": "LIMIT", "entry": entry,
-            "stop": round(entry + distance, 2),
-            "target": round(entry - 1.5 * distance, 2), "thesis": "fade into resistance"}
+    return ladder("sell", entry, distance, 1.5) | {"thesis": "fade into resistance"}
 
 
 def agent_decision(plan: Callable[[dict[str, Any]], dict[str, Any]] = agent_plan
-                   ) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """A decide() for `run`: Price Action takes the agent entry and the Chief enters it."""
+                   ) -> Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]:
+    """A decide() for `run_agent`: Price Action takes the agent entry, the agent ENTERs."""
     def decide(_: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
         entry_id = packet["limits"]["agent_entry_id"]
-        decision = as_v2(packet["decision_template"])
-        decision.update(agent="claude_code", entry_plan=plan(packet), rebuttal={})
+        decision = copy.deepcopy(packet["decision_template"])
+        decision.update(agent="claude_code", action="ENTER", entry_plan=plan(packet))
         decision["views"]["price_action"] = {"abstain": False, "ranked": [{
             "candidate_id": entry_id, "verdict": "TAKE", "conviction": 0.8,
             "reason_codes": ["LEVEL_CONFLUENCE"], "note": "own read"}]}
-        decision["chief"] = {"action": "ENTER", "candidate_id": entry_id,
-                             "risk_tier": "standard", "order_style": "LIMIT",
-                             "exit_profile": "STANDARD", "confidence": 0.7,
-                             "rationale": "agent entry", "dissent": ""}
         return decision
     return decide
 
@@ -248,11 +254,7 @@ async def test_an_agent_entry_without_suggestions_is_published() -> None:
 async def test_an_agent_entry_the_exit_plan_refuses_holds() -> None:
     """A target just past a $50 level is pulled in front of it, under 1R: refused."""
     def near_round(packet: dict[str, Any]) -> dict[str, Any]:
-        entry = 4299.0
-        distance = round(packet["limits"]["stop_floor"] + 0.5, 2)
-        return {"side": "buy", "order_type": "LIMIT", "entry": entry,
-                "stop": round(entry - distance, 2),
-                "target": round(entry + 1.1 * distance, 2)}
+        return ladder("buy", 4299.0, round(packet["limits"]["stop_floor"] + 0.5, 2), 1.1)
 
     setup = rig(publisher=FakePublisher(PublishOutcome(intent_id=INTENT_ID, code="BOOK_PUBLISHED")))
     result = await run_agent(setup, agent_decision(near_round))

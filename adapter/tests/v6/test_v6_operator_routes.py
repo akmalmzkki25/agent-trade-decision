@@ -208,7 +208,7 @@ def test_non_demo_accounts_are_403(app: OperatorApp, client: TestClient,
                                    poll: dict[str, Any] | None, policy: str, path: str) -> None:
     if poll is not None:
         record_poll(app, **poll)
-    body = {"timeout_s": 0} if path.endswith("wait") else of.decision(of.packet())
+    body = {"timeout_s": 0} if path.endswith("wait") else of.enter_v3(of.packet())
 
     response = post(client, path, body)
     assert response.status_code == 403
@@ -334,41 +334,41 @@ def test_an_accepted_decision_reaches_the_engine(app: OperatorApp, client: TestC
     assert client.portal is not None and app.queue is not None
     waiting = client.portal.start_task_soon(app.queue.await_decision, of.CYCLE_ID,
                                             float(of.EXPIRES))
-    response = post(client, "/v6/operator/decision", of.decision(sealed))
+    response = post(client, "/v6/operator/decision", of.enter_v3(sealed))
 
     assert response.status_code == 202
     assert response.json() == {"accepted": True, "code": "ACCEPTED", "cycle_id": of.CYCLE_ID,
                                "agent": "codex", "flagged": [], "latency_ms": 0, "at": NOW}
     decision = waiting.result(timeout=5)
-    assert decision is not None and decision.chief.candidate_id == of.BUY_ID
+    assert decision is not None and decision.chief.candidate_id == of.AGENT_ID
     status = client.get("/v6/operator/status", headers=AUTH).json()
     assert status["pending"] is None and status["last_closed"]["reason"] == "decided"
     assert status["last_submit"]["code"] == "ACCEPTED"
 
 
 def test_invalid_decisions_are_422(client: TestClient, sealed: OperatorPacket) -> None:
-    unknown = of.decision(sealed)
+    unknown = of.enter_v3(sealed)
     unknown["views"]["price_action"]["ranked"][0]["candidate_id"] = INJECTION.replace(" ", "-")
     bad_view = post(client, "/v6/operator/decision", unknown)
     not_json = post(client, "/v6/operator/decision", b"{nope")
-    extra = post(client, "/v6/operator/decision", {**of.decision(sealed), "volume": 10})
+    extra = post(client, "/v6/operator/decision", {**of.enter_v3(sealed), "volume": 10})
 
     assert (bad_view.status_code, bad_view.json()["code"], bad_view.json()["error"]) == (
         422, "INVALID", "DECISION_VIEW")
     assert "IGNORE" not in bad_view.text
     assert (not_json.status_code, not_json.json()["error"]) == (422, "DECISION_NOT_JSON")
     assert (extra.status_code, extra.json()["error"]) == (422, "DECISION_SCHEMA")
-    raw = of.raw(of.decision(sealed))
+    raw = of.raw(of.enter_v3(sealed))
     full = raw[:-1] + b" " * (MAX_DECISION_BYTES - len(raw)) + b"}"  # exactly 64 KB
     assert post(client, "/v6/operator/decision", full).status_code == 202
 
 
 def test_refused_decisions_are_409(client: TestClient, sealed: OperatorPacket) -> None:
-    unknown = post(client, "/v6/operator/decision", of.decision(sealed, cycle_id="c-other"))
+    unknown = post(client, "/v6/operator/decision", of.enter_v3(sealed, cycle_id="c-other"))
     mismatch = post(client, "/v6/operator/decision",
-                    of.decision(sealed, packet_hash="0" * 64))
-    accepted = post(client, "/v6/operator/decision", of.decision(sealed))
-    again = post(client, "/v6/operator/decision", of.decision(sealed, agent="claude_code"))
+                    of.enter_v3(sealed, packet_hash="0" * 64))
+    accepted = post(client, "/v6/operator/decision", of.enter_v3(sealed))
+    again = post(client, "/v6/operator/decision", of.enter_v3(sealed, agent="claude_code"))
 
     assert [r.status_code for r in (unknown, mismatch, accepted, again)] == [409, 409, 202, 409]
     assert [r.json()["code"] for r in (unknown, mismatch, again)] == [
@@ -378,7 +378,7 @@ def test_refused_decisions_are_409(client: TestClient, sealed: OperatorPacket) -
 def test_a_late_decision_is_409_expired(client: TestClient, sealed: OperatorPacket,
                                         clock: FakeClock) -> None:
     clock.epoch = of.EXPIRES + 1.0
-    response = post(client, "/v6/operator/decision", of.decision(sealed))
+    response = post(client, "/v6/operator/decision", of.enter_v3(sealed))
     assert (response.status_code, response.json()["code"]) == (409, "EXPIRED")
     assert post(client, "/v6/operator/wait", {"timeout_s": 0}).json()["pending"] is None
 
@@ -390,7 +390,7 @@ def test_the_token_never_reaches_logs_or_responses(
         bodies = [
             post(client, "/v6/operator/wait", {"timeout_s": 0}).text,
             post(client, "/v6/operator/decision", b"{nope").text,
-            post(client, "/v6/operator/decision", of.decision(sealed)).text,
+            post(client, "/v6/operator/decision", of.enter_v3(sealed)).text,
             client.get("/v6/operator/status", headers=AUTH).text,
             post(client, "/v6/operator/wait", {},
                  {**JSON, "Authorization": "Bearer " + TOKEN[:-1]}).text,

@@ -1,4 +1,5 @@
-"""deliberation/agent_entry.py: bounds and checks for entries the agent designs itself."""
+"""deliberation/agent_entry.py: the bounds of an agent entry and its stop and target checks
+(the entry, ladder and time checks of a plan are in test_plan_rules.py)."""
 
 from __future__ import annotations
 
@@ -27,7 +28,10 @@ def plan(**changes: Any) -> AgentEntryPlan:
 
 
 def codes(item: AgentEntryPlan, bounds: ae.EntryLimits = BOUNDS) -> tuple[str, ...]:
-    return tuple(problem.code for problem in ae.plan_problems(item, bounds))
+    """The stop and target checks as plan_rules applies them (the target after a good stop)."""
+    stop = ae.stop_problems(item, bounds)
+    target = [] if stop else ae.target_problems(item, bounds)
+    return tuple(problem.code for problem in stop + target)
 
 
 def context(**settings: Any):
@@ -60,23 +64,19 @@ def test_a_plan_inside_the_limits_passes() -> None:
 
 
 @pytest.mark.parametrize(("changes", "expected"), [
-    ({"entry": 4300.2}, ("LIMIT_NOT_PASSIVE",)),
-    ({"entry": 4280.0, "stop": 4272.0, "target": 4296.0}, ("ENTRY_TOO_FAR",)),
-    ({"side": "sell", "entry": 4300.0, "stop": 4308.0, "target": 4284.0},
-     ("LIMIT_NOT_PASSIVE",)),
     ({"stop": 4299.0}, ("STOP_WRONG_SIDE",)),
     ({"stop": 4293.0}, ("STOP_TOO_TIGHT",)),
     ({"stop": 4277.0}, ("STOP_TOO_WIDE",)),
     ({"target": 4290.0}, ("TARGET_WRONG_SIDE",)),
     ({"target": 4304.0}, ("REWARD_TOO_SMALL",)),
     ({"target": 4339.0}, ("REWARD_TOO_LARGE",)),
-    ({"entry": 4300.2, "stop": 4300.5}, ("LIMIT_NOT_PASSIVE", "STOP_WRONG_SIDE")),
+    ({"entry": 4300.2, "stop": 4300.5, "target": 4290.0}, ("STOP_WRONG_SIDE",)),
 ])
 def test_each_problem_is_reported(changes: dict[str, Any], expected: tuple[str, ...]) -> None:
     assert codes(plan(**changes)) == expected
 
 
-def test_a_sell_limit_above_the_bid_passes() -> None:
+def test_a_sell_plan_passes_the_stop_and_target_checks() -> None:
     sell = plan(side="sell", entry=4305.0, stop=4313.0, target=4289.0)
     assert codes(sell) == () and ae.reward_r(sell, BOUNDS) == pytest.approx(2.0)
 
@@ -91,12 +91,9 @@ def test_a_market_entry_uses_the_quote() -> None:
 
 def test_prices_snap_to_the_tick_grid() -> None:
     odd = plan(entry=4298.004, stop=4290.006, target=4314.001)
-    candidate = ae.agent_candidate(odd, BOUNDS, bar_t=100)
-    assert (candidate.entry, candidate.invalidation) == (4298.0, 4290.01)
-    assert (candidate.candidate_id, candidate.setup, candidate.side) == (
-        "agent-100", "agent", "buy")
-    assert candidate.reason_codes == (ae.AGENT_REASON_CODE,)
-    assert candidate.features["market"] == 0.0
+    assert ae.resolved_entry(odd, BOUNDS) == 4298.0
+    assert ae.snap(odd.stop, BOUNDS.tick_size, BOUNDS.digits) == 4290.01
+    assert codes(odd) == ()
 
 
 def test_a_zero_risk_target_is_not_a_reward() -> None:

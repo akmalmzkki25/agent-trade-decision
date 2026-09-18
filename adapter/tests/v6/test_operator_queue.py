@@ -43,7 +43,7 @@ def packet(cycle_id: str = of.CYCLE_ID) -> OperatorPacket:
 
 
 def submission(sealed: OperatorPacket, **changes: Any) -> bytes:
-    return of.raw(of.decision(sealed, **changes))
+    return of.raw(of.enter_v3(sealed, **changes))
 
 
 def refused(result: Any, code: str) -> Refused:
@@ -131,7 +131,7 @@ async def test_a_submitted_decision_reaches_the_waiting_engine(queue: OperatorQu
                                 "agent": "codex", "flagged": [], "latency_ms": 12500,
                                 "at": clock.now_epoch()}
     assert isinstance(decision, ValidatedDecision) and decision.latency_ms == 12500
-    assert decision.chief.candidate_id == of.BUY_ID
+    assert decision.chief.candidate_id == of.AGENT_ID
     assert await queue.await_decision(of.CYCLE_ID, of.EXPIRES) == decision
     status = queue.status()
     assert (status.pending, status.waiting, status.counts.decided) == (None, False, 1)
@@ -141,7 +141,7 @@ async def test_a_submitted_decision_reaches_the_waiting_engine(queue: OperatorQu
 async def test_a_flagged_desk_is_accepted_and_reported(queue: OperatorQueue) -> None:
     sealed = packet()
     queue.offer(sealed)
-    document = of.decision(sealed)
+    document = of.enter_v3(sealed)
     document["views"]["news_risk"] = None
 
     result = queue.submit(of.raw(document), float(of.CREATED + 5))
@@ -252,7 +252,7 @@ def test_a_refused_submission_leaves_the_cycle_open(queue: OperatorQueue) -> Non
     sealed = packet()
     queue.offer(sealed)
     now = float(of.CREATED + 5)
-    bad_view = of.decision(sealed)
+    bad_view = of.enter_v3(sealed)
     bad_view["views"]["price_action"]["ranked"][0]["candidate_id"] = "unknown-1"
 
     invalid = refused(queue.submit(of.raw(bad_view), now), oq.REFUSE_INVALID)

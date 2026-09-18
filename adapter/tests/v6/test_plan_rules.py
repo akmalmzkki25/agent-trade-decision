@@ -95,6 +95,9 @@ def test_candidate_and_trade_plan() -> None:
     chosen = plan()
     candidate = plan_candidate(chosen, BOUNDS, bar_t=1_789_650_000)
     assert (candidate.entry, candidate.invalidation) == (4360.5, 4353.5)
+    assert (candidate.candidate_id, candidate.setup, candidate.side, candidate.reason_codes) == (
+        LIMITS.agent_entry_id, "agent", "buy", ("AGENT_ENTRY",))
+    assert candidate.features["market"] == 0.0
     assert candidate.features["reward_r"] == pytest.approx(2.0)
     assert candidate.features["stop_order"] == 0.0
     traded = trade_plan(chosen)

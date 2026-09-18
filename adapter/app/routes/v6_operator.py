@@ -3,7 +3,7 @@ V6 operator plane (plan section 3.3; user decisions 2026-09-16).
 
     POST /v6/operator/wait      {"timeout_s"?: 0..25, "agent"?: OperatorAgent}
                                 long-poll: {"pending": packet|null, "session", "armed", ...}
-    POST /v6/operator/decision  one OperatorDecision (<= 64 KB):
+    POST /v6/operator/decision  one decision v3 (<= 64 KB):
                                 202 accepted, 409 {"code"} refused, 422 {"code": "INVALID"}
     GET  /v6/operator/status    the queue status (no secrets, no free text)
 

@@ -1,21 +1,14 @@
 """
-Entries the operator agent designs itself (user decision 2026-09-17).
+The bounds of an entry the operator agent designs itself (user decision 2026-09-17).
 
-The agent may answer a packet with its own entry plan instead of a detector
-suggestion: side, LIMIT or MARKET, entry, stop and an optional target. This
-module publishes the bounds such a plan must respect (`entry_limits`, sent in the
-packet), checks a plan against them (`plan_problems`) and turns an acceptable plan
-into an ordinary Candidate (setup "agent") that then takes the detector path:
-`risk.exits.build_exit_plan`, `risk.sizing.size_position` and the intent builder.
-
-The agent never sets lots, and hard safety stays in code. Prices are snapped to
-the tick grid; a LIMIT must rest on the passive side of the quote and within
-MAX_AGENT_ENTRY_ATR_M15 x ATR(M15); the stop must sit on the losing side, at
-least the exit plan's floor away and no further than the budget can fund at the
-minimum lot (and MAX_AGENT_STOP_ATR_M15 x ATR(M15)); a target must give between
-MIN_AGENT_REWARD_R and MAX_AGENT_REWARD_R. A plan outside is refused with codes the
-agent can act on before the deadline; the exit plan and the sizer still have the
-last word.
+This module publishes the bounds an agent plan must respect (`entry_limits`, sent in
+the packet as `limits`, and read back with `limits_from_packet`) and the stop and target
+checks that `plan_rules` applies to a plan, on the plan's stop (SL) and final target
+(TP3): the stop must sit on the losing side, at least the exit plan's floor away and no
+further than the budget can fund at the minimum lot (and MAX_AGENT_STOP_ATR_M15 x
+ATR(M15)); the target must give between MIN_AGENT_REWARD_R and MAX_AGENT_REWARD_R.
+Prices are snapped to the tick grid. Hard safety stays in code: the exit plan and the
+sizer still have the last word.
 """
 
 from __future__ import annotations
@@ -26,19 +19,17 @@ from decimal import ROUND_FLOOR, Decimal
 from typing import TYPE_CHECKING, Final
 
 from ..config import V6Settings
-from ..cycle_codes import AGENT_SETUP, F_ATR_M15, agent_entry_id
+from ..cycle_codes import F_ATR_M15, agent_entry_id
 from ..cycle_types import MarketContext
 from ..risk import limits
 from ..risk.exits import stop_floor_price, stop_shift_allowance
 from ..schemas.operator_parts import AgentEntryPlan
-from ..types import Candidate, SymbolSpec
+from ..types import SymbolSpec
 from .context_builder import cycle_friction
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..schemas.operator import OperatorPacket
 
-PROBLEM_LIMIT_NOT_PASSIVE: Final[str] = "LIMIT_NOT_PASSIVE"
-PROBLEM_ENTRY_TOO_FAR: Final[str] = "ENTRY_TOO_FAR"
 PROBLEM_STOP_WRONG_SIDE: Final[str] = "STOP_WRONG_SIDE"
 PROBLEM_STOP_TOO_TIGHT: Final[str] = "STOP_TOO_TIGHT"
 PROBLEM_STOP_TOO_WIDE: Final[str] = "STOP_TOO_WIDE"
@@ -188,24 +179,6 @@ def reward_r(plan: AgentEntryPlan, bounds: EntryLimits) -> float:
     return direction * (snap(plan.target, bounds.tick_size, bounds.digits) - entry) / risk
 
 
-def _entry_problems(plan: AgentEntryPlan, bounds: EntryLimits) -> list[EntryProblem]:
-    problems: list[EntryProblem] = []
-    entry = resolved_entry(plan, bounds)
-    if plan.order_type == "LIMIT":
-        passive = (entry <= bounds.buy_limit_max if plan.side == "buy"
-                   else entry >= bounds.sell_limit_min)
-        if not passive:
-            edge = bounds.buy_limit_max if plan.side == "buy" else bounds.sell_limit_min
-            problems.append(EntryProblem(PROBLEM_LIMIT_NOT_PASSIVE,
-                                         f"a {plan.side} LIMIT must rest beyond {edge}"))
-        reference = bounds.ask if plan.side == "buy" else bounds.bid
-        if abs(entry - reference) > bounds.max_entry_distance + 1e-9:
-            problems.append(EntryProblem(PROBLEM_ENTRY_TOO_FAR,
-                                         f"entry is more than {bounds.max_entry_distance} "
-                                         f"from the quote {reference}"))
-    return problems
-
-
 def stop_problems(plan: AgentEntryPlan, bounds: EntryLimits) -> list[EntryProblem]:
     entry = resolved_entry(plan, bounds)
     stop = snap(plan.stop, bounds.tick_size, bounds.digits)
@@ -241,24 +214,6 @@ def target_problems(plan: AgentEntryPlan, bounds: EntryLimits) -> list[EntryProb
         return [EntryProblem(PROBLEM_REWARD_TOO_LARGE,
                              f"target gives {ratio:.2f}R, above {bounds.max_reward_r}R")]
     return []
-
-
-def plan_problems(plan: AgentEntryPlan, bounds: EntryLimits) -> tuple[EntryProblem, ...]:
-    """Every reason the plan cannot be sent as it stands (empty when it fits the limits)."""
-    stop = stop_problems(plan, bounds)
-    target = [] if stop else target_problems(plan, bounds)
-    return tuple(_entry_problems(plan, bounds) + stop + target)
-
-
-def agent_candidate(plan: AgentEntryPlan, bounds: EntryLimits, bar_t: int) -> Candidate:
-    """The plan as a detector-shaped candidate (call only when `plan_problems` is empty)."""
-    return Candidate(
-        candidate_id=bounds.agent_entry_id, setup=AGENT_SETUP, side=plan.side,
-        entry=resolved_entry(plan, bounds),
-        invalidation=snap(plan.stop, bounds.tick_size, bounds.digits), bar_t=bar_t,
-        features={"reward_r": round(reward_r(plan, bounds), 4),
-                  "market": 1.0 if plan.order_type == "MARKET" else 0.0},
-        reason_codes=(AGENT_REASON_CODE,))
 
 
 def limits_from_packet(packet: "OperatorPacket") -> EntryLimits:

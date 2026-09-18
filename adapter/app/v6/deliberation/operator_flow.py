@@ -24,10 +24,8 @@ from ..ledger_intents import IntentRecord
 from ..providers.operator_queue import OperatorQueue
 from ..risk.policy import EXECUTE_MODE
 from ..schemas.operator import OperatorPacket
-from ..schemas.operator_parts import AgentEntryPlan
 from ..schemas.operator_plan import EntryPlanV2, PacketState
 from ..types import Refusal
-from .agent_entry import agent_candidate, limits_from_packet
 from .candidates import VERDICT_CHOSEN, assess_candidate
 from .context_builder import cycle_friction
 from .cycle_draft import CycleDraft, CycleOutcome
@@ -130,16 +128,4 @@ class OperatorFlow:
         if problem is not None:
             return replace(item, exit_plan=None,
                            refusal=Refusal((PROBLEM_TP3_TRIMMED,), problem))
-        return replace(item, verdict=VERDICT_CHOSEN)
-
-    def _agent_item(self, tier0: Tier0, packet: OperatorPacket,
-                    plan: AgentEntryPlan) -> CandidateAssessment:
-        """A v2 agent entry as an assessed candidate, judged by the packet's limits."""
-        settings, context = self._deps.settings, tier0.context
-        candidate = agent_candidate(plan, limits_from_packet(packet), context.bar_open_epoch)
-        item = assess_candidate(context, candidate, settings,
-                                friction_price=cycle_friction(settings, context),
-                                tp_r_multiple=candidate.features["reward_r"])
-        if item.exit_plan is None:
-            return item
         return replace(item, verdict=VERDICT_CHOSEN)

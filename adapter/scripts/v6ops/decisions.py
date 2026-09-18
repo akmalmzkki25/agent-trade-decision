@@ -49,9 +49,9 @@ from .waiting import NEXT_NO_SESSION, collect_codes, demo_refused, session_gone
 DECISION_PATH: Final[str] = "/v6/operator/decision"
 STATUS_PATH: Final[str] = "/v6/status"
 DECISION_SCHEMA: Final[str] = "v6.operator.decision.3"
-# Versions 1 and 2 still answer a flat packet (schemas.operator.DECISION_SCHEMAS).
-DECISION_SCHEMAS: Final[tuple[str, ...]] = (
-    "v6.operator.decision.1", "v6.operator.decision.2", DECISION_SCHEMA)
+# Decisions v1 and v2 are retired (schemas.operator.DECISION_SCHEMAS).
+DECISION_SCHEMAS: Final[tuple[str, ...]] = (DECISION_SCHEMA,)
+RETIRED_WARNING: Final[str] = "decisions v1 and v2 are retired: run template"
 MAX_DECISION_BYTES: Final[int] = 64 * 1024
 RESULT_POLLS: Final[int] = 8
 RESULT_POLL_S: Final[float] = 0.5
@@ -263,15 +263,11 @@ def _action_warnings(decision: Mapping[str, Any]) -> list[str]:
 def submission_warnings(decision: Mapping[str, Any], packet: Mapping[str, Any] | None,
                         now: float) -> list[str]:
     warnings: list[str] = []
-    version = decision.get("schema_version")
-    if version not in DECISION_SCHEMAS:
-        warnings.append(f"schema_version is not {DECISION_SCHEMA}")
+    if decision.get("schema_version") not in DECISION_SCHEMAS:
+        warnings.append(f"schema_version is not {DECISION_SCHEMA}: {RETIRED_WARNING}")
     warnings += _action_warnings(decision)
     if packet is None:
         return warnings
-    state = packet.get("state", "flat")
-    if version != DECISION_SCHEMA and state != "flat":
-        warnings.append(f"a {clean(state, 20)} packet needs {DECISION_SCHEMA}")
     same = (decision.get("cycle_id") == packet.get("cycle_id")
             and decision.get("packet_hash") == packet.get("packet_hash"))
     if not same:
@@ -312,10 +308,7 @@ def verdict(reply: HttpReply, decision: Mapping[str, Any],
     summary = {"accepted": accepted, "http_status": reply.status,
                "code": document.get("code"), "error": document.get("error"),
                "cycle_id": decision.get("cycle_id"), "agent": decision.get("agent"),
-               "decision_action": decision.get("action") or get_path(decision, "chief",
-                                                                     "action"),
-               "chief_action": get_path(decision, "chief", "action"),
-               "chief_candidate": get_path(decision, "chief", "candidate_id"),
+               "decision_action": decision.get("action"),
                "plan_order_type": get_path(decision, "entry_plan", "order_type"),
                "manage_op": get_path(decision, "manage", "op"),
                "flagged": document.get("flagged"), "codes": list(dict.fromkeys(found)),

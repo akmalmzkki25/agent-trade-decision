@@ -1,7 +1,8 @@
 """
-What every operator decision version shares: the envelopes, the parse, the packet
-checks, the per-role view checks and the accepted decision (`operator_decision` holds
-the version 1/2 rules, `decision_v3` the version 3 rules).
+The parts of an operator decision: the envelope, the parse, the packet checks, the
+per-role view checks and the accepted decision (`decision_v3` holds the rules for an m15
+packet, `decision_minute` for an m1 packet). Decisions v1 and v2 are retired: their
+schema versions are refused with DECISION_SCHEMA before anything else is read.
 
 Error details never echo submitted text: they name known fields, pydantic error types
 and rule codes only.
@@ -12,12 +13,12 @@ from __future__ import annotations
 import hmac
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
 from types import MappingProxyType
 from typing import Final, Literal, TypeVar, cast
 
-from pydantic import BaseModel, Field, JsonValue, ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
 
 from ..config import OperatorAgent, V6Settings
 from ..cycle_types import DeskViews, ViewRecord
@@ -28,16 +29,15 @@ from ..providers.base import (
 from ..providers.offline import VIEW_ERROR_CODES
 from ..risk.policy import check_operator_agent
 from ..schemas.agents import (
-    MAX_RANKED, VIEW_ERR_SCHEMA, AgentView, ChiefDecision, DeskRole, ItemId, LiquidityView,
-    NewsRiskView, PriceActionView, StructureView, ViewValidationError, validate_view,
+    VIEW_ERR_SCHEMA, AgentView, ChiefDecision, DeskRole, ItemId, LiquidityView, NewsRiskView,
+    PriceActionView, StructureView, ViewValidationError, validate_view,
 )
 from ..schemas.operator import (
     DECISION_ERR_AGENT, DECISION_ERR_EXPIRED, DECISION_ERR_NOT_JSON, DECISION_ERR_SCHEMA,
     DECISION_ERR_STALE, DECISION_ERR_TOO_LARGE, DECISION_ERR_VIEW, DECISION_SCHEMA,
-    DECISION_SCHEMA_V2, MAX_DECISION_BYTES, DecisionNote, DecisionSchema, OperatorPacket,
-    RebuttalStance,
+    MAX_DECISION_BYTES, DecisionNote, OperatorPacket,
 )
-from ..schemas.operator_parts import AgentEntryPlan, DecisionAction, Frozen, Hash, PacketKind
+from ..schemas.operator_parts import DecisionAction, Frozen, Hash, PacketKind
 from ..schemas.operator_plan import EntryPlanV2, M15Bias, ManageRequest
 from .panel import CHIEF_ROLE
 
@@ -52,9 +52,13 @@ FLAG_PROVIDER_CODES: Final[Mapping[str, str]] = MappingProxyType(
 MAX_DETAIL_CHARS: Final[int] = 300
 MAX_REPORTED_ERRORS: Final[int] = 5
 UNKNOWN_LOCATION: Final[str] = "?"
+RETIRED_SCHEMAS: Final[frozenset[str]] = frozenset({
+    "v6.operator.decision.1", "v6.operator.decision.2"})
+RETIRED_DETAIL: Final[str] = ("decisions v1 and v2 are retired: answer with "
+                              "v6.operator.decision.3 (run OP template)")
 
 
-# --- the envelopes: typed identity, raw views ------------------------------------------
+# --- the envelope: typed identity, raw views -------------------------------------------
 class RawViews(Frozen):
     """Each desk view as raw JSON. A missing or null risk desk is flagged, not refused."""
 
@@ -62,20 +66,6 @@ class RawViews(Frozen):
     news_risk: JsonValue = None
     liquidity: JsonValue = None
     structure: JsonValue = None
-
-
-class DecisionEnvelope(Frozen):
-    """A version 1/2 OperatorDecision whose views are still unchecked JSON."""
-
-    schema_version: DecisionSchema
-    cycle_id: ItemId
-    packet_hash: Hash
-    agent: OperatorAgent
-    views: RawViews
-    chief: JsonValue
-    rebuttal: dict[ItemId, RebuttalStance] = Field(default_factory=dict, max_length=MAX_RANKED)
-    entry_plan: JsonValue = None
-    lots: float | None = Field(default=None, gt=0)
 
 
 class DecisionEnvelopeV3(Frozen):
@@ -94,10 +84,10 @@ class DecisionEnvelopeV3(Frozen):
     note: DecisionNote = ""
 
 
-Envelope = DecisionEnvelope | DecisionEnvelopeV3
+Envelope = DecisionEnvelopeV3
 KNOWN_FIELDS: Final[frozenset[str]] = frozenset().union(*(
-    model.model_fields for model in (DecisionEnvelope, DecisionEnvelopeV3, RawViews,
-                                      AgentEntryPlan, EntryPlanV2, ManageRequest, M15Bias)))
+    model.model_fields for model in (DecisionEnvelopeV3, RawViews, EntryPlanV2, ManageRequest,
+                                      M15Bias)))
 
 
 @dataclass(frozen=True)
@@ -128,9 +118,8 @@ class DeskFlag:
 class ValidatedDecision:
     """An accepted decision. A flagged desk has no view of its own.
 
-    Version 1/2 carry the Chief, the rebuttal and an optional `entry_plan`/`lots`;
-    version 3 carries `action`, `plan` (ENTER), `manage` (MANAGE), `bias` and `note`,
-    and its Chief is derived from the action.
+    It carries `action`, `plan` (ENTER), `manage` (MANAGE), `bias` and `note`; the Chief
+    is derived from the action so the protocol reads it like any Tier 1 panel.
     """
 
     cycle_id: str
@@ -141,12 +130,9 @@ class ValidatedDecision:
     news_risk: NewsRiskView | None = None
     liquidity: LiquidityView | None = None
     structure: StructureView | None = None
-    rebuttal: Mapping[str, str] = field(default_factory=dict)
     flags: tuple[DeskFlag, ...] = ()
     latency_ms: int = 0
-    entry_plan: AgentEntryPlan | None = None
-    lots: float | None = None
-    schema_version: str = DECISION_SCHEMA_V2
+    schema_version: str = DECISION_SCHEMA
     action: str = ""
     plan: EntryPlanV2 | None = None
     manage: ManageRequest | None = None
@@ -154,7 +140,6 @@ class ValidatedDecision:
     note: str = ""
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "rebuttal", MappingProxyType(dict(self.rebuttal)))
         object.__setattr__(self, "flags", tuple(self.flags))
         missing = {role for role in RISK_DESKS if getattr(self, role) is None}
         if missing != {flag.role for flag in self.flags} or len(self.flags) != len(missing):
@@ -170,8 +155,8 @@ class ValidatedDecision:
 
     @property
     def withdrawn_ids(self) -> frozenset[str]:
-        """For ProtocolInput.withdrawn_ids."""
-        return frozenset(cid for cid, stance in self.rebuttal.items() if stance == "withdraw")
+        """For ProtocolInput.withdrawn_ids: a decision has no rebuttal round."""
+        return frozenset()
 
     @property
     def flagged_roles(self) -> tuple[str, ...]:
@@ -196,11 +181,11 @@ class ValidatedDecision:
                 "decision_action": self.action or self.chief.action,
                 "action": self.chief.action, "candidate_id": self.chief.candidate_id,
                 "flagged": list(self.flagged_roles),
-                "agent_entry": self.entry_plan is not None or self.plan is not None,
-                "lots": self.lots if self.plan is None else self.plan.lots,
+                "agent_entry": self.plan is not None,
+                "lots": None if self.plan is None else self.plan.lots,
                 "plan_order_type": None if self.plan is None else self.plan.order_type,
                 "manage_op": None if self.manage is None else self.manage.op,
-                "withdrawn": sorted(self.withdrawn_ids), "latency_ms": self.latency_ms}
+                "latency_ms": self.latency_ms}
 
 
 DecisionOutcome = ValidatedDecision | DecisionError
@@ -254,10 +239,11 @@ def schema_of(raw: bytes) -> str | None:
 
 
 def parse_envelope(raw: bytes) -> Envelope | DecisionError:
-    """The strict envelope of any version; the views stay raw for per-role checks."""
-    if schema_of(raw) == DECISION_SCHEMA:
-        return parse_model(DecisionEnvelopeV3, raw)
-    return parse_model(DecisionEnvelope, raw)
+    """The strict v3 envelope; the views stay raw for per-role checks. A v1 or v2 body is
+    refused with DECISION_SCHEMA and RETIRED_DETAIL before it is parsed."""
+    if schema_of(raw) in RETIRED_SCHEMAS:
+        return decision_error(DECISION_ERR_SCHEMA, RETIRED_DETAIL)
+    return parse_model(DecisionEnvelopeV3, raw)
 
 
 def parse_json_value(model: type[ModelT], raw: object, code: str,

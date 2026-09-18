@@ -20,7 +20,8 @@ from .operator_cli_fixtures_v6 import (
     PACKET_NOW, TOKEN, ManualClock, RoutedTransport, cli, json_reply, operator_app,
     packet_document, queue_of, replies, run_cli, status_document, to_json,
 )
-from .operator_fixtures_v6 import BUY_ID, EVENT_ID, EXPIRES, as_v2, managed_packet, packet
+from .cycle_fixtures_v6 import pa_payload
+from .operator_fixtures_v6 import AGENT_ID, EVENT_ID, EXPIRES, managed_packet, packet, plan_v3
 from .test_v6_dashboard import LOOPBACK, record_demo_poll
 
 decisions = cli.decisions
@@ -70,17 +71,16 @@ def make_template(files: dict[str, Path]) -> dict[str, Any]:
     return json.loads(files["decision"].read_text(encoding="utf-8"))
 
 
-def enter_on_buy(document: dict[str, Any]) -> dict[str, Any]:
-    """A version 2 pick of the BUY suggestion, made from the v3 template."""
-    views = {**document["views"], "price_action": {"abstain": False, "ranked": [
-        {"candidate_id": BUY_ID, "verdict": "TAKE", "conviction": 0.8,
-         "reason_codes": ["LEVEL_CONFLUENCE", "HTF_ALIGNED"], "note": "clean displacement"}]},
-        "news_risk": {**document["views"]["news_risk"], "event_ids": [EVENT_ID]}}
-    chief = {"action": "ENTER", "candidate_id": BUY_ID, "risk_tier": "standard",
-             "order_style": "LIMIT", "exit_profile": "STANDARD", "confidence": 0.6,
-             "rationale": "PA TAKE, no veto", "dissent": ""}
-    return {**as_v2(document), "agent": document.get("agent"), "views": views,
-            "chief": chief, "rebuttal": {BUY_ID: "maintain"}}
+UP_BIAS = {"direction": "up", "levels": [4526.4, 4541.0], "invalidation": 4520.0,
+           "scenario": "higher lows above the pivot"}
+
+
+def enter_own_plan(document: dict[str, Any]) -> dict[str, Any]:
+    """The v3 template answered ENTER: Price Action takes the agent entry id, own plan."""
+    views = {**document["views"], "price_action": pa_payload(AGENT_ID, conviction=0.8),
+             "news_risk": {**document["views"]["news_risk"], "event_ids": [EVENT_ID]}}
+    return {**document, "action": "ENTER", "views": views, "entry_plan": plan_v3(),
+            "m15_bias": UP_BIAS}
 
 
 def write(files: dict[str, Path], document: object) -> None:
@@ -133,7 +133,7 @@ def test_fallback_constants_match_the_adapter() -> None:
 
 
 def test_template_keeps_an_edited_decision_unless_forced(files: dict[str, Path]) -> None:
-    edited = enter_on_buy(make_template(files))
+    edited = enter_own_plan(make_template(files))
     assert make_template(files)["action"] == "HOLD"        # unchanged file: rewritten
     write(files, edited)
 
@@ -179,7 +179,7 @@ def test_template_needs_a_readable_packet(files: dict[str, Path], content: str |
 
 # --- submit to the real queue -------------------------------------------------------------
 def test_an_entry_is_accepted_by_the_queue(live: Live, files: dict[str, Path]) -> None:
-    write(files, enter_on_buy(make_template(files)))
+    write(files, enter_own_plan(make_template(files)))
     transport = RoutedTransport(live.client)
     clock = ManualClock()
 
@@ -188,8 +188,8 @@ def test_an_entry_is_accepted_by_the_queue(live: Live, files: dict[str, Path]) -
     report = result.out_json()
     assert result.code == cli.EXIT_OK, result.text
     assert (report["accepted"], report["http_status"], report["code"]) == (True, 202, "ACCEPTED")
-    assert (report["chief_action"], report["chief_candidate"]) == ("ENTER", BUY_ID)
-    assert report["decision_action"] == "ENTER"
+    assert (report["decision_action"], report["plan_order_type"]) == ("ENTER", "LIMIT")
+    assert "chief_action" not in report
     assert (report["agent"], report["flagged"], report["codes"]) == (
         "claude_code", [], ["ACCEPTED"])
     assert report["result"] is None and report["action"] is None
@@ -210,7 +210,7 @@ def test_the_untouched_template_is_a_valid_hold(live: Live, files: dict[str, Pat
     make_template(files)
     result = run_cli(submit_args(files, "codex"), RoutedTransport(live.client))
     report = result.out_json()
-    assert result.code == 0 and (report["decision_action"], report["chief_action"]) == (
+    assert result.code == 0 and (report["decision_action"], report["plan_order_type"]) == (
         "HOLD", None)
 
 
@@ -354,7 +354,7 @@ def test_warnings_for_a_decision_of_another_packet(files: dict[str, Path]) -> No
     report = run_cli(submit_args(files, "codex"), transport).out_json()
     assert report["warnings"] == ["the decision answers another packet than the packet file"]
     assert decisions.submission_warnings({"schema_version": "x"}, None, 0.0) == [
-        f"schema_version is not {decisions.DECISION_SCHEMA}"]
+        f"schema_version is not {decisions.DECISION_SCHEMA}: {decisions.RETIRED_WARNING}"]
 
 
 @pytest.mark.parametrize(("changes", "warning"), [
@@ -367,11 +367,8 @@ def test_v3_warnings(changes: dict[str, Any], warning: str) -> None:
     assert warning in decisions.submission_warnings({**template, **changes}, None, 0.0)
     assert decisions.submission_warnings(template, None, 0.0) == []
     legacy = {**template, "schema_version": "v6.operator.decision.2"}
-    managed = managed_packet("pending").model_dump(mode="json")
-    assert decisions.submission_warnings(legacy, None, 0.0) == []
-    assert "a pending packet needs v6.operator.decision.3" in decisions.submission_warnings(
-        {**legacy, "cycle_id": managed["cycle_id"], "packet_hash": managed["packet_hash"]},
-        managed, 0.0)
+    assert decisions.submission_warnings(legacy, None, 0.0) == [
+        f"schema_version is not {decisions.DECISION_SCHEMA}: {decisions.RETIRED_WARNING}"]
 
 
 def test_examples_follow_the_packet_state() -> None:

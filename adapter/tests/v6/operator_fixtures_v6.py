@@ -3,8 +3,8 @@ A valid operator packet body and decision, as JSON-shaped dicts.
 
 Tests change a copy and validate it through the JSON path, exactly as the
 operator API receives a decision. `packet()` is a flat v3 packet; `managed_packet`
-is a pending or position packet; `decision()` is a v2 decision and `decision_v3`
-the sealed v3 template as an agent would edit it.
+is a pending or position packet; `decision_v3` is the sealed template as an agent
+would edit it and `enter_v3` a valid ENTER of the agent's own plan (`plan_v3`).
 """
 
 from __future__ import annotations
@@ -17,9 +17,7 @@ from app.v6.schemas.operator import (
     OperatorPacket, OperatorPacketBody, allowed_values, canonical_json, seal_packet,
 )
 
-from .cycle_fixtures_v6 import (
-    chief_payload, liquidity_payload, news_payload, pa_payload, structure_payload,
-)
+from .cycle_fixtures_v6 import liquidity_payload, news_payload, pa_payload, structure_payload
 
 BAR_OPEN: Final[int] = 1_789_564_500
 BAR_CLOSE: Final[int] = BAR_OPEN + 900
@@ -62,11 +60,13 @@ def levels_block() -> dict[str, Any]:
             "pivots_h1": [{"kind": "high", "price": 4541.0, "t": BAR_OPEN - 18000}]}
 
 
-def entry_plan(**changes: Any) -> dict[str, Any]:
-    """A valid agent plan: a buy LIMIT 2 below the ask, stop 8 under, 2R target."""
-    plan: dict[str, Any] = {"side": "buy", "order_type": "LIMIT", "entry": 4533.35,
-                            "stop": 4525.35, "target": 4549.35,
-                            "thesis": "bounce from the M15 pivot low"}
+def plan_v3(**changes: Any) -> dict[str, Any]:
+    """A valid agent plan: a buy LIMIT 2 below the ask, SL 7 under, TP3 at 2R, SL+ steps."""
+    plan: dict[str, Any] = {
+        "side": "buy", "order_type": "LIMIT", "entry": 4533.35, "sl": 4526.35,
+        "tp1": 4537.5, "tp2": 4541.0, "tp3": 4547.35, "sl_after_tp1": 4533.8,
+        "sl_after_tp2": 4537.5, "time_limit_min": 150, "pending_expiry_min": 30,
+        "lots": 0.01, "thesis": "bounce from the M15 pivot low"}
     return {**plan, **changes}
 
 
@@ -172,33 +172,23 @@ def packet(**changes: Any) -> OperatorPacket:
     return seal_packet(packet_body(**changes))
 
 
-def decision(sealed: OperatorPacket, **changes: Any) -> dict[str, Any]:
-    document: dict[str, Any] = {
-        "schema_version": "v6.operator.decision.2", "cycle_id": sealed.cycle_id,
-        "packet_hash": sealed.packet_hash, "agent": "codex",
-        "views": {"price_action": pa_payload(BUY_ID, conviction=0.8),
-                  "news_risk": news_payload((EVENT_ID,)), "liquidity": liquidity_payload(),
-                  "structure": structure_payload()},
-        "chief": chief_payload("ENTER", BUY_ID), "rebuttal": {BUY_ID: "maintain"},
-    }
-    return {**document, **copy.deepcopy(changes)}
-
-
-V2_KEYS: Final[frozenset[str]] = frozenset({
-    "schema_version", "cycle_id", "packet_hash", "agent", "views", "chief", "rebuttal",
-    "entry_plan", "lots"})
-
-
-def as_v2(template: dict[str, Any]) -> dict[str, Any]:
-    """A v3 template as the start of a version 2 decision (the v3-only keys dropped)."""
-    kept = {key: value for key, value in copy.deepcopy(template).items() if key in V2_KEYS}
-    return {**kept, "schema_version": "v6.operator.decision.2"}
-
-
 def decision_v3(sealed: OperatorPacket, **changes: Any) -> dict[str, Any]:
     """The sealed template with the agent set (edit it like an agent would)."""
     template = sealed.decision_template.model_dump(mode="json")
     return {**template, "agent": "codex", **copy.deepcopy(changes)}
+
+
+def enter_views(conviction: float = 0.8) -> dict[str, Any]:
+    """Price Action TAKEs the agent entry id; the news desk names the calendar event."""
+    return {"price_action": pa_payload(AGENT_ID, conviction=conviction),
+            "news_risk": news_payload((EVENT_ID,)), "liquidity": liquidity_payload(),
+            "structure": structure_payload()}
+
+
+def enter_v3(sealed: OperatorPacket, **changes: Any) -> dict[str, Any]:
+    """A valid ENTER of `plan_v3` for the flat `packet()`."""
+    document = decision_v3(sealed, action="ENTER", views=enter_views(), entry_plan=plan_v3())
+    return {**document, **copy.deepcopy(changes)}
 
 
 def raw(document: dict[str, Any]) -> bytes:
