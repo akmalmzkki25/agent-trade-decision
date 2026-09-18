@@ -80,9 +80,10 @@ def test_a_valid_decision_is_accepted_with_every_view(sealed: OperatorPacket) ->
     assert decision.views.news_risk is decision.news_risk is not None
     assert decision.withdrawn_ids == frozenset()
     assert decision.summary() == {
-        "cycle_id": of.CYCLE_ID, "agent": "codex", "action": "ENTER",
-        "candidate_id": of.BUY_ID, "flagged": [], "agent_entry": False, "lots": None,
-        "pending_action": None, "withdrawn": [], "latency_ms": 0}
+        "cycle_id": of.CYCLE_ID, "agent": "codex", "schema": "v6.operator.decision.2",
+        "decision_action": "ENTER", "action": "ENTER", "candidate_id": of.BUY_ID,
+        "flagged": [], "agent_entry": False, "lots": None, "plan_order_type": None,
+        "manage_op": None, "withdrawn": [], "latency_ms": 0}
     assert _protocol(decision).action == "ENTER"
 
 

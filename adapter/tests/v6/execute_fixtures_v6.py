@@ -11,7 +11,6 @@ cycle always has something the $2,000 / 0.5% budget can size at 0.01 lots.
 
 from __future__ import annotations
 
-import copy
 import json
 import sqlite3
 import time
@@ -37,6 +36,7 @@ from app.v6.schemas.intent import PollResponse, basket_id_for
 
 from . import engine_fixtures_v6 as ef
 from .fixtures_v6 import to_rows
+from .operator_fixtures_v6 import as_v2
 from .payloads_v6 import backfill_payload, poll_payload
 
 TOKEN: Final[str] = "operator-" + "x" * 40
@@ -214,7 +214,7 @@ def published(adapter: Adapter) -> tuple[str, str]:
 
 def enter_decision(packet: dict[str, Any], agent: str = "codex") -> dict[str, Any]:
     """The packet's own template, with Price Action taking and the Chief entering."""
-    decision = copy.deepcopy(packet["decision_template"])
+    decision = as_v2(packet["decision_template"])
     candidate_id = packet["candidates"][0]["candidate_id"]
     decision["agent"] = agent
     decision["views"]["price_action"] = {"abstain": False, "ranked": [{

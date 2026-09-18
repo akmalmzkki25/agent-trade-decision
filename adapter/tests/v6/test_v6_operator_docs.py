@@ -10,8 +10,10 @@ from typing import Any
 
 import pytest
 
+from app.v6.config import V6Settings
+from app.v6.deliberation.operator_decision import ValidatedDecision, validate_decision
 from app.v6.risk.sizing import MIN_LOT_WALL, size_position
-from app.v6.schemas.operator import OperatorPacket, parse_operator_decision
+from app.v6.schemas.operator import OperatorPacket
 from app.v6.types import Refusal, SizingRequest, SymbolSpec
 
 from .operator_cli_fixtures_v6 import cli
@@ -43,20 +45,25 @@ def example(name: str) -> str:
 def test_the_documented_packet_and_decision_are_valid() -> None:
     packet = OperatorPacket.model_validate_json(example("packet"))
     raw = example("decision").encode("utf-8")
-    decision = parse_operator_decision(raw, packet, now=packet.created_at_epoch + 60)
-    assert packet.account.trade_mode == "DEMO"
-    assert (decision.chief.action, decision.chief.risk_tier) == ("ENTER", "standard")
-    assert decision.chief.candidate_id in packet.allowed.candidate_ids
+    decision = validate_decision(packet, raw, V6Settings(_env_file=None),
+                                 now=packet.created_at_epoch + 60)
+    assert isinstance(decision, ValidatedDecision), decision
+    assert (packet.account.trade_mode, packet.state) == ("DEMO", "flat")
+    assert (decision.action, decision.chief.action, decision.chief.risk_tier) == (
+        "ENTER", "ENTER", "standard")
+    assert decision.chief.candidate_id == packet.limits.agent_entry_id
+    assert decision.plan is not None and decision.plan.order_type == "LIMIT"
     template = cli.decisions.build_template(json.loads(example("packet")))
     assert template == {**packet.decision_template.model_dump(mode="json"), "agent": None}
+    assert packet.decision_template.m15_bias == packet.last_bias
 
 
 def test_the_documented_agent_entry_is_sized_as_the_doc_says() -> None:
     raw = json.loads(example("decision"))
     plan, news = raw["entry_plan"], raw["views"]["news_risk"]["size_multiplier"]
-    stop = round(plan["entry"] - plan["stop"], 2)
-    sized = size(stop, news, max_lots=raw["lots"])
-    assert (raw["lots"], sized.lots) == (0.02, 0.02)
+    stop = round(plan["entry"] - plan["sl"], 2)
+    sized = size(stop, news, max_lots=plan["lots"])
+    assert (plan["lots"], sized.lots) == (0.02, 0.02)
     assert sized.risk_usd == pytest.approx(2 * (stop + 0.40))
     assert sized.risk_budget_usd == pytest.approx(25.0 * news)
     assert size(stop, news, max_lots=0.03).lots == 0.02   # 0.03 would risk $23.70 > $20

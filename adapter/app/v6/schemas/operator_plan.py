@@ -18,16 +18,17 @@ from pydantic import AfterValidator, Field, StringConstraints
 
 from ..types import Side
 from .agents import _printable as printable
-from .operator_parts import Epoch, Frozen, Price
+from .operator_parts import (  # the literals are re-exported for decision v3 users
+    ActionStatus, BiasDirection, DecisionAction, Epoch, Frozen, ManageOp, ManageTarget,
+    PacketKind, PacketState, PlanOrderType, Price,
+)
 
-PlanOrderType = Literal["MARKET", "LIMIT", "STOP"]
-ManageTarget = Literal["position", "pending"]
-ManageOp = Literal["KEEP", "CLOSE", "CANCEL", "MODIFY"]
-BiasDirection = Literal["up", "down", "range", "unclear"]
-DecisionAction = Literal["HOLD", "ENTER", "MANAGE"]
-PacketKind = Literal["m15"]
-PacketState = Literal["flat", "pending", "position"]
-ActionStatus = Literal["PUBLISHED", "APPLIED", "REJECTED", "FAILED", "EXPIRED"]
+__all__ = [
+    "ActionStatus", "BiasDirection", "DecisionAction", "EntryPlanV2", "M15Bias", "ManageOp",
+    "ManageRequest", "ManageTarget", "MODIFY_FIELDS", "OPS_BY_TARGET", "PENDING_ONLY_FIELDS",
+    "PacketAction", "PacketKind", "PacketPendingOrder", "PacketPlan", "PacketPosition",
+    "PacketState", "PlanOrderType", "ladder_problems",
+]
 
 MAX_BIAS_LEVELS: Final[int] = 6
 MAX_SCENARIO_CHARS: Final[int] = 240
@@ -139,6 +140,21 @@ class PacketPosition(Frozen):
     minutes_open: float = Field(ge=0)
     time_limit_epoch: Epoch
     plan: PacketPlan
+
+
+class PacketPendingOrder(Frozen):
+    """The resting V6 order a management packet asks about."""
+
+    ticket: int = Field(ge=0)
+    intent_id: Annotated[str, StringConstraints(max_length=16)]
+    order_type: Literal["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"]
+    price: Price
+    sl: float = Field(ge=0)
+    tp: float = Field(ge=0)
+    lots: Price
+    expiration_epoch: Epoch
+    distance_from_quote: float
+    plan: PacketPlan | None = None
 
 
 class PacketAction(Frozen):

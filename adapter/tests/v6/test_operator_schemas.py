@@ -10,6 +10,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from app.v6.config import V6Settings
+from app.v6.deliberation.operator_decision import ValidatedDecision, validate_decision
 from app.v6.deliberation.protocol import REBUTTAL_STANCES
 from app.v6.schemas import operator as op
 from app.v6.schemas.operator import (
@@ -72,7 +74,8 @@ def test_a_sealed_packet_carries_its_hash_and_a_hold_template() -> None:
     template = sealed.decision_template
     assert (template.cycle_id, template.packet_hash, template.agent) == (
         of.CYCLE_ID, body_hash, "claude_code")
-    assert template.chief.action == "HOLD" and template.chief.candidate_id is None
+    assert (template.schema_version, template.action, template.manage) == (
+        "v6.operator.decision.3", "HOLD", None)
     assert template.views.price_action == sealed.baseline_views.price_action
     assert OperatorPacket.model_validate_json(sealed.model_dump_json()) == sealed
 
@@ -80,9 +83,11 @@ def test_a_sealed_packet_carries_its_hash_and_a_hold_template() -> None:
 def test_the_template_is_itself_an_acceptable_decision() -> None:
     sealed = of.packet()
 
-    decision = parse_operator_decision(sealed.decision_template.model_dump_json().encode(),
-                                       sealed, now=of.CREATED)
-    assert decision == sealed.decision_template
+    decision = validate_decision(sealed, sealed.decision_template.model_dump_json().encode(),
+                                 V6Settings(_env_file=None), now=of.CREATED)
+    assert isinstance(decision, ValidatedDecision), decision
+    assert (decision.action, decision.chief.action) == ("HOLD", "HOLD")
+    assert decision.price_action == sealed.decision_template.views.price_action
 
 
 def test_missing_baselines_fall_back_to_cautious_template_views() -> None:

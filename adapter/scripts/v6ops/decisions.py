@@ -1,8 +1,9 @@
 """
 `template` and `submit`: turn a packet into a decision and hand it to the adapter.
 
-`template` copies the packet's `decision_template` (the rules views and a HOLD
-Chief) and blanks `agent`; `submit --agent` fills it in. The CLI never judges a
+`template` copies the packet's `decision_template` (decision v3: the rules views,
+HOLD on a flat packet or MANAGE KEEP on a pending/position packet, and the last M15
+bias) and blanks `agent`; `submit --agent` fills it in. The CLI never judges a
 decision: POST /v6/operator/decision validates it role by role
 (`deliberation/operator_decision.py`) and answers with the verdict, which
 `submit` prints with its codes. Local checks only catch what would make the
@@ -47,14 +48,19 @@ from .waiting import NEXT_NO_SESSION, collect_codes, demo_refused, session_gone
 
 DECISION_PATH: Final[str] = "/v6/operator/decision"
 STATUS_PATH: Final[str] = "/v6/status"
-DECISION_SCHEMA: Final[str] = "v6.operator.decision.2"
+DECISION_SCHEMA: Final[str] = "v6.operator.decision.3"
+# Versions 1 and 2 still answer a flat packet (schemas.operator.DECISION_SCHEMAS).
+DECISION_SCHEMAS: Final[tuple[str, ...]] = (
+    "v6.operator.decision.1", "v6.operator.decision.2", DECISION_SCHEMA)
 MAX_DECISION_BYTES: Final[int] = 64 * 1024
 RESULT_POLLS: Final[int] = 8
 RESULT_POLL_S: Final[float] = 0.5
 RESULT_KEYS: Final[tuple[str, ...]] = (
     "status", "hold_reason", "hold_detail", "failed_gates", "shadow_intent", "intent")
-NEXT_EDIT: Final[str] = ("edit views and chief in the decision file (keep ids from the packet), "
-                         f"then run: submit --agent <{'|'.join(AGENTS)}>")
+NEXT_EDIT: Final[str] = (
+    "edit action, views, m15_bias and entry_plan or manage in the decision file (keep "
+    "cycle_id, packet_hash, packet_kind and schema_version), then run: submit --agent "
+    f"<{'|'.join(AGENTS)}>")
 NEXT_EXPIRED: Final[str] = "the packet has expired: run wait again"
 NEXT_ACCEPTED: Final[str] = "run wait again"
 NEXT_RESULT_UNKNOWN: Final[str] = ("run wait again; the cycle result was not visible yet "
@@ -76,9 +82,12 @@ UNKNOWN_VIEWS: Final[Mapping[str, Mapping[str, Any]]] = MappingProxyType({
         "regime": "UNCLEAR", "counter_structure_veto": False, "size_multiplier": 0.5,
         "named_patterns": [], "reason_codes": ["DATA_MISSING"], "note": ""}),
 })
-HOLD_CHIEF: Final[Mapping[str, Any]] = MappingProxyType({
-    "action": "HOLD", "candidate_id": None, "risk_tier": "reduced", "order_style": "LIMIT",
-    "exit_profile": "STANDARD", "confidence": 0.0, "rationale": "", "dissent": ""})
+UNCLEAR_BIAS: Final[Mapping[str, Any]] = MappingProxyType(
+    {"direction": "unclear", "levels": [], "invalidation": None, "scenario": ""})
+# schemas.operator_plan.MODIFY_FIELDS: what a MODIFY may set (null = unchanged).
+MANAGE_FIELDS: Final[tuple[str, ...]] = (
+    "sl", "tp1", "tp2", "tp3", "sl_after_tp1", "sl_after_tp2", "time_limit_min", "entry",
+    "pending_expiry_min")
 
 
 def _plain(value: Any) -> Any:
@@ -90,49 +99,89 @@ def _plain(value: Any) -> Any:
     return copy.deepcopy(value)
 
 
-def fallback_template(packet: Mapping[str, Any]) -> dict[str, Any]:
-    baseline = packet.get("baseline_views")
+def _baseline_or_defaults(baseline: object) -> dict[str, Any]:
+    """The rules views of the packet, or the adapter's cautious defaults."""
     pa_view = get_path(baseline, "price_action")
     views = {"price_action": _plain(pa_view if isinstance(pa_view, Mapping) else ABSTAIN_VIEW)}
     for role, default in UNKNOWN_VIEWS.items():
         view = get_path(baseline, role)
         views[role] = _plain(view if isinstance(view, Mapping) else default)
-    return {"schema_version": DECISION_SCHEMA, "cycle_id": packet.get("cycle_id"),
-            "packet_hash": packet.get("packet_hash"), "agent": None, "views": views,
-            "chief": _plain(HOLD_CHIEF), "rebuttal": {}, "entry_plan": None, "lots": None,
-            "pending_action": "KEEP" if isinstance(packet.get("pending_order"), Mapping)
-            else None}
+    return views
+
+
+def _keep(packet: Mapping[str, Any]) -> dict[str, Any] | None:
+    """MANAGE KEEP for the packet's position or resting order (None on a flat packet)."""
+    state = packet.get("state")
+    block = packet.get("position") if state == "position" else packet.get("pending_order")
+    if state not in ("position", "pending") or not isinstance(block, Mapping):
+        return None
+    return {"target": state, "ticket": block.get("ticket"), "op": "KEEP",
+            **{name: None for name in MANAGE_FIELDS}, "reason": ""}
+
+
+def fallback_template(packet: Mapping[str, Any]) -> dict[str, Any]:
+    """The adapter's DecisionTemplate rebuilt from the packet (a packet without one)."""
+    manage = _keep(packet)
+    bias = packet.get("last_bias")
+    return {
+        "schema_version": DECISION_SCHEMA, "packet_kind": packet.get("packet_kind", "m15"),
+        "cycle_id": packet.get("cycle_id"), "packet_hash": packet.get("packet_hash"),
+        "agent": None, "action": "HOLD" if manage is None else "MANAGE",
+        "views": _baseline_or_defaults(packet.get("baseline_views")),
+        "entry_plan": None, "manage": manage,
+        "m15_bias": _plain(bias) if isinstance(bias, Mapping) else _plain(UNCLEAR_BIAS),
+        "note": "",
+    }
 
 
 def build_template(packet: Mapping[str, Any]) -> dict[str, Any]:
     """The packet's decision template with `agent` left for `submit --agent`."""
     template = packet.get("decision_template")
     decision = _plain(template) if isinstance(template, Mapping) else fallback_template(packet)
-    return {**decision, "agent": None, "rebuttal": decision.get("rebuttal") or {},
-            "entry_plan": decision.get("entry_plan"), "lots": decision.get("lots"),
-            "pending_action": decision.get("pending_action")}
+    return {**decision, "agent": None}
 
 
 def agent_entry_example(packet: Mapping[str, Any]) -> dict[str, Any] | None:
     """How to enter the agent's own trade: the fields to set (values are placeholders)."""
     limits = packet.get("limits")
-    if not isinstance(limits, Mapping) or not limits.get("agent_entry_possible"):
+    if (packet.get("state", "flat") != "flat" or not isinstance(limits, Mapping)
+            or not limits.get("agent_entry_possible")):
         return None
     entry_id = limits.get("agent_entry_id")
     return {
+        "action": "ENTER",
         "views.price_action.ranked": [{"candidate_id": entry_id, "verdict": "TAKE",
                                        "conviction": 0.7, "reason_codes": [], "note": ""}],
-        "chief": {"action": "ENTER", "candidate_id": entry_id,
-                  "order_style": "LIMIT (must equal entry_plan.order_type)"},
-        "lots": f"{limits.get('volume_min')}..{limits.get('max_lots')} in steps of "
-                f"{limits.get('lots_step')} (null = the minimum; the budget may reduce it)",
-        "entry_plan": {"side": "buy|sell", "order_type": "LIMIT|MARKET",
-                       "entry": "price for LIMIT (buy <= buy_limit_max, sell >= "
-                                "sell_limit_min), null for MARKET",
-                       "stop": "price, distance in [stop_floor, max_stop_distance]",
-                       "target": "price between min_reward_r and max_reward_r, or null",
-                       "thesis": "<= 300 chars"},
+        "entry_plan": {
+            "side": "buy|sell", "order_type": "LIMIT|STOP|MARKET",
+            "entry": "LIMIT: buy <= buy_limit_max, sell >= sell_limit_min; STOP: buy >= "
+                     "buy_stop_min, sell <= sell_stop_max; MARKET: null",
+            "sl": "stop distance in [stop_floor, max_stop_distance]",
+            "tp1": f">= {limits.get('min_tp1_r')}R", "tp2": "between tp1 and tp3",
+            "tp3": f"{limits.get('min_reward_r')}-{limits.get('max_reward_r')}R",
+            "sl_after_tp1": "optional SL+ between sl and tp1 - modify_distance",
+            "sl_after_tp2": "optional SL+ between the stop before it and tp2 - modify_distance",
+            "time_limit_min": f"{limits.get('time_limit_min_minutes')}-"
+                              f"{limits.get('time_limit_max_minutes')}",
+            "pending_expiry_min": f"LIMIT/STOP {limits.get('pending_expiry_min_minutes')}-"
+                                  f"{limits.get('pending_expiry_max_minutes')}, MARKET null",
+            "lots": f"{limits.get('volume_min')}..{limits.get('max_lots')} in steps of "
+                    f"{limits.get('lots_step')} (the budget may reduce it)",
+            "thesis": "<= 300 chars"},
+        "m15_bias": {"direction": "up|down|range|unclear", "levels": [],
+                     "invalidation": None, "scenario": "<= 240 chars"},
     }
+
+
+def manage_example(packet: Mapping[str, Any]) -> dict[str, Any] | None:
+    """How to change the packet's position or resting order (values are placeholders)."""
+    keep = _keep(packet)
+    if keep is None:
+        return None
+    ops = "KEEP|CLOSE|MODIFY" if keep["target"] == "position" else "KEEP|CANCEL|MODIFY"
+    return {"action": "MANAGE",
+            "manage": {**keep, "op": ops, "sl": "<only toward safety, modify_distance away>",
+                       "reason": "<= 200 chars"}}
 
 
 def _existing_edit(out_path: Path, fresh: Mapping[str, Any]) -> bool:
@@ -154,8 +203,9 @@ def run_template(ctx: Context, *, packet_path: Path, out_path: Path, force: bool
                "candidate_ids": get_path(packet, "allowed", "candidate_ids"),
                "event_ids": get_path(packet, "allowed", "event_ids"),
                "pa_min_conviction": get_path(packet, "allowed", "pa_min_conviction"),
-               "limits": packet.get("limits"),
+               "state": packet.get("state"), "limits": packet.get("limits"),
                "agent_entry_example": agent_entry_example(packet),
+               "manage_example": manage_example(packet),
                "agents": get_path(packet, "allowed", "agents")}
     if left <= 0:
         emit(ctx.stdout, {**summary, "written": None, "expired": True, "next": NEXT_EXPIRED})
@@ -179,13 +229,32 @@ def with_agent(decision: Mapping[str, Any], agent: str) -> dict[str, Any]:
     return {**decision, "agent": agent}
 
 
+def _action_warnings(decision: Mapping[str, Any]) -> list[str]:
+    """What the adapter will refuse or what looks unintended in a v3 decision."""
+    action = decision.get("action")
+    checks = (
+        (action == "ENTER" and not isinstance(decision.get("entry_plan"), Mapping),
+         "action ENTER without an entry_plan"),
+        (action == "MANAGE" and not isinstance(decision.get("manage"), Mapping),
+         "action MANAGE without manage"),
+        (action == "ENTER" and get_path(decision, "m15_bias", "direction") == "unclear",
+         "action ENTER with an unclear m15_bias"),
+    )
+    return [message for bad, message in checks if bad]
+
+
 def submission_warnings(decision: Mapping[str, Any], packet: Mapping[str, Any] | None,
                         now: float) -> list[str]:
     warnings: list[str] = []
-    if decision.get("schema_version") != DECISION_SCHEMA:
+    version = decision.get("schema_version")
+    if version not in DECISION_SCHEMAS:
         warnings.append(f"schema_version is not {DECISION_SCHEMA}")
+    warnings += _action_warnings(decision)
     if packet is None:
         return warnings
+    state = packet.get("state", "flat")
+    if version != DECISION_SCHEMA and state != "flat":
+        warnings.append(f"a {clean(state, 20)} packet needs {DECISION_SCHEMA}")
     same = (decision.get("cycle_id") == packet.get("cycle_id")
             and decision.get("packet_hash") == packet.get("packet_hash"))
     if not same:
@@ -226,8 +295,12 @@ def verdict(reply: HttpReply, decision: Mapping[str, Any],
     summary = {"accepted": accepted, "http_status": reply.status,
                "code": document.get("code"), "error": document.get("error"),
                "cycle_id": decision.get("cycle_id"), "agent": decision.get("agent"),
+               "decision_action": decision.get("action") or get_path(decision, "chief",
+                                                                     "action"),
                "chief_action": get_path(decision, "chief", "action"),
                "chief_candidate": get_path(decision, "chief", "candidate_id"),
+               "plan_order_type": get_path(decision, "entry_plan", "order_type"),
+               "manage_op": get_path(decision, "manage", "op"),
                "flagged": document.get("flagged"), "codes": list(dict.fromkeys(found)),
                "warnings": warnings, "response": document,
                "next": NEXT_ACCEPTED if accepted else refused_next(document)}

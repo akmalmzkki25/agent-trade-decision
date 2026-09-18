@@ -13,8 +13,8 @@
 > **menganalisis sendiri** dan boleh **merancang entry sendiri** (`entry_plan`: arah,
 > LIMIT/MARKET, entry, stop, target) di dalam blok `limits`, atau memilih saran, atau HOLD.
 > Agen **memilih lot 0,01–0,03** (`lots`); kode tetap memotongnya bila budget risiko tidak
-> cukup. Selama ada order pending V6, setiap bar datang **paket review**: jawab
-> `pending_action` KEEP atau CANCEL (Chief HOLD).
+> cukup. Selama ada order pending atau posisi V6, setiap bar datang **paket manajemen**:
+> jawab `action` MANAGE dengan `manage` KEEP, CANCEL, CLOSE atau MODIFY (5.9).
 > News/Liquidity/Structure hanya bisa memveto atau mengecilkan (pengali ≤ 1); Chief hanya
 > bisa menurunkan risiko. Akun
 > **REAL/CONTEST selalu ditolak**: berhenti dan lapor. Selama sesi: jangan edit file
@@ -387,37 +387,49 @@ of it; a pull below 1R holds with `APP-V6-EXIT`, so keep targets short of the ne
 level or leave the target `null`. Sizing and the intent builder follow. Write the level
 logic in `thesis` and in the Chief `rationale`.
 
-### 5.9 Reviewing a resting order (`pending_action`)
+### 5.9 Managing a resting order or an open position (`manage`)
 
-A published LIMIT rests until it fills or expires (2 × M15). While it rests, the
-OCCUPANCY gate blocks new entries, but every bar still brings a **review packet** (as
-long as the system gates pass): `pending_order` shows the order (type, price, SL, TP,
-lots, expiry) and `distance_from_quote`, how far the market must travel to fill it.
-`candidates` is empty and `limits.agent_entry_possible` is false.
+While a V6 order rests or a V6 position is open, the OCCUPANCY gate blocks new entries,
+but every bar still brings a **management packet** as long as the system gates pass
+(halt, warm-up, account policy, fresh data, symbol spec, breakers): `state` is `pending`
+or `position`, `pending_order` or `position` shows the trade with its plan (TP1/TP2, the
+SL+ steps, the executed `step`, the time limit), `candidates` is empty and
+`limits.agent_entry_possible` is false. Spread, session and news gates do not stop a
+management packet: that is exactly when closing or tightening may matter.
 
-Answer with a HOLD Chief, no `entry_plan`, no `lots`, and `pending_action`:
-- **KEEP** when the plan still holds: price has not broken the invalidation or run past
-  the target, and the level you wanted is still the level the market is likely to
-  test.
-- **CANCEL** when the plan is dead: price broke through the target or the invalidation
-  zone before filling, the structure changed (a breakout replaced the range you
-  faded), a news risk appeared inside the holding window, or the fill would now come
-  only after a move that contradicts the thesis.
+Answer with `action` `MANAGE` and `manage` (`target` = the state, `ticket` from the
+packet, `op`):
+- **KEEP** when the plan still holds (the template's default).
+- **CANCEL** (pending) when the scenario is dead before the fill: price broke through the
+  invalidation or ran past the target, the structure changed, or news now falls inside
+  the holding window.
+- **CLOSE** (position) when the structure breaks against the trade, sudden news risk
+  appears, or momentum turns hard against it.
+- **MODIFY** with only the fields that change (`null` = unchanged): `sl` may only move
+  toward safety and stay `modify_distance` from the price; `tp3` stays `modify_distance`
+  beyond the price and within `max_reward_r` of the initial risk; TP1/TP2 and their SL+
+  steps only while their step has not been executed, keeping sl, tp1, tp2, tp3 in order
+  and each SL+ between the stop before it and its trigger minus `modify_distance`;
+  `time_limit_min` counts from the open, at least 5 minutes beyond the time already open
+  and at most `limits.time_limit_max_minutes`; `entry` and `pending_expiry_min` belong to
+  a pending order, whose modified plan is checked like a new one.
 
-CANCEL queues `CANCEL_PENDING` for the EA (the session stop path); the cycle records
-`APP-V6-PENDING-CANCELLED`, KEEP records `APP-V6-PENDING-KEPT`. The next bar without a
-resting order brings a normal packet again. An open position does not produce review
-packets: SL, TP and the time barrier manage it.
+A refusal names its rule (`DECISION_MANAGE`, e.g. `SL_WIDER: ...`) and the packet stays
+open. The cycle records `APP-V6-MANAGE-KEPT` (KEEP, or anything in shadow mode),
+`APP-V6-MANAGE-SENT` (the action was queued for the EA) or `APP-V6-MANAGE-REFUSED` (the
+runtime refused to queue it, e.g. a disarmed session). The EA checks the action again
+against its live quote and reports what it did.
 
 ## 6. Packet and decision
 
-The packet is `v6.operator.packet.2` (decisions use `v6.operator.decision.2`; `.1` is
-still accepted for a suggestion pick). `packet_hash` covers everything except
-`packet_hash` and `decision_template`, and the decision must echo it. Its top-level
-fields are:
+The packet is `v6.operator.packet.3`; its decision is `v6.operator.decision.3` (a flat
+packet still accepts `.2` and `.1` Chief decisions, a management packet only `.3`).
+`packet_hash` covers everything except `packet_hash` and `decision_template`, and the
+decision must echo it. Its top-level fields are:
 
 | Field | Content |
 |---|---|
+| `packet_kind`, `state` | `m15`; `flat` (enter or hold), `pending` or `position` (manage, 5.9) |
 | `cycle_id`, `session_id`, `mode` | identity; `mode` is `shadow` or `execute` |
 | `created_at_epoch`, `expires_at_epoch`, `bar_open_epoch`, `bar_close_epoch` | UTC seconds; the bar is the closed M15 bar |
 | `account` | `trade_mode` (always `DEMO`), `server`, `equity_band` (never balance or login) |
@@ -425,13 +437,14 @@ fields are:
 | `session` | phase, `quality` (prime/active/thin), main-window third and `in_main_window`, `entries_allowed`, `continuation_allowed`, `block_reasons`, `armed` |
 | `bars` | closed bars `[open_epoch, o, h, l, c]`: M1 ≤ 30, M5 ≤ 36, M15 ≤ 32, H1 ≤ 24, D1 ≤ 5 |
 | `levels` | prior full day's high/low, nearest $10 and $50 levels, confirmed M15 and H1 pivots |
-| `limits` | the bounds of your own entry (5.8): `agent_entry_id`, passive LIMIT edges, entry distance, stop range, reward range, budget, `volume_min`/`lots_step`/`max_lots`, pending expiry, time barrier |
-| `pending_order` | review packets only (5.9): the resting V6 order and `distance_from_quote`; `null` otherwise |
+| `limits` | the bounds of your own entry (5.8): `agent_entry_id`, passive LIMIT edges, STOP edges (`buy_stop_min`, `sell_stop_max`), entry distance, stop range, reward range, `min_tp1_r`, `modify_distance`, budget, `volume_min`/`lots_step`/`max_lots`, the holding-time and pending-expiry windows in minutes |
+| `pending_order`, `position` | management packets only (5.9): the resting V6 order (with `distance_from_quote`) or the open position (initial stop, `r_now`, minutes open, time limit), each with its `plan`; `null` otherwise |
+| `last_action`, `last_bias`, `last_bias_at_epoch` | the session's newest management action and what became of it; your last `m15_bias` and when you gave it (`null` after a restart) |
 | `gates`, `calendar` | gate results; calendar assessment and events (`event_id` for `news_risk.event_ids`) |
 | `candidates` | 0-3 detector suggestions that size at m = 1: side, entry, invalidation, codes, features, `exit`, `sizing` |
 | `baseline_views` | the rules desks' four views (null where a desk failed) |
 | `allowed` | agents, ids (suggestions, then `limits.agent_entry_id`), `pa_min_conviction`, every enum and size limit |
-| `decision_template` | the baseline views, a HOLD Chief, `entry_plan: null`, `lots: null`, `pending_action` (`KEEP` in a review packet, else `null`) and the first allowed agent |
+| `decision_template` | a ready v3 decision: the baseline views, `action` HOLD (flat) or MANAGE with `manage` KEEP (pending/position), `entry_plan: null`, your last bias (else `unclear`), an empty `note` and the first allowed agent |
 
 The two examples below are exact: `tests/v6/test_v6_operator_docs.py` validates them
 with the adapter's own parser. The prices are illustrative.
@@ -442,7 +455,9 @@ with the adapter's own parser. The prices are illustrative.
 <!-- example:packet -->
 ```json
 {
-  "schema_version": "v6.operator.packet.2",
+  "schema_version": "v6.operator.packet.3",
+  "packet_kind": "m15",
+  "state": "flat",
   "cycle_id": "c-5f0e2a9b4c1d7e36",
   "created_at_epoch": 1789645503,
   "expires_at_epoch": 1789645800,
@@ -635,7 +650,15 @@ with the adapter's own parser. The prices are illustrative.
     "lots_step": 0.01,
     "max_lots": 0.03,
     "pending_expiry_epoch": 1789647300,
-    "time_barrier_s": 7200
+    "time_barrier_s": 7200,
+    "buy_stop_min": 4536.8,
+    "sell_stop_max": 4535.73,
+    "modify_distance": 0.39,
+    "min_tp1_r": 0.5,
+    "time_limit_min_minutes": 60,
+    "time_limit_max_minutes": 240,
+    "pending_expiry_min_minutes": 15,
+    "pending_expiry_max_minutes": 60
   },
   "gates": [
     {
@@ -832,6 +855,11 @@ with the adapter's own parser. The prices are illustrative.
     ],
     "pa_min_conviction": 0.6,
     "enums": {
+      "action": [
+        "HOLD",
+        "ENTER",
+        "MANAGE"
+      ],
       "chief.action": [
         "ENTER",
         "HOLD"
@@ -855,6 +883,11 @@ with the adapter's own parser. The prices are illustrative.
         "buy",
         "sell"
       ],
+      "entry_plan_v2.order_type": [
+        "MARKET",
+        "LIMIT",
+        "STOP"
+      ],
       "liquidity.order_style": [
         "LIMIT",
         "MARKET",
@@ -877,6 +910,22 @@ with the adapter's own parser. The prices are illustrative.
         "OK",
         "CAUTION",
         "NO_TRADE"
+      ],
+      "m15_bias.direction": [
+        "up",
+        "down",
+        "range",
+        "unclear"
+      ],
+      "manage.op": [
+        "KEEP",
+        "CLOSE",
+        "CANCEL",
+        "MODIFY"
+      ],
+      "manage.target": [
+        "position",
+        "pending"
       ],
       "news_risk.reason_codes": [
         "NO_EVENTS",
@@ -902,10 +951,6 @@ with the adapter's own parser. The prices are illustrative.
         "CLEAR",
         "CAUTION",
         "BLOCK"
-      ],
-      "pending_action": [
-        "KEEP",
-        "CANCEL"
       ],
       "price_action.ranked.reason_codes": [
         "LEVEL_CONFLUENCE",
@@ -969,25 +1014,43 @@ with the adapter's own parser. The prices are illustrative.
       ]
     },
     "limits": {
+      "max_bias_levels": 6,
       "max_decision_bytes": 65536,
+      "max_decision_note_chars": 300,
       "max_dissent_chars": 200,
       "max_event_ids": 10,
       "max_named_patterns": 5,
       "max_note_chars": 200,
       "max_ranked": 3,
       "max_rationale_chars": 300,
+      "max_reason_chars": 200,
       "max_reason_codes": 5,
+      "max_scenario_chars": 240,
       "max_thesis_chars": 300,
       "max_view_bytes": 8192
     }
   },
   "pending_order": null,
-  "packet_hash": "96da4893509aefeedafef3ca9d747fe7d27fd837cac7a1f205c852938c2e8294",
+  "position": null,
+  "last_action": null,
+  "last_bias": {
+    "direction": "up",
+    "levels": [
+      4531.1,
+      4517.8
+    ],
+    "invalidation": 4517.8,
+    "scenario": "HH/HL on M15 and H1; the broken H1 pivot 4531.1 should turn into support"
+  },
+  "last_bias_at_epoch": 1789644600,
+  "packet_hash": "d421b30a18cedc7c2020117caaea91217ee8d1b25bd946ae70155769b1693df3",
   "decision_template": {
-    "schema_version": "v6.operator.decision.2",
+    "schema_version": "v6.operator.decision.3",
+    "packet_kind": "m15",
     "cycle_id": "c-5f0e2a9b4c1d7e36",
-    "packet_hash": "96da4893509aefeedafef3ca9d747fe7d27fd837cac7a1f205c852938c2e8294",
+    "packet_hash": "d421b30a18cedc7c2020117caaea91217ee8d1b25bd946ae70155769b1693df3",
     "agent": "claude_code",
+    "action": "HOLD",
     "views": {
       "price_action": {
         "abstain": false,
@@ -1051,43 +1114,48 @@ with the adapter's own parser. The prices are illustrative.
         "note": ""
       }
     },
-    "chief": {
-      "action": "HOLD",
-      "candidate_id": null,
-      "risk_tier": "reduced",
-      "order_style": "LIMIT",
-      "exit_profile": "STANDARD",
-      "confidence": 0.0,
-      "rationale": "",
-      "dissent": ""
-    },
-    "rebuttal": {},
     "entry_plan": null,
-    "lots": null,
-    "pending_action": null
+    "manage": null,
+    "m15_bias": {
+      "direction": "up",
+      "levels": [
+        4531.1,
+        4517.8
+      ],
+      "invalidation": 4517.8,
+      "scenario": "HH/HL on M15 and H1; the broken H1 pivot 4531.1 should turn into support"
+    },
+    "note": ""
   }
 }
 ```
 
 </details>
 
-In this example the decision below ENTERs the agent's own entry instead of a suggestion:
+In this example the decision below ENTERs the agent's own plan instead of a suggestion:
 
 - PA reads the chart itself: the displacement close is extended, so it buys the retest of
-  the broken H1 pivot (4531.1) with a LIMIT at 4531.40, a stop under the M15 swing low
-  (7.50 away, inside 6.00-22.02) and a 2R target at 4546.40, short of the 4550 level.
-- News tightens to CAUTION 0.80 (jobless claims inside the two-hour barrier); m = 0.80
-  gives a $20.00 budget, and the requested 0.02 lot risks $15.80 (0.03 would be $23.70
-  and be reduced to 0.02).
-- With a CAUTION of 0.50 the same plan would still trade at 0.01 lot (`MIN_LOT_FLOOR`).
+  the broken H1 pivot (4531.1) with a LIMIT at 4531.40 and a stop 7.50 below (inside
+  6.00-22.02); Price Action TAKEs `agent-1789644600` at 0.70, the code derives the Chief.
+- The ladder: TP1 4536.40 (0.67R) moves the stop to 4531.90 (entry plus costs, no new
+  structure yet), TP2 4541.40 under the prior day high moves it to 4536.40, TP3 4546.40
+  (2R) stays short of the 4550 level; the plan may hold 120 minutes and the LIMIT rests
+  30 minutes.
+- News tightens to CAUTION 0.80 (jobless claims inside the holding window); m = 0.80
+  gives a $20.00 budget, and 0.02 lot risks $15.80 (0.03 would be $23.70 and be reduced
+  to 0.02). With a CAUTION of 0.50 the same plan would still trade at 0.01 lot
+  (`MIN_LOT_FLOOR`).
+- `m15_bias` records the reading; the next packet shows it as `last_bias`.
 
 <!-- example:decision -->
 ```json
 {
-  "schema_version": "v6.operator.decision.2",
+  "schema_version": "v6.operator.decision.3",
+  "packet_kind": "m15",
   "cycle_id": "c-5f0e2a9b4c1d7e36",
-  "packet_hash": "96da4893509aefeedafef3ca9d747fe7d27fd837cac7a1f205c852938c2e8294",
+  "packet_hash": "d421b30a18cedc7c2020117caaea91217ee8d1b25bd946ae70155769b1693df3",
   "agent": "claude_code",
+  "action": "ENTER",
   "views": {
     "price_action": {
       "abstain": false,
@@ -1148,29 +1216,33 @@ In this example the decision below ENTERs the agent's own entry instead of a sug
       "note": ""
     }
   },
-  "chief": {
-    "action": "ENTER",
-    "candidate_id": "agent-1789644600",
-    "risk_tier": "standard",
-    "order_style": "LIMIT",
-    "exit_profile": "STANDARD",
-    "confidence": 0.55,
-    "rationale": "own entry: buy limit 4531.40 on the H1 pivot retest, stop 4523.90 under the M15 swing, target 4546.40 (2R) before 4550; 0.02 lot risks 15.80 of the 20.00 budget",
-    "dissent": "news: a HIGH USD release falls inside the holding window"
-  },
-  "rebuttal": {
-    "agent-1789644600": "maintain"
-  },
-  "lots": 0.02,
-  "pending_action": null,
   "entry_plan": {
     "side": "buy",
     "order_type": "LIMIT",
     "entry": 4531.4,
-    "stop": 4523.9,
-    "target": 4546.4,
-    "thesis": "trend up; retest of the broken H1 pivot with the stop under the 4520.9 M15 swing low"
-  }
+    "sl": 4523.9,
+    "tp1": 4536.4,
+    "tp2": 4541.4,
+    "tp3": 4546.4,
+    "sl_after_tp1": 4531.9,
+    "sl_after_tp2": 4536.4,
+    "time_limit_min": 120,
+    "pending_expiry_min": 30,
+    "lots": 0.02,
+    "thesis": "trend up; buy the retest of the broken H1 pivot 4531.1 instead of the extended displacement close"
+  },
+  "manage": null,
+  "m15_bias": {
+    "direction": "up",
+    "levels": [
+      4531.1,
+      4520.9,
+      4541.7
+    ],
+    "invalidation": 4520.9,
+    "scenario": "HH/HL trend; 4531.1 holds as support; TP2 sits under the prior day high 4541.7; an M15 close below 4520.9 ends the idea"
+  },
+  "note": "own entry: buy limit 4531.40 on the H1 pivot retest, stop 4523.90; TP1 4536.40 (SL+ 4531.90), TP2 4541.40 under the PDH (SL+ 4536.40), TP3 4546.40 (2R) before 4550; 0.02 lot risks 15.80 of the 20.00 budget"
 }
 ```
 
@@ -1184,11 +1256,13 @@ answers 409 with `code`, or 422 with `code: INVALID` and `error`:
 | 422 `INVALID` | `DECISION_TOO_LARGE` | over 64 KB |
 | 422 `INVALID` | `DECISION_NOT_JSON` | not JSON |
 | 422 `INVALID` | `DECISION_SCHEMA` | a missing or unknown field, a wrong type, an out-of-range value, a string too long |
-| 422 `INVALID` | `DECISION_VIEW` | Price Action or Chief is wrong: an unknown id, `abstain` with ranks, ENTER without a candidate, HOLD with one, a duplicate id |
+| 422 `INVALID` | `DECISION_VIEW` | Price Action (or a v2 Chief) is wrong: an unknown id, `abstain` with ranks, ENTER without a candidate, HOLD with one, a duplicate id; a v3 ENTER whose Price Action does not TAKE `limits.agent_entry_id` with at least `pa_min_conviction`; `views` missing |
 | 422 `INVALID` | `DECISION_REBUTTAL` | a rebuttal names a candidate PA did not TAKE |
-| 422 `INVALID` | `DECISION_LOTS` | `lots` outside `volume_min`..`max_lots`, off the `lots_step` grid, or given without an ENTER |
-| 422 `INVALID` | `DECISION_REVIEW` | a review packet without `pending_action`, or with an ENTER or `lots`; `pending_action` in an entry packet |
-| 422 `INVALID` | `DECISION_ENTRY_PLAN` | `entry_plan` missing when the Chief enters `agent_entry_id`, present with another pick, malformed, `order_style` not equal to `order_type`, or outside `limits` (the codes of 5.8) |
+| 422 `INVALID` | `DECISION_LOTS` | `lots` (v2) or `entry_plan.lots` (v3) outside `volume_min`..`max_lots`, off the `lots_step` grid, or given without an ENTER |
+| 422 `INVALID` | `DECISION_ENTRY_PLAN` | v3: an ENTER without a valid `entry_plan`, an `entry_plan` with HOLD or in a management packet, or a plan outside `limits` (the detail names the rule); v2: `entry_plan` missing when the Chief enters `agent_entry_id`, present with another pick, malformed, `order_style` not equal to `order_type`, or outside `limits` (the codes of 5.8) |
+| 422 `INVALID` | `DECISION_MANAGE` | a flat packet with MANAGE or `manage`; a management packet without MANAGE and `manage`; a request that breaks a rule of 5.9 (the detail names it) |
+| 422 `INVALID` | `DECISION_BIAS` | `m15_bias` missing or invalid |
+| 422 `INVALID` | `DECISION_KIND` | a v1/v2 decision for a management packet, or a decision for another `packet_kind` |
 | 409 `HASH_MISMATCH` | `DECISION_STALE_PACKET` | `packet_hash` belongs to another packet |
 | 409 `UNKNOWN_CYCLE` | | no pending cycle has this `cycle_id` |
 | 409 `EXPIRED` | `DECISION_EXPIRED` or none | the packet expired, or the cycle closed without a decision |

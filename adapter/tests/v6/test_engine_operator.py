@@ -15,11 +15,14 @@ from app.v6.clock import FakeClock
 from app.v6.cycle_codes import HoldReason
 from app.v6.cycle_types import CycleResult
 from app.v6.deliberation.engine import DeliberationEngine, EngineDeps, rules_provider_for
-from app.v6.deliberation.publication import PublishOutcome, PublishRequest
+from app.v6.deliberation.publication import (
+    ManageDispatch, ManageOutcome, PublishOutcome, PublishRequest,
+)
 from app.v6.providers.operator_queue import OperatorQueue
 
 from . import engine_fixtures_v6 as ef
 from .execute_fixtures_v6 import enter_decision
+from .operator_fixtures_v6 import as_v2
 
 OPERATOR: dict[str, Any] = {
     "backend": "operator", "mode": "execute", "operator_token": SecretStr("operator-" + "o" * 40),
@@ -32,8 +35,10 @@ WAIT_STEP_S = 0.01
 @dataclass
 class FakePublisher:
     outcome: PublishOutcome
+    managed: ManageOutcome = ManageOutcome(True, "QUEUED", "queued")
     requests: list[PublishRequest] = field(default_factory=list)
     cancels: list[str] = field(default_factory=list)
+    dispatches: list[ManageDispatch] = field(default_factory=list)
 
     async def publish(self, request: PublishRequest) -> PublishOutcome:
         self.requests.append(request)
@@ -42,6 +47,10 @@ class FakePublisher:
     async def cancel_pending(self, reason: str) -> tuple[str, ...]:
         self.cancels.append(reason)
         return ()
+
+    async def manage(self, dispatch: ManageDispatch) -> ManageOutcome:
+        self.dispatches.append(dispatch)
+        return self.managed
 
 
 @dataclass(frozen=True)
@@ -57,7 +66,7 @@ def anyio_backend() -> str:
 
 
 def rig(*candidates: Any, publisher: FakePublisher | None = None,
-        clock: FakeClock | None = None, **overrides: Any) -> Rig:
+        clock: FakeClock | None = None, plans: Any = None, **overrides: Any) -> Rig:
     config = ef.settings(**(OPERATOR | overrides))
     fake = clock or ef.clock_at()
     queue = OperatorQueue(settings=config, clock=fake)
@@ -65,7 +74,7 @@ def rig(*candidates: Any, publisher: FakePublisher | None = None,
         settings=config, clock=fake, bars=ef.MemoryBars(ef.history()),
         breakers=ef.healthy_breakers(config), rules=rules_provider_for(config, fake),
         panel=None, detector=ef.detector_of(*candidates), operator=queue,
-        publisher=publisher))
+        publisher=publisher, plans=plans))
     return Rig(engine=engine, queue=queue, clock=fake)
 
 
@@ -192,9 +201,8 @@ def agent_decision(plan: Callable[[dict[str, Any]], dict[str, Any]] = agent_plan
     """A decide() for `run`: Price Action takes the agent entry and the Chief enters it."""
     def decide(_: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
         entry_id = packet["limits"]["agent_entry_id"]
-        decision = json.loads(json.dumps(packet["decision_template"]))
-        decision.update(agent="claude_code", schema_version="v6.operator.decision.2",
-                        entry_plan=plan(packet), rebuttal={})
+        decision = as_v2(packet["decision_template"])
+        decision.update(agent="claude_code", entry_plan=plan(packet), rebuttal={})
         decision["views"]["price_action"] = {"abstain": False, "ranked": [{
             "candidate_id": entry_id, "verdict": "TAKE", "conviction": 0.8,
             "reason_codes": ["LEVEL_CONFLUENCE"], "note": "own read"}]}

@@ -5,11 +5,14 @@ Built from what tier 0 already computed: the market context, the gates, the
 detector suggestions with their exit plans, the rules desk views and the breaker
 allowance, plus the analysis blocks of `packet_extras` (closed bars M1-D1,
 reference levels, the limits of an agent-designed entry). A suggestion is
-offered only when it has an exit plan AND sizes at the standard tier; a packet
-is served on every bar that reaches tier 1, with or without suggestions,
-because the agent may design its own entry (user decision 2026-09-17). The rules
-views are trimmed to what is offered, so the decision template (HOLD) is itself
-an acceptable decision.
+offered only when it has an exit plan AND sizes at the standard tier; a flat
+packet is served on every bar that reaches tier 1, with or without suggestions,
+because the agent may design its own entry (user decision 2026-09-17). While a
+V6 order rests or a V6 position is open the packet is a management packet
+(`state` pending or position): no suggestion and no entry, but the order or the
+position with its plan, the last management action and the agent's last M15
+bias. The rules views are trimmed to what is offered, so the decision template
+(HOLD, or KEEP when managing) is itself an acceptable decision.
 
 The agent sees an equity band, never the balance or the login, and never sets
 lots: an agent entry is validated and sized by `risk/`. Text is cleaned of
@@ -37,6 +40,8 @@ from ..cycle_codes import (
 from ..cycle_types import (
     CalendarAssessment, CalendarEvent, CandidateAssessment, DeskViews, MarketContext,
 )
+from ..ledger_actions import ActionRow
+from ..ledger_intents import IntentRecord
 from ..market.sessions import entry_blocks
 from ..risk.policy import (
     OPERATOR_MODES, OPERATOR_SOURCE, check_settings_policy, evaluate_account_policy,
@@ -47,8 +52,11 @@ from ..schemas.operator import (
     OperatorPacketBody, allowed_values, canonical_json, equity_band, seal_packet,
 )
 from ..schemas.operator_parts import MAX_DETAIL_CHARS, MAX_SERVER_CHARS
+from ..schemas.operator_plan import MAX_ACTION_DETAIL_CHARS, M15Bias, PacketState
 from ..types import GateResult, Refusal
-from .packet_extras import bars_block, levels_block, limits_block, pending_order_block
+from .packet_extras import (
+    bars_block, levels_block, limits_block, pending_order_block, position_block,
+)
 from .shadow import size_for
 
 logger = logging.getLogger(__name__)
@@ -79,7 +87,10 @@ class PacketRequest:
 
     `offered`: the engine's CandidatePool.offered; `baseline`: the rules desk views;
     `remaining_loss_usd`: BreakerStatus.remaining_loss_usd; `deadline_epoch`: when
-    the engine stops waiting (the packet never outlives it).
+    the engine stops waiting (the packet never outlives it). `state` pending or
+    position makes a management packet about the resting order or open position;
+    `record` is the intent behind it, `last_action` the session's newest management
+    action and `last_bias` / `last_bias_at` the agent's last M15 reading.
     """
 
     context: MarketContext
@@ -91,7 +102,11 @@ class PacketRequest:
     armed: bool
     now: float
     deadline_epoch: float | None = None
-    review: bool = False            # a V6 order rests: ask KEEP or CANCEL, offer no entry
+    state: PacketState = "flat"
+    record: IntentRecord | None = None
+    last_action: ActionRow | None = None
+    last_bias: M15Bias | None = None
+    last_bias_at: int | None = None
 
 
 @dataclass(frozen=True)
@@ -127,7 +142,8 @@ def build_packet(request: PacketRequest, settings: V6Settings) -> OperatorPacket
     window = _window(request, settings)
     if isinstance(window, PacketRefusal):
         return window
-    candidates, skipped = ((), ()) if request.review else _sized_candidates(request, settings)
+    candidates, skipped = (((), ()) if request.state != "flat"
+                           else _sized_candidates(request, settings))
     if skipped:
         logger.info("v6 operator packet %s: suggestions left out (%s)",
                     request.context.cycle_id, ",".join(skipped))
@@ -212,12 +228,13 @@ def _body(request: PacketRequest, settings: V6Settings, window: tuple[int, int],
     events = context.calendar.events[:MAX_EVENTS]
     ids = tuple(str(document["candidate_id"]) for document in candidates)
     event_ids = tuple(event.event_id for event in events)
-    limits = limits_block(context, settings, request.remaining_loss_usd, review=request.review)
+    limits = limits_block(context, settings, request.remaining_loss_usd, state=request.state)
     allowed = allowed_values(operator_agents=settings.operator_agents,
                              candidate_ids=ids + (str(limits["agent_entry_id"]),),
                              event_ids=event_ids, pa_min_conviction=settings.pa_min_conviction)
     document: Document = {
-        "schema_version": PACKET_SCHEMA, "cycle_id": context.cycle_id,
+        "schema_version": PACKET_SCHEMA, "packet_kind": "m15", "state": request.state,
+        "cycle_id": context.cycle_id,
         "created_at_epoch": window[0], "expires_at_epoch": window[1],
         "bar_open_epoch": context.bar_open_epoch, "bar_close_epoch": context.as_of_epoch,
         "mode": settings.mode, "session_id": request.session_id,
@@ -234,9 +251,31 @@ def _body(request: PacketRequest, settings: V6Settings, window: tuple[int, int],
         "candidates": list(candidates),
         "baseline_views": _baseline(request.baseline, frozenset(ids), frozenset(event_ids)),
         "allowed": allowed.model_dump(mode="json"),
-        "pending_order": pending_order_block(context) if request.review else None,
+        **_managed(request, settings.time_barrier_s),
     }
     return OperatorPacketBody.model_validate_json(canonical_json(document))
+
+
+def _managed(request: PacketRequest, default_barrier_s: int) -> Document:
+    """The order or position a management packet asks about, and the session memory."""
+    context, record, state = request.context, request.record, request.state
+    bias = request.last_bias
+    return {
+        "pending_order": pending_order_block(context, record) if state == "pending" else None,
+        "position": (position_block(context, record, default_barrier_s)
+                     if state == "position" else None),
+        "last_action": _action(request.last_action),
+        "last_bias": None if bias is None else bias.model_dump(mode="json"),
+        "last_bias_at_epoch": request.last_bias_at,
+    }
+
+
+def _action(row: ActionRow | None) -> Document | None:
+    if row is None:
+        return None
+    return {"action_id": row.action_id, "op": row.command, "ticket": row.ticket,
+            "status": row.status, "detail": _text(row.detail, MAX_ACTION_DETAIL_CHARS),
+            "at_epoch": int(row.updated_at)}
 
 
 def _market(context: MarketContext) -> Document:

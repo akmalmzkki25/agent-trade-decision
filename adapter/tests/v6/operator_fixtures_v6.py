@@ -2,7 +2,9 @@
 A valid operator packet body and decision, as JSON-shaped dicts.
 
 Tests change a copy and validate it through the JSON path, exactly as the
-operator API receives a decision.
+operator API receives a decision. `packet()` is a flat v3 packet; `managed_packet`
+is a pending or position packet; `decision()` is a v2 decision and `decision_v3`
+the sealed v3 template as an agent would edit it.
 """
 
 from __future__ import annotations
@@ -44,6 +46,10 @@ def limits_block(**changes: Any) -> dict[str, Any]:
         "volume_min": 0.01, "lots_step": 0.01, "max_lots": 0.03,
         "pending_expiry_epoch": BAR_CLOSE + 1800,
         "time_barrier_s": 7200,
+        "buy_stop_min": round(ASK + 0.37, 2), "sell_stop_max": round(BID - 0.37, 2),
+        "modify_distance": 0.37, "min_tp1_r": 0.5,
+        "time_limit_min_minutes": 60, "time_limit_max_minutes": 240,
+        "pending_expiry_min_minutes": 15, "pending_expiry_max_minutes": 60,
     }
     return {**block, **changes}
 
@@ -82,7 +88,8 @@ def body(**changes: Any) -> dict[str, Any]:
                              candidate_ids=(BUY_ID, SELL_ID, AGENT_ID), event_ids=(EVENT_ID,),
                              pa_min_conviction=0.6)
     document: dict[str, Any] = {
-        "schema_version": "v6.operator.packet.2", "cycle_id": CYCLE_ID,
+        "schema_version": "v6.operator.packet.3", "packet_kind": "m15", "state": "flat",
+        "cycle_id": CYCLE_ID,
         "created_at_epoch": CREATED, "expires_at_epoch": EXPIRES,
         "bar_open_epoch": BAR_OPEN, "bar_close_epoch": BAR_CLOSE, "mode": "execute",
         "session_id": SESSION_ID,
@@ -114,8 +121,47 @@ def body(**changes: Any) -> dict[str, Any]:
                            "liquidity": liquidity_payload(),
                            "structure": structure_payload()},
         "allowed": allowed.model_dump(mode="json"),
+        "pending_order": None, "position": None, "last_action": None, "last_bias": None,
+        "last_bias_at_epoch": None,
     }
     return {**document, **copy.deepcopy(changes)}
+
+
+def plan_block(**changes: Any) -> dict[str, Any]:
+    block = {"tp1": 4539.0, "tp2": 4543.0, "sl_after_tp1": 4535.5, "sl_after_tp2": 4539.0,
+             "step": 0, "time_limit_min": 150}
+    return {**block, **changes}
+
+
+def position_block(**changes: Any) -> dict[str, Any]:
+    block = {"ticket": 91, "intent_id": "k7w2m4pq3xza", "side": "buy", "lots": 0.01,
+             "open_price": 4533.35, "open_epoch": BAR_CLOSE - 600, "sl": 4526.35,
+             "tp": 4549.0, "initial_sl": 4526.35, "profit": 1.83, "r_now": 0.26,
+             "mae_points": 120.0, "mfe_points": 240.0, "minutes_open": 10.0,
+             "time_limit_epoch": BAR_CLOSE - 600 + 9000, "plan": plan_block()}
+    return {**block, **changes}
+
+
+def pending_block(**changes: Any) -> dict[str, Any]:
+    block = {"ticket": 77, "intent_id": "k7w2m4pq3xza", "order_type": "BUY_LIMIT",
+             "price": 4531.35, "sl": 4524.35, "tp": 4547.0, "lots": 0.01,
+             "expiration_epoch": BAR_CLOSE + 900, "distance_from_quote": 4.0,
+             "plan": plan_block(tp1=4535.5, tp2=4541.0, sl_after_tp1=4532.0,
+                                sl_after_tp2=4535.5)}
+    return {**block, **changes}
+
+
+def managed_packet(state: str, **changes: Any) -> OperatorPacket:
+    """A pending or position packet: no suggestions, no agent entry."""
+    allowed = allowed_values(operator_agents=("claude_code", "codex"), candidate_ids=(AGENT_ID,),
+                             event_ids=(EVENT_ID,), pa_min_conviction=0.6)
+    block = ({"position": position_block()} if state == "position"
+             else {"pending_order": pending_block()})
+    defaults = {"state": state, "candidates": [],
+                "limits": limits_block(agent_entry_possible=False),
+                "allowed": allowed.model_dump(mode="json"),
+                "baseline_views": {**body()["baseline_views"], "price_action": None}, **block}
+    return packet(**{**defaults, **changes})
 
 
 def packet_body(**changes: Any) -> OperatorPacketBody:
@@ -136,6 +182,23 @@ def decision(sealed: OperatorPacket, **changes: Any) -> dict[str, Any]:
         "chief": chief_payload("ENTER", BUY_ID), "rebuttal": {BUY_ID: "maintain"},
     }
     return {**document, **copy.deepcopy(changes)}
+
+
+V2_KEYS: Final[frozenset[str]] = frozenset({
+    "schema_version", "cycle_id", "packet_hash", "agent", "views", "chief", "rebuttal",
+    "entry_plan", "lots"})
+
+
+def as_v2(template: dict[str, Any]) -> dict[str, Any]:
+    """A v3 template as the start of a version 2 decision (the v3-only keys dropped)."""
+    kept = {key: value for key, value in copy.deepcopy(template).items() if key in V2_KEYS}
+    return {**kept, "schema_version": "v6.operator.decision.2"}
+
+
+def decision_v3(sealed: OperatorPacket, **changes: Any) -> dict[str, Any]:
+    """The sealed template with the agent set (edit it like an agent would)."""
+    template = sealed.decision_template.model_dump(mode="json")
+    return {**template, "agent": "codex", **copy.deepcopy(changes)}
 
 
 def raw(document: dict[str, Any]) -> bytes:

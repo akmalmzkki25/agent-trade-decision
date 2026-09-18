@@ -18,8 +18,12 @@ from typing import Any, Final
 
 from app.v6.clock import FakeClock
 from app.v6.config import V6Settings
-from app.v6.cycle_types import MarketContext, candidate_id_for
+from app.v6.cycle_types import (
+    CalendarAssessment, CalendarEvent, DeskViews, MarketContext, candidate_id_for,
+)
 from app.v6.deliberation.cycle_draft import CycleRequest
+from app.v6.desks import liquidity_view, news_risk_view, price_action_view, structure_view
+from app.v6.market.sessions import session_state
 from app.v6.risk.breakers import (
     SCOPES, BreakerInputs, BreakerStatus, PeriodInput, evaluate_breakers,
 )
@@ -95,6 +99,35 @@ def engine_snapshot_payload(snapshot_id: str = SNAPSHOT_ID, *, bar_open: int = T
 def engine_snapshot(snapshot_id: str = SNAPSHOT_ID, **changes: Any) -> V6Snapshot:
     return V6Snapshot.model_validate_json(json.dumps(engine_snapshot_payload(
         snapshot_id, **changes)))
+
+
+def ask_price() -> float:
+    return float(engine_snapshot_payload()["quote"]["ask"])
+
+
+def calendar_assessment(as_of: int = AS_OF) -> CalendarAssessment:
+    """The calendar tier 0 sees: one USD event six hours ahead, fresh."""
+    event = CalendarEvent(event_id="mt5:840001", source="mt5", time_epoch=as_of + 6 * HOUR,
+                          currency="USD", importance="HIGH", code="cpi-yy", forecast=2.9)
+    return CalendarAssessment(as_of_epoch=as_of, blackout=False, codes=(),
+                              next_event_minutes=360.0, last_event_minutes_ago=None,
+                              stale=False, events=(event,))
+
+
+def market_context(snapshot: V6Snapshot | None = None,
+                   cycle_id: str = "c-00000000000000bb") -> MarketContext:
+    """The MarketContext of a snapshot at AS_OF (no bars, no features)."""
+    snap = engine_snapshot() if snapshot is None else snapshot
+    return MarketContext.from_snapshot(
+        snap, cycle_id=cycle_id, received_at=RECEIVED, bars={},
+        session=session_state(AS_OF), calendar=calendar_assessment(), features={})
+
+
+def rules_views(context: MarketContext) -> DeskViews:
+    """The rules desk views with nothing offered."""
+    return DeskViews(price_action=price_action_view(context, ()),
+                     news_risk=news_risk_view(context), liquidity=liquidity_view(context),
+                     structure=structure_view(context, ()))
 
 
 def request(snapshot: V6Snapshot | None = None, *, warmed_up: bool = True,

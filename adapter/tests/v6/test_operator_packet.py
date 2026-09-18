@@ -18,13 +18,12 @@ from app.v6.deliberation.candidates import assess_candidates
 from app.v6.deliberation.context_builder import (
     ContextRequest, build_context, cycle_friction, load_bars,
 )
+from app.v6.deliberation.operator_decision import ValidatedDecision, validate_decision
 from app.v6.deliberation.operator_packet import PacketRefusal, PacketRequest, build_packet
 from app.v6.providers.offline import rules_desk_views
 from app.v6.risk.gates import evaluate_gates
 from app.v6.schemas.agents import NewsRiskView, PriceActionView
-from app.v6.schemas.operator import (
-    ABSTAIN_VIEW, OperatorPacket, packet_hash, parse_operator_decision,
-)
+from app.v6.schemas.operator import ABSTAIN_VIEW, OperatorPacket, packet_hash
 from app.v6.schemas.snapshot import V6Snapshot
 from app.v6.types import Candidate, GateResult
 
@@ -75,6 +74,14 @@ def built(request: PacketRequest, settings: V6Settings | None = None) -> Operato
     return packet
 
 
+def accepted_template(packet: OperatorPacket) -> ValidatedDecision:
+    """The packet's own v3 template, validated like a submission."""
+    result = validate_decision(packet, packet.decision_template.model_dump_json().encode(),
+                               operator_settings(), now=ef.RECEIVED)
+    assert isinstance(result, ValidatedDecision), result
+    return result
+
+
 def refusal(request: PacketRequest, code: str, settings: V6Settings | None = None
             ) -> PacketRefusal:
     result = build_packet(request, settings or operator_settings())
@@ -114,8 +121,8 @@ def test_a_packet_carries_tier0_and_a_usable_template() -> None:
     assert packet.baseline_views.price_action == request.baseline.price_action
     body = json.loads(packet.model_dump_json())
     assert packet.packet_hash == packet_hash(body)
-    template = packet.decision_template.model_dump_json().encode()
-    assert parse_operator_decision(template, packet, now=ef.RECEIVED).chief.action == "HOLD"
+    assert (packet.state, packet.decision_template.action) == ("flat", "HOLD")
+    assert accepted_template(packet).chief.action == "HOLD"
 
 
 def test_the_account_is_shown_only_as_a_band() -> None:
@@ -146,8 +153,7 @@ def test_only_sized_candidates_are_offered_and_baselines_follow() -> None:
     kept = packet.baseline_views.price_action
     assert kept is not None
     assert [item.candidate_id for item in kept.ranked] == [ef.CANDIDATE_ID]
-    template = packet.decision_template.model_dump_json().encode()
-    assert parse_operator_decision(template, packet, now=ef.RECEIVED).views.price_action == kept
+    assert accepted_template(packet).views.price_action == kept
 
 
 def test_a_baseline_ranking_only_unoffered_ids_abstains() -> None:
@@ -196,7 +202,7 @@ def test_without_a_sizable_suggestion_only_the_agent_entry_is_offered(
         packet = built(request)
     assert packet.candidates == ()
     assert packet.allowed.candidate_ids == (packet.limits.agent_entry_id,)
-    assert packet.decision_template.chief.action == "HOLD"
+    assert packet.decision_template.action == "HOLD"
     assert ("MIN_LOT_WALL" in caplog.text) == bool(offered)
 
 

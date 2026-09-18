@@ -270,4 +270,4 @@ def limits_from_packet(packet: "OperatorPacket") -> EntryLimits:
         stop_floor=block.stop_floor, max_stop_distance=block.max_stop_distance,
         min_reward_r=block.min_reward_r, max_reward_r=block.max_reward_r,
         default_reward_r=block.default_reward_r, risk_budget_usd=block.risk_budget_usd,
-        modify_distance=getattr(block, "modify_distance", 0.0))
+        modify_distance=block.modify_distance)

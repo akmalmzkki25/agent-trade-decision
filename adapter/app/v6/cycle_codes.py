@@ -65,8 +65,9 @@ class HoldReason(StrEnum):
     STALE = "APP-V6-STALE"
     LATE = "APP-V6-LATE"                      # decision after bar close + deadline
     OPERATOR_TIMEOUT = "APP-V6-OPERATOR-TIMEOUT"  # no operator decision by the deadline
-    PENDING_KEPT = "APP-V6-PENDING-KEPT"            # review: the resting order stays
-    PENDING_CANCELLED = "APP-V6-PENDING-CANCELLED"  # review: the agent cancelled it
+    MANAGE_KEPT = "APP-V6-MANAGE-KEPT"        # management: kept (or recorded only, shadow)
+    MANAGE_SENT = "APP-V6-MANAGE-SENT"        # management: the action was queued for the EA
+    MANAGE_REFUSED = "APP-V6-MANAGE-REFUSED"  # management: the runtime refused to queue it
     ABORTED = "APP-V6-ABORTED"
     ERROR = "APP-V6-ERROR"
 

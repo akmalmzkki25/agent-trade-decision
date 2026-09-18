@@ -18,8 +18,10 @@ from pathlib import Path
 from ..clock import Clock
 from ..config import V6Settings
 from ..deliberation.engine import build_engine
+from ..ledger_actions import ActionRow
 from ..ledger_baskets import BasketJournal
 from ..ledger_cycles import LedgerCycles
+from ..ledger_intents import IntentRecord
 from ..ledger_v6 import LedgerV6
 from ..market.bar_store import BarStore
 from ..providers.operator_queue import OperatorQueue
@@ -34,6 +36,22 @@ from .publisher import IntentPublisher
 from .service import DeliberationRuntime
 from .sessions import ControlPlane, build_control_plane
 from .watchdog import WATCHDOG_INTERVAL_S, Watchdog, WatchdogDeps
+
+
+@dataclass(frozen=True)
+class LedgerPlans:
+    """The engine's `trade_state.PlanReader`: blocking reads of the cycle ledger."""
+
+    ledger: LedgerCycles
+
+    def intent(self, intent_id: str) -> IntentRecord | None:
+        return self.ledger.intents.get(intent_id)
+
+    def by_ticket(self, ticket: int) -> IntentRecord | None:
+        return self.ledger.intents.by_ticket(ticket)
+
+    def last_action(self, session_id: str) -> ActionRow | None:
+        return self.ledger.actions.latest(session_id)
 
 
 @dataclass(frozen=True)
@@ -89,7 +107,8 @@ def build_runtime_parts(core: CoreParts, ledger_cycles: LedgerCycles, *,
                                   ea_state=core.ea_state, commands=desk.deps.commands,
                                   desk=desk)
     engine = build_engine(settings, clock, core.bar_store, breakers.for_context,
-                          operator=queue, publisher=IntentPublisher(desk))
+                          operator=queue, publisher=IntentPublisher(desk),
+                          plans=LedgerPlans(ledger_cycles))
     worker = DeliberationRuntime(
         ea_state=core.ea_state, bar_store=core.bar_store, ledger=ledger_cycles, engine=engine,
         sessions=control.sessions, clock=clock, halt_path=core.halt_path,

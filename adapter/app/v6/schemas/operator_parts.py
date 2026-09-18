@@ -52,8 +52,15 @@ TOP_EQUITY_BAND: Final[EquityBand] = "ge_50k"
 # Same spelling as deliberation.protocol.RebuttalStance (a test keeps them equal).
 RebuttalStance = Literal["maintain", "withdraw"]
 AgentOrderType = Literal["LIMIT", "MARKET"]
-# What the agent does with a resting V6 pending order in a review packet.
-PendingAction = Literal["KEEP", "CANCEL"]
+# Decision v3 (docs/superpowers/specs/2026-09-17-v6-m1-dynamic-management-design.md).
+PlanOrderType = Literal["MARKET", "LIMIT", "STOP"]
+ManageTarget = Literal["position", "pending"]
+ManageOp = Literal["KEEP", "CLOSE", "CANCEL", "MODIFY"]
+BiasDirection = Literal["up", "down", "range", "unclear"]
+DecisionAction = Literal["HOLD", "ENTER", "MANAGE"]
+PacketKind = Literal["m15"]
+PacketState = Literal["flat", "pending", "position"]
+ActionStatus = Literal["PUBLISHED", "APPLIED", "REJECTED", "FAILED", "EXPIRED"]
 
 Hash = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 Epoch = Annotated[int, Field(ge=0)]
@@ -85,7 +92,11 @@ ENUM_CHOICES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType({
     "rebuttal": get_args(RebuttalStance),
     "entry_plan.side": ("buy", "sell"),
     "entry_plan.order_type": get_args(AgentOrderType),
-    "pending_action": get_args(PendingAction),
+    "action": get_args(DecisionAction),
+    "entry_plan_v2.order_type": get_args(PlanOrderType),
+    "manage.target": get_args(ManageTarget),
+    "manage.op": get_args(ManageOp),
+    "m15_bias.direction": get_args(BiasDirection),
 })
 LIMIT_VALUES: Final[Mapping[str, int]] = MappingProxyType({
     "max_ranked": MAX_RANKED, "max_reason_codes": agents.MAX_REASON_CODES,
@@ -93,6 +104,8 @@ LIMIT_VALUES: Final[Mapping[str, int]] = MappingProxyType({
     "max_note_chars": agents.MAX_NOTE_CHARS, "max_rationale_chars": agents.MAX_RATIONALE_CHARS,
     "max_dissent_chars": agents.MAX_DISSENT_CHARS, "max_view_bytes": agents.MAX_VIEW_JSON_BYTES,
     "max_decision_bytes": MAX_DECISION_BYTES, "max_thesis_chars": MAX_THESIS_CHARS,
+    "max_bias_levels": 6, "max_scenario_chars": 240, "max_reason_chars": 200,
+    "max_decision_note_chars": 300,
 })
 
 
@@ -206,6 +219,15 @@ class PacketLimits(Frozen):
     max_lots: Price
     pending_expiry_epoch: Epoch
     time_barrier_s: int = Field(gt=0)
+    # Decision v3: STOP entries, the modify distance d_min and the plan windows.
+    buy_stop_min: Price
+    sell_stop_max: Price
+    modify_distance: float = Field(ge=0)
+    min_tp1_r: Price
+    time_limit_min_minutes: int = Field(ge=1, le=240)
+    time_limit_max_minutes: int = Field(ge=1, le=240)
+    pending_expiry_min_minutes: int = Field(ge=1, le=60)
+    pending_expiry_max_minutes: int = Field(ge=1, le=60)
 
 
 class PacketGate(Frozen):
@@ -273,20 +295,6 @@ class PacketCandidate(Frozen):
         if (self.sizing is None) == (not self.sizing_refusal):
             raise ValueError("give sizing or the codes that refused it, not both or neither")
         return self
-
-
-class PacketPendingOrder(Frozen):
-    """The resting V6 order a review packet asks about (KEEP or CANCEL)."""
-
-    ticket: int = Field(ge=0)
-    intent_id: Annotated[str, StringConstraints(max_length=16)]
-    order_type: Literal["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"]
-    price: Price
-    sl: float = Field(ge=0)
-    tp: float = Field(ge=0)
-    lots: Price
-    expiration_epoch: Epoch
-    distance_from_quote: float
 
 
 class AgentEntryPlan(Frozen):

@@ -1,18 +1,17 @@
 """
-Contracts of the operator backend (plan section 3.3; user decisions 2026-09-16).
+Contracts of the operator backend (plan section 3.3; user decisions 2026-09-16/17).
 
-Each cycle that reaches tier 1 is served to an operator agent (Claude Code, Codex
-or Antigravity, in a chat session) as one `OperatorPacket`; the agent answers
-with one `OperatorDecision` that fills the four desk views and the Chief. The Chief
-either enters one of the detector suggestions or the agent's own entry plan (the
-packet's `limits.agent_entry_id`, user decision 2026-09-17): side, order type,
-entry, stop and an optional target, which code validates and sizes. Agents never
-set lots. `parse_operator_decision` applies the same semantic checks as
-`agents.validate_view`. Packets exist for DEMO accounts only.
+Each cycle that reaches tier 1 is served to an operator agent (Claude Code, Codex or
+Antigravity, in a chat session) as one `OperatorPacket`. A packet has a state: `flat`
+(the agent may HOLD or ENTER, its own plan included), `pending` or `position` (a V6
+order rests or a V6 position is open: the agent manages it). The agent answers with a
+decision v3 (`deliberation.decision_v3`); a v2 decision (`OperatorDecision`: four desk
+views and a Chief) is still accepted for a flat packet. Packets exist for DEMO accounts
+only.
 
-`packet_hash` is the sha256 of the canonical JSON (sorted keys, no whitespace,
-ASCII) of the packet without its `packet_hash` and `decision_template` keys; a
-decision must echo it. Build served packets with `seal_packet`.
+`packet_hash` is the sha256 of the canonical JSON (sorted keys, no whitespace, ASCII)
+of the packet without its `packet_hash` and `decision_template` keys; a decision must
+echo it. Build served packets with `seal_packet`.
 """
 
 from __future__ import annotations
@@ -20,56 +19,67 @@ from __future__ import annotations
 import hashlib
 import hmac
 from collections.abc import Mapping
-from typing import Final, Literal, TypeVar
+from typing import Annotated, Final, Literal, TypeVar
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import AfterValidator, Field, StringConstraints, model_validator
 
 from ..config import OperatorAgent
 from ..cycle_codes import MAX_OFFERED_CANDIDATES
 from ..types import TIMEFRAME_SECONDS
 from .agents import (
-    DESK_ROLES, MAX_RANKED, ChiefDecision, ItemId, LiquidityView, NewsRiskView, PriceActionView,
-    StructureView, ViewValidationError, validate_view,
+    MAX_RANKED, ChiefDecision, ItemId, LiquidityView, NewsRiskView, PriceActionView,
+    StructureView,
 )
+from .agents import _printable as printable
 from .operator_parts import (
     ENUM_CHOICES, EQUITY_BANDS, LIMIT_VALUES, MAX_CODES, MAX_DECISION_BYTES, MAX_EVENTS,
     MAX_FEATURES, MAX_GATES, MAX_PACKET_H1_BARS, MAX_PACKET_M15_BARS, TOP_EQUITY_BAND,
     AgentEntryPlan, AllowedValues, BaselineViews, CandidateExit, CandidateSizing, CompactBar,
-    Epoch, EquityBand, Frozen, Hash, PacketAccount, PacketBars, PacketCalendar,
-    PacketCandidate, PacketEvent, PacketGate, PacketLevels, PacketLimits, PacketMarket,
-    PacketPendingOrder, PacketSession, PendingAction, RebuttalStance, allowed_values,
-    canonical_json, equity_band,
+    DecisionAction, Epoch, EquityBand, Frozen, Hash, PacketAccount, PacketBars, PacketCalendar,
+    PacketCandidate, PacketEvent, PacketGate, PacketKind, PacketLevels, PacketLimits,
+    PacketMarket, PacketSession, PacketState, RebuttalStance, allowed_values, canonical_json,
+    equity_band,
+)
+from .operator_plan import (
+    M15Bias, ManageRequest, PacketAction, PacketPendingOrder, PacketPosition,
 )
 
 __all__ = [
-    "PACKET_SCHEMA", "DECISION_SCHEMA", "HASH_EXCLUDED_KEYS", "MAX_DECISION_BYTES",
-    "MAX_PACKET_M15_BARS", "MAX_PACKET_H1_BARS", "MAX_GATES", "MAX_EVENTS", "MAX_CODES",
-    "MAX_FEATURES", "ENUM_CHOICES", "LIMIT_VALUES", "EQUITY_BANDS", "TOP_EQUITY_BAND",
-    "DECISION_ERR_TOO_LARGE", "DECISION_ERR_NOT_JSON", "DECISION_ERR_SCHEMA",
-    "DECISION_ERR_STALE", "DECISION_ERR_EXPIRED", "DECISION_ERR_AGENT", "DECISION_ERR_VIEW",
-    "DECISION_ERR_REBUTTAL", "DECISION_ERR_ENTRY_PLAN", "DECISION_SCHEMAS", "AgentEntryPlan",
-    "PacketLimits", "PacketLevels", "PacketPendingOrder", "PendingAction",
-    "DECISION_ERR_REVIEW", "DECISION_ERR_LOTS", "decision_extras_problem", "EquityBand", "RebuttalStance", "CompactBar",
+    "PACKET_SCHEMA", "DECISION_SCHEMA", "DECISION_SCHEMA_V2", "HASH_EXCLUDED_KEYS",
+    "MAX_DECISION_BYTES", "MAX_PACKET_M15_BARS", "MAX_PACKET_H1_BARS", "MAX_GATES",
+    "MAX_EVENTS", "MAX_CODES", "MAX_FEATURES", "ENUM_CHOICES", "LIMIT_VALUES", "EQUITY_BANDS",
+    "TOP_EQUITY_BAND", "DECISION_ERR_TOO_LARGE", "DECISION_ERR_NOT_JSON",
+    "DECISION_ERR_SCHEMA", "DECISION_ERR_STALE", "DECISION_ERR_EXPIRED", "DECISION_ERR_AGENT",
+    "DECISION_ERR_VIEW", "DECISION_ERR_REBUTTAL", "DECISION_ERR_ENTRY_PLAN",
+    "DECISION_ERR_LOTS", "DECISION_ERR_MANAGE", "DECISION_ERR_BIAS", "DECISION_ERR_KIND",
+    "DECISION_SCHEMAS", "AgentEntryPlan", "PacketLimits", "PacketLevels",
+    "PacketPendingOrder", "PacketPosition", "PacketAction", "M15Bias", "ManageRequest",
+    "decision_extras_problem", "EquityBand", "RebuttalStance", "CompactBar",
     "PacketAccount", "PacketMarket", "PacketSession", "PacketBars", "PacketGate",
     "PacketEvent", "PacketCalendar", "CandidateExit", "CandidateSizing", "PacketCandidate",
     "BaselineViews", "AllowedValues", "OperatorPacketBody", "OperatorPacket", "OperatorViews",
-    "OperatorDecision", "OperatorDecisionError", "ABSTAIN_VIEW", "UNKNOWN_NEWS_VIEW",
-    "UNKNOWN_LIQUIDITY_VIEW", "UNKNOWN_STRUCTURE_VIEW", "HOLD_DECISION", "allowed_values",
-    "canonical_json", "equity_band", "packet_hash", "decision_template", "seal_packet",
-    "parse_operator_decision",
+    "OperatorDecision", "DecisionTemplate", "OperatorDecisionError", "ABSTAIN_VIEW",
+    "UNKNOWN_NEWS_VIEW", "UNKNOWN_LIQUIDITY_VIEW", "UNKNOWN_STRUCTURE_VIEW", "HOLD_DECISION",
+    "allowed_values", "canonical_json", "equity_band", "packet_hash", "decision_template",
+    "seal_packet", "parse_operator_decision", "entry_plan_problem",
 ]
 
-PACKET_SCHEMA: Final[str] = "v6.operator.packet.2"
-DECISION_SCHEMA: Final[str] = "v6.operator.decision.2"
-# Version 1 decisions (no entry_plan) are still accepted: they can only pick a suggestion.
-DECISION_SCHEMAS: Final[tuple[str, ...]] = ("v6.operator.decision.1", DECISION_SCHEMA)
+PACKET_SCHEMA: Final[str] = "v6.operator.packet.3"
+DECISION_SCHEMA_V2: Final[str] = "v6.operator.decision.2"
+DECISION_SCHEMA: Final[str] = "v6.operator.decision.3"
+# Version 1 and 2 decisions are still accepted for a flat packet.
+DECISION_SCHEMAS: Final[tuple[str, ...]] = (
+    "v6.operator.decision.1", DECISION_SCHEMA_V2, DECISION_SCHEMA)
 DecisionSchema = Literal["v6.operator.decision.1", "v6.operator.decision.2"]
 HASH_EXCLUDED_KEYS: Final[frozenset[str]] = frozenset({"packet_hash", "decision_template"})
 M15_S: Final[int] = TIMEFRAME_SECONDS["M15"]
-MAX_ERROR_DETAIL_CHARS: Final[int] = 300
+MAX_NOTE_CHARS: Final[int] = 300
+# The agent's free note of a v3 decision: untrusted, cleaned of control characters.
+DecisionNote = Annotated[str, StringConstraints(max_length=MAX_NOTE_CHARS),
+                         AfterValidator(printable)]
 ViewT = TypeVar("ViewT")
 
-# OperatorDecisionError.code values (the operator route answers 422 with the code).
+# Decision error codes (the operator route answers 422 with the code).
 DECISION_ERR_TOO_LARGE: Final[str] = "DECISION_TOO_LARGE"
 DECISION_ERR_NOT_JSON: Final[str] = "DECISION_NOT_JSON"
 DECISION_ERR_SCHEMA: Final[str] = "DECISION_SCHEMA"
@@ -79,9 +89,10 @@ DECISION_ERR_AGENT: Final[str] = "DECISION_AGENT_NOT_ALLOWED"
 DECISION_ERR_VIEW: Final[str] = "DECISION_VIEW"
 DECISION_ERR_REBUTTAL: Final[str] = "DECISION_REBUTTAL"
 DECISION_ERR_ENTRY_PLAN: Final[str] = "DECISION_ENTRY_PLAN"
-DECISION_ERR_REVIEW: Final[str] = "DECISION_REVIEW"
 DECISION_ERR_LOTS: Final[str] = "DECISION_LOTS"
-LOTS_EPSILON: Final[float] = 1e-9
+DECISION_ERR_MANAGE: Final[str] = "DECISION_MANAGE"
+DECISION_ERR_BIAS: Final[str] = "DECISION_BIAS"
+DECISION_ERR_KIND: Final[str] = "DECISION_KIND"
 
 
 def packet_hash(document: Mapping[str, object]) -> str:
@@ -93,7 +104,9 @@ def packet_hash(document: Mapping[str, object]) -> str:
 class OperatorPacketBody(Frozen):
     """Everything the agent decides on; `packet_hash` covers exactly these fields."""
 
-    schema_version: Literal["v6.operator.packet.2"]
+    schema_version: Literal["v6.operator.packet.3"]
+    packet_kind: PacketKind
+    state: PacketState
     cycle_id: ItemId
     created_at_epoch: Epoch
     expires_at_epoch: Epoch
@@ -112,8 +125,13 @@ class OperatorPacketBody(Frozen):
     candidates: tuple[PacketCandidate, ...] = Field(max_length=MAX_OFFERED_CANDIDATES)
     baseline_views: BaselineViews
     allowed: AllowedValues
-    # Set in a review packet: a V6 order rests; the agent answers KEEP or CANCEL.
+    # The trade the agent manages (exactly one of them, matching `state`).
     pending_order: PacketPendingOrder | None = None
+    position: PacketPosition | None = None
+    # What the agent did last: its newest action and its newest M15 bias.
+    last_action: PacketAction | None = None
+    last_bias: M15Bias | None = None
+    last_bias_at_epoch: Epoch | None = None
 
     @model_validator(mode="after")
     def _check_body(self) -> "OperatorPacketBody":
@@ -127,6 +145,13 @@ class OperatorPacketBody(Frozen):
             (ids == self.allowed.candidate_ids and len(set(ids)) == len(ids),
              "allowed.candidate_ids must list the distinct candidates, then the agent entry"),
             (events == self.allowed.event_ids, "allowed.event_ids must list the calendar events"),
+            ((self.state == "position") == (self.position is not None),
+             "state position needs exactly a position block"),
+            ((self.state == "pending") == (self.pending_order is not None),
+             "state pending needs exactly a pending_order block"),
+            (self.state == "flat" or (not self.candidates
+                                      and not self.limits.agent_entry_possible),
+             "a management packet offers no entry"),
         )
         problems = [message for ok, message in checks if not ok]
         if problems:
@@ -144,7 +169,7 @@ class OperatorViews(Frozen):
 
 
 class OperatorDecision(Frozen):
-    """One agent's answer to one packet. `rebuttal` is PA's R2 stance per TAKE candidate.
+    """A version 1 or 2 answer to a flat packet: four views and a Chief.
 
     `entry_plan` is required exactly when the Chief ENTERs the packet's agent entry id.
     """
@@ -159,8 +184,6 @@ class OperatorDecision(Frozen):
     entry_plan: AgentEntryPlan | None = None
     # The size the agent wants for an ENTER (limits.volume_min..max_lots; null = volume_min).
     lots: float | None = Field(default=None, gt=0)
-    # Review packets only: KEEP or CANCEL the resting V6 order.
-    pending_action: PendingAction | None = None
 
     @property
     def withdrawn_ids(self) -> frozenset[str]:
@@ -168,11 +191,27 @@ class OperatorDecision(Frozen):
         return frozenset(cid for cid, stance in self.rebuttal.items() if stance == "withdraw")
 
 
+class DecisionTemplate(Frozen):
+    """The ready-to-edit v3 decision of a served packet: HOLD, or KEEP when managing."""
+
+    schema_version: Literal["v6.operator.decision.3"]
+    packet_kind: PacketKind
+    cycle_id: ItemId
+    packet_hash: Hash
+    agent: OperatorAgent
+    action: DecisionAction
+    views: OperatorViews
+    entry_plan: None = None
+    manage: ManageRequest | None = None
+    m15_bias: M15Bias
+    note: DecisionNote = ""
+
+
 class OperatorPacket(OperatorPacketBody):
-    """A served packet: the body, its hash and a ready-to-edit decision (HOLD)."""
+    """A served packet: the body, its hash and a ready-to-edit decision."""
 
     packet_hash: Hash
-    decision_template: OperatorDecision
+    decision_template: DecisionTemplate
 
     @model_validator(mode="after")
     def _check_seal(self) -> "OperatorPacket":
@@ -203,24 +242,40 @@ UNKNOWN_STRUCTURE_VIEW: Final[StructureView] = StructureView(
 HOLD_DECISION: Final[ChiefDecision] = ChiefDecision(
     action="HOLD", candidate_id=None, risk_tier="reduced", order_style="LIMIT",
     exit_profile="STANDARD", confidence=0.0, rationale="", dissent="")
+UNCLEAR_BIAS: Final[M15Bias] = M15Bias(direction="unclear")
 
 
 def _or_default(view: ViewT | None, default: ViewT) -> ViewT:
     return default if view is None else view
 
 
-def decision_template(body: OperatorPacketBody, digest: str) -> OperatorDecision:
-    """The rules views (or cautious defaults) with a HOLD Chief, for the first allowed agent."""
+def baseline_or_defaults(body: OperatorPacketBody) -> OperatorViews:
+    """The rules views of the packet, or cautious defaults where a rules desk failed."""
     base = body.baseline_views
-    views = OperatorViews(
+    return OperatorViews(
         price_action=_or_default(base.price_action, ABSTAIN_VIEW),
         news_risk=_or_default(base.news_risk, UNKNOWN_NEWS_VIEW),
         liquidity=_or_default(base.liquidity, UNKNOWN_LIQUIDITY_VIEW),
         structure=_or_default(base.structure, UNKNOWN_STRUCTURE_VIEW))
-    return OperatorDecision(schema_version=DECISION_SCHEMA, cycle_id=body.cycle_id,
-                            packet_hash=digest, agent=body.allowed.agents[0], views=views,
-                            chief=HOLD_DECISION,
-                            pending_action=None if body.pending_order is None else "KEEP")
+
+
+def _keep(body: OperatorPacketBody) -> ManageRequest | None:
+    """KEEP the managed trade, or None for a flat packet."""
+    if body.position is not None:
+        return ManageRequest(target="position", ticket=body.position.ticket, op="KEEP")
+    if body.pending_order is not None:
+        return ManageRequest(target="pending", ticket=body.pending_order.ticket, op="KEEP")
+    return None
+
+
+def decision_template(body: OperatorPacketBody, digest: str) -> DecisionTemplate:
+    """The rules views, HOLD (or KEEP when managing) and the last bias, for the first agent."""
+    manage = _keep(body)
+    return DecisionTemplate(
+        schema_version=DECISION_SCHEMA, packet_kind=body.packet_kind, cycle_id=body.cycle_id,
+        packet_hash=digest, agent=body.allowed.agents[0],
+        action="HOLD" if manage is None else "MANAGE", views=baseline_or_defaults(body),
+        manage=manage, m15_bias=body.last_bias or UNCLEAR_BIAS)
 
 
 def seal_packet(body: OperatorPacketBody) -> OperatorPacket:
@@ -232,125 +287,8 @@ def seal_packet(body: OperatorPacketBody) -> OperatorPacket:
     return OperatorPacket.model_validate_json(canonical_json(sealed))
 
 
-# --- decisions ---------------------------------------------------------------------------
-class OperatorDecisionError(ValueError):
-    """An operator decision was refused; `code` is a DECISION_ERR_* value.
-
-    The detail never echoes free text from the submission.
-    """
-
-    def __init__(self, code: str, detail: str) -> None:
-        super().__init__(f"{code}: {detail[:MAX_ERROR_DETAIL_CHARS]}")
-        self.code = code
-        self.detail = detail[:MAX_ERROR_DETAIL_CHARS]
-
-
-def _parse_decision(raw: bytes) -> OperatorDecision:
-    if not isinstance(raw, (bytes, bytearray)):
-        raise TypeError("the decision body must be bytes")
-    if len(raw) > MAX_DECISION_BYTES:
-        raise OperatorDecisionError(DECISION_ERR_TOO_LARGE,
-                                    f"{len(raw)} bytes exceeds {MAX_DECISION_BYTES}")
-    try:
-        return OperatorDecision.model_validate_json(bytes(raw))
-    except ValidationError as exc:
-        errors = exc.errors(include_url=False, include_context=False, include_input=False)
-        code = (DECISION_ERR_NOT_JSON if {err["type"] for err in errors} == {"json_invalid"}
-                else DECISION_ERR_SCHEMA)
-        locations = ", ".join(".".join(map(str, err["loc"])) for err in errors[:5])
-        raise OperatorDecisionError(code, f"invalid at: {locations}") from None
-
-
-def _check_views(decision: OperatorDecision, packet: OperatorPacket) -> None:
-    offered = frozenset(packet.allowed.candidate_ids)
-    events = frozenset(packet.allowed.event_ids)
-    views = {role: getattr(decision.views, role) for role in DESK_ROLES}
-    for role, view in {**views, "chief": decision.chief}.items():
-        try:
-            validate_view(role, view.model_dump(mode="json"), offered, events)
-        except ViewValidationError as exc:
-            raise OperatorDecisionError(DECISION_ERR_VIEW, f"{role}: {exc.code}") from None
-
-
-def _check_rebuttal(decision: OperatorDecision) -> None:
-    taken = {item.candidate_id for item in decision.views.price_action.ranked
-             if item.verdict == "TAKE"}
-    stray = sorted(set(decision.rebuttal) - taken)
-    if stray:
-        raise OperatorDecisionError(DECISION_ERR_REBUTTAL,
-                                    f"rebuttal names candidates PA did not TAKE: {stray}")
-
-
-def entry_plan_problem(chief: ChiefDecision, plan: object, agent_entry_id: str) -> str | None:
-    """Why the entry plan does not match the Chief's pick, or None."""
-    enters_agent = chief.action == "ENTER" and chief.candidate_id == agent_entry_id
-    if enters_agent and plan is None:
-        return "the Chief enters the agent entry but entry_plan is missing"
-    if plan is not None and not enters_agent:
-        return "entry_plan is only allowed when the Chief ENTERs the agent entry id"
-    return None
-
-
-def _check_entry_plan(decision: OperatorDecision, packet: OperatorPacket) -> None:
-    problem = entry_plan_problem(decision.chief, decision.entry_plan,
-                                 packet.limits.agent_entry_id)
-    if problem is not None:
-        raise OperatorDecisionError(DECISION_ERR_ENTRY_PLAN, problem)
-    extras = decision_extras_problem(decision.chief, decision.lots, decision.pending_action,
-                                     packet)
-    if extras is not None:
-        raise OperatorDecisionError(*extras)
-
-
-def _lots_problem(lots: float | None, packet: OperatorPacketBody) -> str | None:
-    if lots is None:
-        return None
-    limits = packet.limits
-    steps = round(lots / limits.lots_step)
-    on_step = abs(steps * limits.lots_step - lots) <= LOTS_EPSILON
-    within = limits.volume_min - LOTS_EPSILON <= lots <= limits.max_lots + LOTS_EPSILON
-    if not (on_step and within):
-        return (f"lots must be a multiple of {limits.lots_step} between "
-                f"{limits.volume_min} and {limits.max_lots}")
-    return None
-
-
-def decision_extras_problem(chief: ChiefDecision, lots: float | None,
-                            pending_action: str | None,
-                            packet: OperatorPacketBody) -> tuple[str, str] | None:
-    """(code, detail) when `lots` or `pending_action` does not fit the packet, else None."""
-    if packet.pending_order is not None:
-        if pending_action is None:
-            return DECISION_ERR_REVIEW, "a review packet needs pending_action KEEP or CANCEL"
-        if chief.action != "HOLD" or lots is not None:
-            return DECISION_ERR_REVIEW, "a review packet allows only a HOLD Chief and no lots"
-        return None
-    if pending_action is not None:
-        return DECISION_ERR_REVIEW, "pending_action is only allowed in a review packet"
-    if lots is not None and chief.action != "ENTER":
-        return DECISION_ERR_LOTS, "lots is only allowed with an ENTER"
-    problem = _lots_problem(lots, packet)
-    return None if problem is None else (DECISION_ERR_LOTS, problem)
-
-
-def parse_operator_decision(raw: bytes, packet: OperatorPacket, *,
-                            now: float) -> OperatorDecision:
-    """Validate an agent's submission against the packet it answers.
-
-    Checks, in order: size (64 KB), strict schema, same cycle and packet hash,
-    not expired at `now`, agent allowed, every view and the Chief pass
-    `validate_view` against the offered ids, rebuttal only for PA TAKE ids.
-    Raises OperatorDecisionError.
-    """
-    decision = _parse_decision(raw)
-    if decision.cycle_id != packet.cycle_id or not hmac.compare_digest(
-            decision.packet_hash, packet.packet_hash):
-        raise OperatorDecisionError(DECISION_ERR_STALE, "the decision answers another packet")
-    if not now <= packet.expires_at_epoch:
-        raise OperatorDecisionError(DECISION_ERR_EXPIRED, "the packet has expired")
-    if decision.agent not in packet.allowed.agents:
-        raise OperatorDecisionError(DECISION_ERR_AGENT, "the agent is not in V6_OPERATOR_AGENTS")
-    _check_views(decision, packet)
-    _check_rebuttal(decision)
-    _check_entry_plan(decision, packet)
-    return decision
+# The v2 decision checks live in operator_checks; they are re-exported here, after every
+# name they need is defined.
+from .operator_checks import (  # noqa: E402
+    OperatorDecisionError, decision_extras_problem, entry_plan_problem, parse_operator_decision,
+)

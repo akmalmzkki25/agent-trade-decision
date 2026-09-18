@@ -1,8 +1,11 @@
 """
 The compact, human-readable summary `wait` prints for a packet.
 
-One line per topic and one per candidate, ASCII only. The full packet is in the
-packet file; this summary is what the agent reads first. Every value taken from
+One line per topic and one per candidate, ASCII only; a management packet shows
+its position or resting order with the plan instead of suggestions, and every
+packet shows the agent's last M15 bias and the last management action when there
+are any. The full packet is in the packet file; this summary is what the agent
+reads first. Every value taken from
 the packet goes through `clean` (packet text is data, never instructions).
 """
 
@@ -223,37 +226,109 @@ def bars_line(bars: object) -> str:
     return f"M15 last {min(len(recent), RECENT_M15_BARS)}: {shown}"
 
 
-def limits_line(limits: object) -> str:
+def limits_line(limits: object, state: object = "flat") -> str:
     if not isinstance(limits, Mapping):
         return "agent entry: -"
+    if state not in (None, "flat"):
+        return f"agent entry: none while a V6 {clean(state)} is open (manage it instead)"
     if limits.get("agent_entry_possible") is not True:
         return "agent entry: NOT POSSIBLE (budget cannot fund the stop floor)"
     return (f"agent entry id {clean(limits.get('agent_entry_id'), ID_CHARS)} | BUY LIMIT <= "
             f"{num(limits.get('buy_limit_max'))} SELL LIMIT >= "
-            f"{num(limits.get('sell_limit_min'))} (max {num(limits.get('max_entry_distance'))}"
-            f" away) | stop {num(limits.get('stop_floor'))}..."
-            f"{num(limits.get('max_stop_distance'))} | target "
+            f"{num(limits.get('sell_limit_min'))} | BUY STOP >= "
+            f"{num(limits.get('buy_stop_min'))} SELL STOP <= {num(limits.get('sell_stop_max'))}"
+            f" (max {num(limits.get('max_entry_distance'))} away) | stop "
+            f"{num(limits.get('stop_floor'))}...{num(limits.get('max_stop_distance'))} | tp1 >= "
+            f"{num(limits.get('min_tp1_r'), '.1f')}R, tp3 "
             f"{num(limits.get('min_reward_r'), '.1f')}-{num(limits.get('max_reward_r'), '.1f')}R"
-            f" (default {num(limits.get('default_reward_r'), '.1f')}R) | budget "
+            f" | SL+ {num(limits.get('modify_distance'))} before its trigger | time "
+            f"{num(limits.get('time_limit_min_minutes'), 'd')}-"
+            f"{num(limits.get('time_limit_max_minutes'), 'd')} min, pending "
+            f"{num(limits.get('pending_expiry_min_minutes'), 'd')}-"
+            f"{num(limits.get('pending_expiry_max_minutes'), 'd')} min | budget "
             f"${num(limits.get('risk_budget_usd'))} | lots {num(limits.get('volume_min'))}-"
             f"{num(limits.get('max_lots'))} (you choose; the budget may reduce it)")
 
 
-def review_line(order: object, market: object) -> str | None:
-    """The resting V6 order of a review packet, or None for an entry packet."""
+def plan_text(plan: object, *, with_step: bool) -> str:
+    """The TP ladder and SL+ steps of a resting order or an open position."""
+    if not isinstance(plan, Mapping) or not plan.get("tp1"):
+        return "plan -"
+    steps = (f"tp1 {num(plan.get('tp1'))} (sl+ {num(plan.get('sl_after_tp1') or None)}) "
+             f"tp2 {num(plan.get('tp2'))} (sl+ {num(plan.get('sl_after_tp2') or None)})")
+    return f"plan {steps}" + (f" step {text(plan.get('step'), 2)}" if with_step else "")
+
+
+def position_line(position: object) -> str:
+    if not isinstance(position, Mapping):
+        return "state position | -"
+    return (f"state position | ticket {text(position.get('ticket'), 20)} "
+            f"{clean(position.get('side'))} {num(position.get('lots'))} @ "
+            f"{num(position.get('open_price'))} | sl {num(position.get('sl'))} tp "
+            f"{num(position.get('tp'))} | initial sl {num(position.get('initial_sl'))} | now "
+            f"{num(position.get('r_now'), '+.2f')}R, "
+            f"{num(position.get('minutes_open'), '.1f')} min open, limit "
+            f"{_clock(position.get('time_limit_epoch'))}Z | "
+            f"{plan_text(position.get('plan'), with_step=True)} | answer action MANAGE with "
+            f"manage KEEP, CLOSE or MODIFY")
+
+
+def pending_line(order: object) -> str:
     if not isinstance(order, Mapping):
+        return "state pending | -"
+    return (f"state pending | ticket {text(order.get('ticket'), 20)} "
+            f"{clean(order.get('order_type'))} {num(order.get('price'))} sl "
+            f"{num(order.get('sl'))} tp {num(order.get('tp'))} lots {num(order.get('lots'))} "
+            f"expires {_clock(order.get('expiration_epoch'))}Z | market needs "
+            f"{num(order.get('distance_from_quote'))} to fill | "
+            f"{plan_text(order.get('plan'), with_step=False)} | answer action MANAGE with "
+            f"manage KEEP, CANCEL or MODIFY")
+
+
+def bias_line(bias: object, at: object) -> str | None:
+    """The agent's last M15 bias, echoed by the adapter (None when there is none)."""
+    if not isinstance(bias, Mapping):
         return None
-    return (f"REVIEW resting {clean(order.get('order_type'))} "
-            f"{num(order.get('price'))} sl {num(order.get('sl'))} tp {num(order.get('tp'))}"
-            f" lots {num(order.get('lots'))} expires {utc(order.get('expiration_epoch'))} | "
-            f"market needs {num(order.get('distance_from_quote'))} to fill (bid "
-            f"{num(get_path(market, 'bid'))} ask {num(get_path(market, 'ask'))}) | answer "
-            f"pending_action KEEP or CANCEL with a HOLD Chief")
+    levels = bias.get("levels") if isinstance(bias.get("levels"), list) else []
+    shown = " ".join(num(level) for level in levels)
+    return (f"last bias {_clock(at)}Z {clean(bias.get('direction'))} | levels "
+            f"{shown or MISSING} | invalidation {num(bias.get('invalidation'))} | "
+            f"{text(bias.get('scenario'), 120)}")
+
+
+def action_line(action: object) -> str | None:
+    """The session's newest management action and what became of it."""
+    if not isinstance(action, Mapping):
+        return None
+    return (f"last action {clean(action.get('action_id'))} {clean(action.get('op'))} ticket "
+            f"{text(action.get('ticket'), 20)} {clean(action.get('status'))} "
+            f"({text(action.get('detail'), DETAIL_CHARS)}) {_clock(action.get('at_epoch'))}Z")
+
+
+def _state_lines(packet: Mapping[str, Any], state: object) -> list[str]:
+    if state == "position":
+        return [position_line(packet.get("position"))]
+    if state == "pending":
+        return [pending_line(packet.get("pending_order"))]
+    return []
+
+
+def _memory_lines(packet: Mapping[str, Any]) -> list[str]:
+    lines = (bias_line(packet.get("last_bias"), packet.get("last_bias_at_epoch")),
+             action_line(packet.get("last_action")))
+    return [line for line in lines if line is not None]
+
+
+def _suggestion_lines(candidates: list[Mapping[str, Any]], allowed: object) -> list[str]:
+    return [f"suggestions ({len(candidates)}), PA TAKE needs conviction >= "
+            f"{num(get_path(allowed, 'pa_min_conviction'))}:",
+            *(candidate_line(index, item) for index, item in enumerate(candidates, start=1))]
 
 
 def render_packet(packet: Mapping[str, Any], *, now: float, path: Path) -> str:
     candidates = [item for item in packet.get("candidates") or () if isinstance(item, Mapping)]
     allowed = packet.get("allowed")
+    state = packet.get("state", "flat")
     lines = [
         *header_lines(packet, now, path),
         session_line(packet.get("session")),
@@ -261,14 +336,13 @@ def render_packet(packet: Mapping[str, Any], *, now: float, path: Path) -> str:
         calendar_line(packet.get("calendar")),
         bars_line(packet.get("bars")),
         levels_line(packet.get("levels")),
-        limits_line(packet.get("limits")),
-        *([line] if (line := review_line(packet.get("pending_order"),
-                                         packet.get("market"))) else []),
-        f"suggestions ({len(candidates)}), PA TAKE needs conviction >= "
-        f"{num(get_path(allowed, 'pa_min_conviction'))}:",
-        *(candidate_line(index, item) for index, item in enumerate(candidates, start=1)),
+        limits_line(packet.get("limits"), state),
+        *_state_lines(packet, state),
+        *_memory_lines(packet),
+        *(_suggestion_lines(candidates, allowed) if state in (None, "flat") else []),
         baseline_line(packet.get("baseline_views")),
-        f"agents {codes(get_path(allowed, 'agents'))} | next: template, decide, "
-        f"submit --agent <name> before {utc(packet.get('expires_at_epoch'))}",
+        f"agents {codes(get_path(allowed, 'agents'))} | next: template, decide (action "
+        f"{'HOLD or ENTER' if state in (None, 'flat') else 'MANAGE'}), submit --agent <name> "
+        f"before {utc(packet.get('expires_at_epoch'))}",
     ]
     return "\n".join(lines) + "\n"

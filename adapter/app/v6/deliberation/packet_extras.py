@@ -1,10 +1,12 @@
 """
-The analysis blocks of the operator packet: closed bars, reference levels and
-the limits of an agent-designed entry (user decision 2026-09-17).
+The analysis blocks of the operator packet: closed bars, reference levels, the
+limits of an agent-designed entry, and the resting order or open position a
+management packet asks about (user decisions 2026-09-17).
 
 Everything is built from what the cycle already knows at the bar close: the bars
 in the MarketContext (closed bars only), confirmed pivots (a pivot counts once
-its confirmation bar has closed) and `agent_entry.entry_limits`.
+its confirmation bar has closed), `plan_rules.plan_bounds` and the intent the
+adapter stored for the resting order or open position.
 """
 
 from __future__ import annotations
@@ -15,19 +17,22 @@ from typing import Final
 
 from ..config import V6Settings
 from ..cycle_types import MarketContext
+from ..ledger_intents import IntentRecord
 from ..market.levels import Pivot, confirmed_pivots, prior_day_levels
+from ..schemas.intent import intent_id_from_comment
 from ..schemas.operator_parts import (
     MAX_PACKET_D1_BARS, MAX_PACKET_H1_BARS, MAX_PACKET_M1_BARS, MAX_PACKET_M5_BARS,
     MAX_PACKET_M15_BARS, MAX_PACKET_PIVOTS,
 )
 from ..setups.base import full_days
 from ..types import TIMEFRAME_SECONDS, Bar
-from .agent_entry import entry_limits
+from .plan_rules import plan_bounds
 
 Document = dict[str, object]
 
 PIVOT_STRENGTH: Final[int] = 2
-INTENT_COMMENT_PREFIX: Final[str] = "Q6:"
+SECONDS_PER_MINUTE: Final[int] = 60
+R_DECIMALS: Final[int] = 3
 ROUND_STEP_SMALL: Final[float] = 10.0
 ROUND_STEP_LARGE: Final[float] = 50.0
 BAR_LIMITS: Final[tuple[tuple[str, int], ...]] = (
@@ -83,42 +88,98 @@ def levels_block(context: MarketContext) -> Document:
     }
 
 
-def pending_order_block(context: MarketContext) -> Document | None:
-    """The first resting V6 order, for a review packet (None when there is none)."""
+def _record_plan(record: IntentRecord | None, step: int) -> Document:
+    """The ladder the adapter stored for the trade (zeros when it has none)."""
+    if record is None:
+        return {"tp1": 0.0, "tp2": 0.0, "sl_after_tp1": 0.0, "sl_after_tp2": 0.0,
+                "step": step, "time_limit_min": 0}
+    return {"tp1": record.tp1, "tp2": record.tp2, "sl_after_tp1": record.sl_after_tp1,
+            "sl_after_tp2": record.sl_after_tp2, "step": max(step, record.plan_step),
+            "time_limit_min": record.time_barrier_s // SECONDS_PER_MINUTE}
+
+
+def _intent_of(comment: str, record: IntentRecord | None) -> str:
+    """The intent id in the MT5 comment, else the stored intent's (a broker may rewrite
+    comments)."""
+    return intent_id_from_comment(comment) or ("" if record is None else record.intent_id)
+
+
+def pending_order_block(context: MarketContext, record: IntentRecord | None) -> Document | None:
+    """The first resting V6 order and its plan (None when nothing rests).
+
+    `distance_from_quote` is how far the market still has to travel to fill the order.
+    """
     if not context.pending_orders:
         return None
     order = context.pending_orders[0]
-    comment = order.comment
-    intent_id = comment[len(INTENT_COMMENT_PREFIX):] if comment.startswith(
-        INTENT_COMMENT_PREFIX) else ""
-    buying = order.order_type.startswith("BUY")
     quote = context.quote
-    distance = quote.ask - order.price if buying else order.price - quote.bid
-    return {"ticket": order.ticket, "intent_id": intent_id[:16],
+    buying = order.order_type.startswith("BUY")
+    reference = quote.ask if buying else quote.bid
+    beyond = order.order_type.endswith("STOP")
+    distance = (order.price - reference) if buying == beyond else (reference - order.price)
+    return {"ticket": order.ticket, "intent_id": _intent_of(order.comment, record),
             "order_type": order.order_type, "price": order.price, "sl": order.sl,
             "tp": order.tp, "lots": order.volume, "expiration_epoch": order.expiration_epoch,
-            "distance_from_quote": round(distance, context.spec.digits)}
+            "distance_from_quote": round(distance, context.spec.digits),
+            "plan": _record_plan(record, 0)}
+
+
+def position_block(context: MarketContext, record: IntentRecord | None,
+                   default_barrier_s: int = 0) -> Document | None:
+    """The first open V6 position with its initial risk and plan (None when flat).
+
+    The executed SL+ step and the holding time come from the stored intent (the EA's
+    step reports update it); without one the step is 0 and the time limit is the
+    default barrier.
+    """
+    if not context.positions:
+        return None
+    position = context.positions[0]
+    sign = 1 if position.side == "buy" else -1
+    mark = context.quote.bid if sign > 0 else context.quote.ask
+    initial_sl = record.sl if record is not None else position.sl
+    risk = abs(position.price_open - initial_sl)
+    barrier = record.time_barrier_s if record is not None else default_barrier_s
+    minutes = max(0, context.as_of_epoch - position.open_epoch) / SECONDS_PER_MINUTE
+    return {"ticket": position.ticket,
+            "intent_id": _intent_of(position.comment, record),
+            "side": position.side, "lots": position.volume,
+            "open_price": position.price_open, "open_epoch": position.open_epoch,
+            "sl": position.sl, "tp": position.tp, "initial_sl": initial_sl,
+            "profit": position.profit,
+            "r_now": round(sign * (mark - position.price_open) / risk, R_DECIMALS)
+            if risk > 0 else 0.0,
+            "mae_points": position.mae_points, "mfe_points": position.mfe_points,
+            "minutes_open": round(minutes, 2),
+            "time_limit_epoch": position.open_epoch + barrier,
+            "plan": _record_plan(record, 0)}
 
 
 def limits_block(context: MarketContext, settings: V6Settings,
-                 remaining_loss_usd: float, *, review: bool = False) -> Document:
-    """The packet's `limits`: bounds for the agent's own entry on this bar (a review
-    packet allows no new entry)."""
-    bounds = entry_limits(context, settings, remaining_loss_usd)
-    spec = context.spec
+                 remaining_loss_usd: float, *, state: str = "flat") -> Document:
+    """The packet's `limits`: bounds for the agent's own entry on this bar (a management
+    packet allows no new entry) and the windows of an agent plan."""
+    bounds = plan_bounds(context, settings, remaining_loss_usd)
+    entry = bounds.entry
     close = context.as_of_epoch
     return {
-        "agent_entry_id": bounds.agent_entry_id,
-        "agent_entry_possible": bounds.possible and not review,
-        "tick_size": bounds.tick_size, "digits": bounds.digits,
-        "buy_limit_max": bounds.buy_limit_max, "sell_limit_min": bounds.sell_limit_min,
-        "max_entry_distance": bounds.max_entry_distance, "stop_floor": bounds.stop_floor,
-        "max_stop_distance": bounds.max_stop_distance,
-        "min_reward_r": bounds.min_reward_r, "max_reward_r": bounds.max_reward_r,
-        "default_reward_r": bounds.default_reward_r,
-        "risk_budget_usd": bounds.risk_budget_usd,
-        "volume_min": spec.volume_min, "lots_step": spec.volume_step,
-        "max_lots": settings.max_lots,
+        "agent_entry_id": entry.agent_entry_id,
+        "agent_entry_possible": entry.possible and state == "flat",
+        "tick_size": entry.tick_size, "digits": entry.digits,
+        "buy_limit_max": entry.buy_limit_max, "sell_limit_min": entry.sell_limit_min,
+        "max_entry_distance": entry.max_entry_distance, "stop_floor": entry.stop_floor,
+        "max_stop_distance": entry.max_stop_distance,
+        "min_reward_r": entry.min_reward_r, "max_reward_r": entry.max_reward_r,
+        "default_reward_r": entry.default_reward_r,
+        "risk_budget_usd": entry.risk_budget_usd,
+        "volume_min": bounds.volume_min, "lots_step": bounds.lots_step,
+        "max_lots": bounds.max_lots,
         "pending_expiry_epoch": close + settings.pending_expiry_bars * TIMEFRAME_SECONDS["M15"],
         "time_barrier_s": settings.time_barrier_s,
+        "buy_stop_min": entry.buy_stop_min, "sell_stop_max": entry.sell_stop_max,
+        "modify_distance": entry.modify_distance, "min_tp1_r": bounds.min_tp1_r,
+        "time_limit_min_minutes": bounds.time_limit_min,
+        "time_limit_max_minutes": bounds.time_limit_max,
+        "pending_expiry_min_minutes": bounds.pending_expiry_min,
+        "pending_expiry_max_minutes": bounds.pending_expiry_max,
     }

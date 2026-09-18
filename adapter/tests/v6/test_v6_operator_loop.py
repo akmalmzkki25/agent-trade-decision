@@ -11,7 +11,7 @@ from .operator_cli_fixtures_v6 import (
     TOKEN, ManualClock, Result, RoutedTransport, cli, operator_app, packet, queue_of, run_cli,
     warm_up,
 )
-from .operator_fixtures_v6 import BUY_ID, EVENT_ID
+from .operator_fixtures_v6 import AGENT_ID, EVENT_ID
 from .test_v6_dashboard import LOOPBACK, ControlApp, record_demo_poll
 
 NO_ENV_FILE = ["--env-file", "absent.env"]
@@ -44,19 +44,26 @@ def decide_and_submit(transport: RoutedTransport, packet_file: Path,
                    transport)
     assert templated.code == cli.EXIT_OK, templated.text
     decision = json.loads(decision_file.read_text(encoding="utf-8"))
-    decision["views"]["price_action"]["ranked"][0]["conviction"] = 0.7
+    decision["views"]["price_action"] = {"abstain": False, "ranked": [{
+        "candidate_id": AGENT_ID, "verdict": "TAKE", "conviction": 0.7,
+        "reason_codes": ["LEVEL_CONFLUENCE"], "note": "pivot bounce"}]}
     decision["views"]["news_risk"]["event_ids"] = [EVENT_ID]
-    decision["chief"] = {**decision["chief"], "action": "ENTER", "candidate_id": BUY_ID,
-                         "risk_tier": "standard", "confidence": 0.6,
-                         "rationale": "PA TAKE 0.70, no veto"}
+    decision.update(action="ENTER", note="PA TAKE 0.70, no veto", entry_plan={
+        "side": "buy", "order_type": "LIMIT", "entry": 4533.35, "sl": 4526.35, "tp1": 4537.5,
+        "tp2": 4541.0, "tp3": 4547.35, "sl_after_tp1": 4533.8, "sl_after_tp2": 4537.5,
+        "time_limit_min": 150, "pending_expiry_min": 30, "lots": 0.01,
+        "thesis": "bounce from the M15 pivot low"},
+        m15_bias={"direction": "up", "levels": [4526.4], "invalidation": 4520.0,
+                  "scenario": "higher lows above the pivot"})
     decision_file.write_text(json.dumps(decision), encoding="utf-8")
 
     submitted = op(["submit", "--agent", "claude_code", "--file", str(decision_file),
                     "--packet", str(packet_file)], transport, clock=ManualClock())
     verdict = submitted.out_json()
     assert submitted.code == cli.EXIT_OK, submitted.text
-    assert (verdict["code"], verdict["chief_action"], verdict["warnings"]) == (
+    assert (verdict["code"], verdict["decision_action"], verdict["warnings"]) == (
         "ACCEPTED", "ENTER", [])
+    assert verdict["plan_order_type"] == "LIMIT"
     return [templated, submitted]
 
 
