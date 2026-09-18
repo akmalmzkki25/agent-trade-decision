@@ -63,6 +63,16 @@ INTENT_SCHEMA_DDL: Final[tuple[str, ...]] = (
 )
 
 
+# ALTER TABLE ... ADD COLUMN appends, so these follow basket_id in IntentRecord.
+INTENT_COLUMN_MIGRATIONS: Final[tuple[str, ...]] = (
+    "ALTER TABLE v6_intents ADD COLUMN tp1 REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE v6_intents ADD COLUMN tp2 REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE v6_intents ADD COLUMN sl_after_tp1 REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE v6_intents ADD COLUMN sl_after_tp2 REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE v6_intents ADD COLUMN plan_step INTEGER NOT NULL DEFAULT 0",
+)
+
+
 class IntentStoreError(ValueError):
     """An intent write the store refused (nothing was written)."""
 
@@ -111,6 +121,11 @@ class NewIntent:
     pending_expiry_epoch: int
     time_barrier_s: int
     created_at: float
+    # The agent plan's ladder (0 = no level); a detector suggestion leaves them at 0.
+    tp1: float = 0.0
+    tp2: float = 0.0
+    sl_after_tp1: float = 0.0
+    sl_after_tp2: float = 0.0
 
     def __post_init__(self) -> None:
         problems = _new_intent_problems(self)
@@ -133,7 +148,8 @@ def _identity_problems(intent: NewIntent) -> list[str]:
 def _new_intent_problems(intent: NewIntent) -> list[str]:
     numbers = (intent.entry, intent.sl, intent.tp, intent.lots, intent.risk_usd,
                intent.created_at, intent.valid_until_epoch, intent.pending_expiry_epoch,
-               intent.time_barrier_s)
+               intent.time_barrier_s, intent.tp1, intent.tp2, intent.sl_after_tp1,
+               intent.sl_after_tp2)
     if not all(_number(value) for value in numbers):
         return ["prices, lots, risk and times must be finite numbers"]
     problems = _identity_problems(intent)
@@ -144,7 +160,9 @@ def _new_intent_problems(intent: NewIntent) -> list[str]:
     return problems + order_problems(
         side=intent.side, order_type=intent.order_type, entry=intent.entry, sl=intent.sl,
         tp=intent.tp, lots=intent.lots, valid_until_epoch=intent.valid_until_epoch,
-        pending_expiry_epoch=intent.pending_expiry_epoch, time_barrier_s=intent.time_barrier_s)
+        pending_expiry_epoch=intent.pending_expiry_epoch, time_barrier_s=intent.time_barrier_s,
+        tp1=intent.tp1, tp2=intent.tp2, sl_after_tp1=intent.sl_after_tp1,
+        sl_after_tp2=intent.sl_after_tp2)
 
 
 @dataclass(frozen=True)
@@ -177,6 +195,12 @@ class IntentRecord:
     fill_price: float | None = None
     outcome_pnl: float | None = None
     basket_id: str | None = None
+    # Appended by INTENT_COLUMN_MIGRATIONS, so they follow basket_id in column order.
+    tp1: float = 0.0
+    tp2: float = 0.0
+    sl_after_tp1: float = 0.0
+    sl_after_tp2: float = 0.0
+    plan_step: int = 0
 
     @property
     def active(self) -> bool:
@@ -230,6 +254,11 @@ _SELECT_SQL: Final[str] = f"SELECT {_COLS} FROM v6_intents"
 _INSERT_SQL: Final[str] = (
     f"INSERT INTO v6_intents ({', '.join(_NEW_COLS)}, status)"
     f" VALUES ({', '.join('?' * len(_NEW_COLS))}, 'PUBLISHED')")
+_PLAN_SQL: Final[str] = (
+    "UPDATE v6_intents SET tp1 = ?, tp2 = ?, sl_after_tp1 = ?, sl_after_tp2 = ?,"
+    " time_barrier_s = ? WHERE intent_id = ?")
+_STEP_SQL: Final[str] = (
+    "UPDATE v6_intents SET plan_step = ? WHERE intent_id = ? AND plan_step < ?")
 _EXISTS_SQL: Final[str] = "SELECT 1 FROM v6_intents WHERE intent_id = ?"
 _ACTIVE_ID_SQL: Final[str] = f"SELECT intent_id FROM v6_intents WHERE status IN ({_ACTIVE_LIST})"
 _BY_ID_SQL: Final[str] = f"{_SELECT_SQL} WHERE intent_id = ?"
@@ -313,6 +342,20 @@ class IntentStore:
             params = tuple(getattr(merged, name) for name in _MUTABLE)
             conn.execute(_UPDATE_SQL, (*params, intent_id, current.status))
         return merged
+
+    def update_plan(self, intent_id: str, *, tp1: float, tp2: float, sl_after_tp1: float,
+                    sl_after_tp2: float, time_barrier_s: int) -> bool:
+        """Store the ladder a management action changed (the EA has applied it)."""
+        with self._write() as conn:
+            changed = conn.execute(_PLAN_SQL, (tp1, tp2, sl_after_tp1, sl_after_tp2,
+                                               time_barrier_s, intent_id)).rowcount
+        return changed == 1
+
+    def set_plan_step(self, intent_id: str, step: int) -> bool:
+        """Record an SL+ step the EA executed; a step never goes back."""
+        with self._write() as conn:
+            changed = conn.execute(_STEP_SQL, (step, intent_id, step)).rowcount
+        return changed == 1
 
     def get(self, intent_id: str) -> IntentRecord | None:
         return self._one(_BY_ID_SQL, (intent_id,))

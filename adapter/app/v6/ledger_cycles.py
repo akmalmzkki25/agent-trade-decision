@@ -29,7 +29,8 @@ from .ledger_cycles_schema import (
     CycleRecord, CycleSummary, CycleWithViews, LabelStat, SessionRecord, SessionStart,
     apply_schema,
 )
-from .ledger_intents import INTENT_SCHEMA_DDL, IntentStore
+from .ledger_actions import ACTION_SCHEMA_DDL, ActionStore
+from .ledger_intents import INTENT_COLUMN_MIGRATIONS, INTENT_SCHEMA_DDL, IntentStore
 from .ledger_v6 import BUSY_TIMEOUT_MS, _find_secret_key  # shared credential-key rule
 
 logger = logging.getLogger(__name__)
@@ -141,13 +142,15 @@ class LedgerCycles:
             self._conn.execute("PRAGMA journal_mode=WAL")
             # PRAGMA values cannot be bound; this one is a module constant.
             self._conn.execute(f"PRAGMA busy_timeout={int(BUSY_TIMEOUT_MS)}")
-            apply_schema(self._conn, (*CYCLE_SCHEMA_DDL, *INTENT_SCHEMA_DDL),
-                         CYCLE_COLUMN_MIGRATIONS)
+            apply_schema(self._conn,
+                         (*CYCLE_SCHEMA_DDL, *INTENT_SCHEMA_DDL, *ACTION_SCHEMA_DDL),
+                         (*CYCLE_COLUMN_MIGRATIONS, *INTENT_COLUMN_MIGRATIONS))
         except sqlite3.Error:
             logger.error("ledger_cycles: schema initialisation failed for %s", self.path)
             self._conn.close()
             raise
         self.intents = IntentStore(self._write, self._fetchall)
+        self.actions = ActionStore(self._write, self._fetchall)
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
