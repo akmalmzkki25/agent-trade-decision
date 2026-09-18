@@ -165,7 +165,7 @@ SINGLE_FAILURES: dict[str, tuple[Case, str, object]] = {
     "position-open": (lambda: {"context": _context(positions=(_position(),))}, "OCCUPANCY", 1),
     "order-pending": (lambda: {"context": _context(pending_orders=(_pending(),))},
                       "OCCUPANCY", 1),
-    "trades-today": (lambda: {"context": _with(day={"trades_today": 4})}, "TRADES_TODAY", 4),
+    "trades-today": (lambda: {"context": _with(day={"trades_today": 8})}, "TRADES_TODAY", 8),
     "breaker-tripped": (lambda: {"breakers": replace(_clean_breakers(), active=(_record(),))},
                         "BREAKER", "daily:2026-09-16"),
     "breaker-unevaluated": (lambda: {"breakers": BreakerStatus()}, "BREAKER", "UNAVAILABLE"),

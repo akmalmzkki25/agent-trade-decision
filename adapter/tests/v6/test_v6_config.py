@@ -31,7 +31,7 @@ def test_defaults() -> None:
     cfg = settings()
 
     assert (cfg.backend, cfg.mode, cfg.operator_agents) == ("rules", "shadow", ALL_AGENTS)
-    assert (cfg.intent_ttl_s, cfg.operator_deadline_s, cfg.pending_expiry_s) == (120, 300, 1800)
+    assert (cfg.intent_ttl_s, cfg.operator_deadline_s, cfg.pending_expiry_s) == (120, 180, 1800)
     assert (cfg.magic, cfg.max_drift_points, cfg.ea_signing) == (250570, 200, "off")
     assert not cfg.operator_token_ok and not cfg.ea_hmac_key_ok
     assert not hasattr(cfg, "available_backends")

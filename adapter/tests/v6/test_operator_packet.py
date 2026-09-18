@@ -92,7 +92,7 @@ def test_a_packet_carries_tier0_and_a_usable_template() -> None:
     assert (packet.cycle_id, packet.session_id, packet.mode) == (
         request.context.cycle_id, SESSION_ID, "shadow")
     assert (packet.bar_open_epoch, packet.bar_close_epoch) == (ef.T_BAR, ef.AS_OF)
-    assert (packet.created_at_epoch, packet.expires_at_epoch) == (ef.AS_OF + 1, ef.AS_OF + 300)
+    assert (packet.created_at_epoch, packet.expires_at_epoch) == (ef.AS_OF + 1, ef.AS_OF + 180)
     assert packet.account.model_dump() == {
         "trade_mode": "DEMO", "server": "Broker-Demo", "equity_band": "2k_5k"}
     assert (packet.market.bid, packet.market.ask, packet.market.spread_points) == (
@@ -254,7 +254,7 @@ def test_no_session_refuses() -> None:
 
 @pytest.mark.parametrize(("changes", "window"), [
     ({"deadline_epoch": ef.AS_OF + 120.9}, (ef.AS_OF + 1, ef.AS_OF + 120)),
-    ({"now": ef.AS_OF - 3.0}, (ef.AS_OF, ef.AS_OF + 300)),
+    ({"now": ef.AS_OF - 3.0}, (ef.AS_OF, ef.AS_OF + 180)),
 ])
 def test_the_packet_window(changes: dict[str, Any], window: tuple[int, int]) -> None:
     packet = built(tier0(**changes))
@@ -262,7 +262,7 @@ def test_the_packet_window(changes: dict[str, Any], window: tuple[int, int]) -> 
 
 
 @pytest.mark.parametrize("changes", [
-    {"now": ef.AS_OF + 300.0}, {"deadline_epoch": ef.AS_OF + 1.5},
+    {"now": ef.AS_OF + 180.0}, {"deadline_epoch": ef.AS_OF + 1.5},
     {"now": math.nan}, {"deadline_epoch": math.inf},
 ])
 def test_a_passed_deadline_refuses(changes: dict[str, Any]) -> None:

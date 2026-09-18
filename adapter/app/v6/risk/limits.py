@@ -95,3 +95,18 @@ MAX_AGENT_REWARD_R: Final[float] = 5.0
 
 # Tolerance for tick_value vs tick_size x contract_size before trading is refused.
 SPEC_TOLERANCE: Final[float] = 0.02
+
+# --- Phase A of the M1 dynamic-management design (user decisions 2026-09-17) ---------------
+# An agent plan holds between 60 min and MAX_TIME_BARRIER_S (4 h).
+MIN_TIME_LIMIT_S: Final[int] = 3600
+# A LIMIT or STOP rests 15-60 min.
+MIN_PENDING_EXPIRY_S: Final[int] = 900
+MAX_PENDING_EXPIRY_S: Final[int] = 3600
+# TP1 sits at least half the initial risk beyond the entry.
+MIN_TP1_R: Final[float] = 0.5
+# d_min = max(stops_level, freeze_level) x point + spread + this, in price units.
+MODIFY_BUFFER_PRICE: Final[float] = 0.10
+# The EA refuses a management action issued longer ago than this.
+ACTION_MAX_AGE_S: Final[int] = 30
+# 24-hour trading needs more room than the London-NY window did.
+MAX_TRADES_PER_DAY_CEILING: Final[int] = 20

@@ -254,7 +254,7 @@ async def test_an_agent_entry_the_exit_plan_refuses_holds() -> None:
 
 @pytest.mark.anyio
 async def test_a_packet_at_the_deadline_is_late() -> None:
-    at_deadline = float(ef.AS_OF + 300)
+    at_deadline = float(ef.AS_OF + 180)
     setup = rig(ef.candidate(), clock=FakeClock(epoch=at_deadline))
     snapshot = ef.engine_snapshot(sent_at_epoch=int(at_deadline))
     result = (await setup.engine.run(ef.request(snapshot, received_at=at_deadline))).result

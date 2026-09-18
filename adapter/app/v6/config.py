@@ -50,6 +50,9 @@ OPERATOR_AGENTS: Final[tuple[OperatorAgent, ...]] = get_args(OperatorAgent)
 DEFAULT_OPERATOR_AGENTS: Final[str] = ",".join(OPERATOR_AGENTS)
 Mode = Literal["off", "shadow", "execute"]
 AccountType = Literal["standard", "raw"]
+# When entries may be taken: all day behind the cost gates, or the London-NY window.
+EntryHours = Literal["all_day", "london_ny"]
+SECONDS_PER_MINUTE: Final[int] = 60
 # How the EA contract is signed: required (execute), available (a key is set), off.
 EaSigning = Literal["required", "available", "off"]
 
@@ -91,7 +94,7 @@ class V6Settings(BaseSettings):
     mode: Mode = "shadow"
     backend: Backend = "rules"
     decision_deadline_s: int = Field(default=120, ge=10, le=600)
-    operator_deadline_s: int = Field(default=300, ge=30, le=840)
+    operator_deadline_s: int = Field(default=180, ge=30, le=840)
     intent_ttl_s: int = Field(default=120, ge=30, le=300)
     halt_file: str = "V6_HALT"
     snapshot_stale_s: int = Field(default=20, ge=5, le=120)
@@ -103,7 +106,7 @@ class V6Settings(BaseSettings):
     risk_pct: float = Field(default=0.5, gt=0.0)
     sizing_equity_basis_usd: float = Field(default=5000.0, gt=0.0)
     max_lots: float = Field(default=0.03, gt=0.0)
-    max_trades_per_day: int = Field(default=4, ge=1, le=20)
+    max_trades_per_day: int = Field(default=8, ge=1, le=limits.MAX_TRADES_PER_DAY_CEILING)
     allow_real_account: bool = False
     demo_server_pattern: str = r"(?i)(trial|demo)"
     allowed_logins_csv: str = Field(default="", alias="V6_ALLOWED_LOGINS")
@@ -122,6 +125,14 @@ class V6Settings(BaseSettings):
     time_barrier_bars: int = Field(default=8, ge=1)
     pending_expiry_bars: int = Field(default=2, ge=1, le=8)
     tp_r_multiple: float = Field(default=2.0, ge=1.0, le=5.0)
+
+    # --- agent plans (phase A, user decisions 2026-09-17) -------------------
+    entry_hours: EntryHours = "all_day"
+    session_auto_renew: bool = True
+    time_limit_min_minutes: int = Field(default=60, ge=1)
+    time_limit_max_minutes: int = Field(default=240, ge=1)
+    pending_expiry_min_minutes: int = Field(default=15, ge=1)
+    pending_expiry_max_minutes: int = Field(default=60, ge=1)
 
     # --- deliberation ------------------------------------------------------
     pa_min_conviction: float = Field(default=0.6, ge=0.0, le=1.0)
@@ -163,6 +174,18 @@ class V6Settings(BaseSettings):
     def pending_expiry_s(self) -> int:
         """Lifetime of a pending order, counted from the decision bar's close."""
         return self.pending_expiry_bars * M15_SECONDS
+
+    @property
+    def time_limit_bounds_s(self) -> tuple[int, int]:
+        """(shortest, longest) holding time an agent plan may ask for, in seconds."""
+        return (self.time_limit_min_minutes * SECONDS_PER_MINUTE,
+                self.time_limit_max_minutes * SECONDS_PER_MINUTE)
+
+    @property
+    def pending_expiry_bounds_s(self) -> tuple[int, int]:
+        """(shortest, longest) resting time of an agent LIMIT or STOP, in seconds."""
+        return (self.pending_expiry_min_minutes * SECONDS_PER_MINUTE,
+                self.pending_expiry_max_minutes * SECONDS_PER_MINUTE)
 
     @property
     def allowed_logins(self) -> tuple[str, ...]:
@@ -260,14 +283,28 @@ class V6Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _check_plan_windows(self) -> "V6Settings":
+        """The agent chooses its holding time and pending expiry inside these windows."""
+        low, high = self.time_limit_bounds_s
+        if not limits.MIN_TIME_LIMIT_S <= low <= high <= limits.MAX_TIME_BARRIER_S:
+            raise ValueError("V6_TIME_LIMIT_MIN_MINUTES and V6_TIME_LIMIT_MAX_MINUTES may only "
+                             "tighten 60-240 min, with min <= max.")
+        low, high = self.pending_expiry_bounds_s
+        if not limits.MIN_PENDING_EXPIRY_S <= low <= high <= limits.MAX_PENDING_EXPIRY_S:
+            raise ValueError("V6_PENDING_EXPIRY_MIN_MINUTES and V6_PENDING_EXPIRY_MAX_MINUTES "
+                             "may only tighten 15-60 min, with min <= max.")
+        return self
+
+    @model_validator(mode="after")
     def _check_intent_timing(self) -> "V6Settings":
         """A decision may arrive V6_OPERATOR_DEADLINE_S after the close and its intent stays
-        valid for V6_INTENT_TTL_S; the pending order must still have time to live then."""
+        valid for V6_INTENT_TTL_S; the shortest pending order must still have time to live."""
+        shortest = min(self.pending_expiry_s, self.pending_expiry_bounds_s[0])
         latest_valid_until = self.operator_deadline_s + self.intent_ttl_s + MIN_PENDING_LIFETIME_S
-        if latest_valid_until > self.pending_expiry_s:
+        if latest_valid_until > shortest:
             raise ValueError(
                 f"V6_OPERATOR_DEADLINE_S + V6_INTENT_TTL_S + {MIN_PENDING_LIFETIME_S} s must not "
-                f"exceed the pending expiry (V6_PENDING_EXPIRY_BARS x {M15_SECONDS} s).")
+                f"exceed the shortest pending expiry ({shortest} s).")
         return self
 
     @model_validator(mode="after")
