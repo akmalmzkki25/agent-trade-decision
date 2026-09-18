@@ -100,6 +100,7 @@ def runtime_status(container: V6Container, view: EaStateView, now: float, halted
         "breakers": [f"{record.scope}:{record.period_key}" for record in breakers],
         "pending_command": None if command is None else command.to_dict(),
         "worker": parts.worker.stats.to_dict(), "watchdog": watchdog.to_dict(),
+        "minutes": parts.minutes.stats.to_dict(),
     }
 
 

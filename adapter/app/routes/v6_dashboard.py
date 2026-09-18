@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from ..deps import template_globals, templates
 from ..v6.container import APP_STATE_KEY, V6Container
 from ..v6.dashboard_actions import management_overview, read_management
+from ..v6.dashboard_minutes import minute_overview, read_minutes
 from ..v6.dashboard_queries import (
     OperatorActivity, OverviewState, build_overview, read_tables,
 )
@@ -89,10 +90,12 @@ async def v6_overview(ctx: Control) -> JSONResponse:
             read_tables, plane.ledger, db_path=container.ledger_v6.path,
             halt_path=container.halt_path, now=now))
         management = await asyncio.to_thread(read_management, plane.ledger)
+        minutes = await asyncio.to_thread(read_minutes, plane.ledger, now)
     except sqlite3.Error:
         logger.exception("v6 dashboard overview read failed")
         raise HTTPException(status_code=503, detail=STORAGE_UNAVAILABLE) from None
-    content = {**build_overview(tables, state), **management_overview(management)}
+    content = {**build_overview(tables, state), **management_overview(management),
+               **minute_overview(minutes)}
     return JSONResponse(content=content, headers=NO_STORE)
 
 

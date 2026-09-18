@@ -134,6 +134,11 @@
     </section>
 
     <section class="rounded-xl border border-slate-800 bg-slate-900/40">
+      {{ card_head('Minute packets', 'One packet per closed M1 bar: how many the agent answered before the deadline, and what the newest minutes did.', 'v6-minutes-summary') }}
+      {{ data_table('v6-minutes', [('Minute', ''), ('State', ''), ('Outcome', ''), ('Reason', ''), ('Action', ''), ('Result', ''), ('Agent', ''), ('Latency', R), ('Tier 0', R)], 'No minute packet yet.') }}
+    </section>
+
+    <section class="rounded-xl border border-slate-800 bg-slate-900/40">
       {{ card_head('Closed positions', 'Realised R beside the counterfactual label of the chosen candidate.') }}
       {{ data_table('v6-outcomes', [('Closed', ''), ('Intent', ''), ('Agent', ''), ('Side', ''), ('Exit', ''), ('Net P&L', R), ('R', R), ('Label', ''), ('Gap', R)], 'No V6 position has closed yet.') }}
     </section>

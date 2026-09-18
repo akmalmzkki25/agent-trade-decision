@@ -203,6 +203,31 @@
   const STEP_LABELS = ['no step yet', 'TP1 reached: stop at SL+ 1', 'TP2 reached: stop at SL+ 2'];
   const level = (value) => (isNumber(value) && value > 0 ? num(value) : '—');
 
+  const MINUTE_COLUMNS = [
+    [F, (m) => utc(m.bar_open_epoch)],
+    [C, (m) => m.state],
+    [C, (m) => statusBadge(m.outcome)],
+    [MONO, (m) => m.reason || '—'],
+    [MONO, (m) => m.action || '—'],
+    [MONO, (m) => m.hold_reason || m.status || '—'],
+    [MONO, (m) => m.agent || '—'],
+    [N, (m) => (m.latency_ms ? (m.latency_ms / 1000).toFixed(1) + ' s' : '—')],
+    [N, (m) => m.tier0_ms + ' ms'],
+  ];
+
+  function minuteSummary(label, s) {
+    const pct = s.answered_pct === null ? '—' : s.answered_pct + '%';
+    return label + ': ' + s.answered + '/' + s.offered + ' answered (' + pct + '), ' +
+      s.entries + ' entries, ' + s.manages + ' actions, p95 tier 0 ' + s.tier0_p95_ms + ' ms';
+  }
+
+  function renderMinutes(minutes) {
+    if (!minutes) return;
+    setText('v6-minutes-summary', minuteSummary('last ' + minutes.window_hours + ' h',
+      minutes.window) + ' · ' + minuteSummary('24 h', minutes.day));
+    renderTable('v6-minutes', MINUTE_COLUMNS, minutes.recent, 'No minute packet yet.');
+  }
+
   function renderPlan(plan) {
     const node = byId('v6-plan');
     if (!plan) {
@@ -278,6 +303,7 @@
     renderOpenOrders(data.open_orders);
     renderPlan(data.plan);
     renderTable('v6-actions', ACTION_COLUMNS, data.actions, 'No management action yet.');
+    renderMinutes(data.minutes);
     R.renderGates(data.last_cycle);
     R.renderBreakers(data.breakers);
     R.renderRealised(data.outcomes.realised);
