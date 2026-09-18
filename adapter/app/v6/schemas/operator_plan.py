@@ -108,6 +108,8 @@ class M15Bias(Frozen):
     levels: tuple[Price, ...] = Field(default=(), max_length=MAX_BIAS_LEVELS)
     invalidation: Price | None = None
     scenario: Scenario = ""
+    # True when `submit --quick` carried the last bias forward unchanged (spec 2.6).
+    carried: bool = False
 
 
 class PacketPlan(Frozen):

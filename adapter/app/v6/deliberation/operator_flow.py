@@ -92,7 +92,7 @@ class OperatorFlow:
         decision = outcome.decision
         if decision is None:
             return self._hold(draft, HoldReason.OPERATOR_TIMEOUT, outcome.detail)
-        if decision.bias is not None:
+        if decision.bias is not None and outcome.packet.packet_kind == "m15":
             deps.bias.remember(decision.bias, outcome.packet.bar_close_epoch)
         if state != "flat":
             return await self._manage_result(draft, outcome)

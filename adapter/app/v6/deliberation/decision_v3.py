@@ -30,7 +30,7 @@ from .plan_rules import bounds_from_packet, lots_problem, plan_problems_v2
 MAX_NOTE_CHARS: Final[int] = 300
 
 
-def _state_problem(envelope: DecisionEnvelopeV3,
+def state_problem(envelope: DecisionEnvelopeV3,
                    packet: OperatorPacket) -> DecisionError | None:
     """A flat packet takes HOLD or ENTER; a pending or position packet takes MANAGE."""
     if envelope.packet_kind != packet.packet_kind:
@@ -95,7 +95,7 @@ def _take_problem(price_action: PriceActionView, packet: OperatorPacket) -> Deci
     return None
 
 
-def _chief(plan: EntryPlanV2 | None, packet: OperatorPacket, price_action: PriceActionView,
+def derived_chief(plan: EntryPlanV2 | None, packet: OperatorPacket, price_action: PriceActionView,
            note: str) -> ChiefDecision:
     """The Chief the protocol reads: ENTER the agent entry id, or HOLD."""
     rationale = note[:MAX_NOTE_CHARS]
@@ -109,7 +109,7 @@ def _chief(plan: EntryPlanV2 | None, packet: OperatorPacket, price_action: Price
         rationale=rationale, dissent="")
 
 
-def _action_parts(envelope: DecisionEnvelopeV3, packet: OperatorPacket,
+def action_parts(envelope: DecisionEnvelopeV3, packet: OperatorPacket,
                   price_action: PriceActionView
                   ) -> tuple[EntryPlanV2 | None, ManageRequest | None] | DecisionError:
     if envelope.action == "ENTER":
@@ -128,7 +128,7 @@ def validate_v3(packet: OperatorPacket, envelope: DecisionEnvelopeV3, settings: 
     """Check a v3 decision: the packet, the action for the packet's state, the views,
     the M15 bias, then the plan (ENTER) or the manage request (MANAGE)."""
     problem = (packet_problem(envelope, packet, settings, now)
-               or _state_problem(envelope, packet))
+               or state_problem(envelope, packet))
     if problem is not None:
         return problem
     if envelope.views is None:
@@ -140,12 +140,12 @@ def validate_v3(packet: OperatorPacket, envelope: DecisionEnvelopeV3, settings: 
     bias = parse_json_value(M15Bias, envelope.m15_bias, DECISION_ERR_BIAS, "m15_bias")
     if isinstance(bias, DecisionError):
         return bias
-    parts = _action_parts(envelope, packet, pa_view)
+    parts = action_parts(envelope, packet, pa_view)
     if isinstance(parts, DecisionError):
         return parts
     plan, manage = parts
     return ValidatedDecision(
         cycle_id=envelope.cycle_id, packet_hash=envelope.packet_hash, agent=envelope.agent,
-        price_action=pa_view, chief=_chief(plan, packet, pa_view, envelope.note), flags=flags,
+        price_action=pa_view, chief=derived_chief(plan, packet, pa_view, envelope.note), flags=flags,
         schema_version=DECISION_SCHEMA, action=envelope.action, plan=plan, manage=manage,
         bias=bias, note=envelope.note, **views)

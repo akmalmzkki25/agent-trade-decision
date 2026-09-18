@@ -1141,16 +1141,17 @@ with the adapter's own parser. The prices are illustrative.
       4517.8
     ],
     "invalidation": 4517.8,
-    "scenario": "HH/HL on M15 and H1; the broken H1 pivot 4531.1 should turn into support"
+    "scenario": "HH/HL on M15 and H1; the broken H1 pivot 4531.1 should turn into support",
+    "carried": false
   },
   "last_bias_at_epoch": 1789644600,
   "m1_state": null,
-  "packet_hash": "eb41e57096c40a5cc14312b2a0beb092dfa6dadd2590abdab093e6ffd9da76a6",
+  "packet_hash": "d249d23242c87e4ed5d852f946716b11b4df53dc99daea3153b2ca611ba0cae2",
   "decision_template": {
     "schema_version": "v6.operator.decision.3",
     "packet_kind": "m15",
     "cycle_id": "c-5f0e2a9b4c1d7e36",
-    "packet_hash": "eb41e57096c40a5cc14312b2a0beb092dfa6dadd2590abdab093e6ffd9da76a6",
+    "packet_hash": "d249d23242c87e4ed5d852f946716b11b4df53dc99daea3153b2ca611ba0cae2",
     "agent": "claude_code",
     "action": "HOLD",
     "views": {
@@ -1225,7 +1226,8 @@ with the adapter's own parser. The prices are illustrative.
         4517.8
       ],
       "invalidation": 4517.8,
-      "scenario": "HH/HL on M15 and H1; the broken H1 pivot 4531.1 should turn into support"
+      "scenario": "HH/HL on M15 and H1; the broken H1 pivot 4531.1 should turn into support",
+      "carried": false
     },
     "note": ""
   }
@@ -1255,7 +1257,7 @@ In this example the decision below ENTERs the agent's own plan instead of a sugg
   "schema_version": "v6.operator.decision.3",
   "packet_kind": "m15",
   "cycle_id": "c-5f0e2a9b4c1d7e36",
-  "packet_hash": "eb41e57096c40a5cc14312b2a0beb092dfa6dadd2590abdab093e6ffd9da76a6",
+  "packet_hash": "d249d23242c87e4ed5d852f946716b11b4df53dc99daea3153b2ca611ba0cae2",
   "agent": "claude_code",
   "action": "ENTER",
   "views": {

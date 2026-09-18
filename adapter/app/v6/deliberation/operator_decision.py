@@ -45,6 +45,7 @@ from .decision_parts import (  # noqa: F401 - re-exported for the operator API a
     checked_desks, decision_error, error_locations, packet_problem, parse_envelope,
     parse_json_value, role_checker,
 )
+from .decision_minute import validate_minute
 from .decision_v3 import validate_v3
 from .panel import CHIEF_ROLE, Baseline, PanelResult
 
@@ -135,7 +136,8 @@ def validate_decision(packet: OperatorPacket, decision: bytes | Envelope,
     if isinstance(envelope, DecisionError):
         return envelope
     if isinstance(envelope, DecisionEnvelopeV3):
-        outcome = validate_v3(packet, envelope, settings, now=now)
+        validate = validate_minute if packet.packet_kind == "m1" else validate_v3
+        outcome = validate(packet, envelope, settings, now=now)
     else:
         outcome = _validate_v2(packet, envelope, settings, now)
     if isinstance(outcome, ValidatedDecision) and outcome.flags:

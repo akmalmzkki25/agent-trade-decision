@@ -83,7 +83,8 @@ UNKNOWN_VIEWS: Final[Mapping[str, Mapping[str, Any]]] = MappingProxyType({
         "named_patterns": [], "reason_codes": ["DATA_MISSING"], "note": ""}),
 })
 UNCLEAR_BIAS: Final[Mapping[str, Any]] = MappingProxyType(
-    {"direction": "unclear", "levels": [], "invalidation": None, "scenario": ""})
+    {"direction": "unclear", "levels": [], "invalidation": None, "scenario": "",
+     "carried": False})
 # schemas.operator_plan.MODIFY_FIELDS: what a MODIFY may set (null = unchanged).
 MANAGE_FIELDS: Final[tuple[str, ...]] = (
     "sl", "tp1", "tp2", "tp3", "sl_after_tp1", "sl_after_tp2", "time_limit_min", "entry",

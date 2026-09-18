@@ -80,6 +80,9 @@ class BiasMemory:
         self._at: int | None = None
 
     def remember(self, bias: M15Bias, at: int) -> None:
+        """A carried bias keeps the remembered one and its time (it is not a new reading)."""
+        if bias.carried and self._bias is not None:
+            return
         self._bias, self._at = bias, at
 
     def latest(self) -> tuple[M15Bias | None, int | None]:
