@@ -9,6 +9,13 @@ the day summary is returned. Open V6 positions are never flattened here: they ru
 to SL, TP or the time barrier (the EA still flattens before rollover). A session
 left open is closed by `auto_close_if_rollover` once the rollover block starts.
 
+With `auto_renew` (V6_SESSION_AUTO_RENEW, the 24-hour operation of phase A) a session
+the runtime closed that way is reopened by `renew_if_due` as soon as a start is allowed
+again (after the rollover block, after the weekend), with the configured backend and
+mode, and armed when every arming check passes. A stop by anyone else ("Sudah cukup
+hari ini", a halt route) cancels the renewal. The flag lives in memory: a restart
+forgets it.
+
 The execution side effects (arming, disarming, cancelling intents) belong to an
 optional `SessionDesk` (`runtime.desk.ExecutionDesk`); without one a session is
 never armed (the Phase 2 behaviour). Every method runs on the event loop thread;
@@ -132,12 +139,21 @@ class SessionDesk(Protocol):
 
 class SessionService:
     def __init__(self, *, ledger: LedgerCycles, control_log: ControlLog, ea_state: EaState,
-                 commands: CommandBoard, desk: SessionDesk | None = None) -> None:
+                 commands: CommandBoard, desk: SessionDesk | None = None,
+                 auto_renew: bool = False, backend: str = "", mode: str = "") -> None:
         self._ledger = ledger
         self._control_log = control_log
         self._ea_state = ea_state
         self._commands = commands
         self._desk = desk
+        self._auto_renew = auto_renew and bool(backend) and bool(mode)
+        self._backend, self._mode = backend, mode
+        self._renewal_due = False
+
+    @property
+    def renewal_due(self) -> bool:
+        """A rollover closed the session and it reopens once a start is allowed."""
+        return self._renewal_due
 
     @property
     def commands(self) -> CommandBoard:
@@ -186,8 +202,11 @@ class SessionService:
     async def stop(self, *, actor: str, reason: str, now: float) -> SessionStopOutcome:
         """Disarm and close the session (if any), queue CANCEL_PENDING, summarise the day.
 
-        Open positions are left running on purpose.
+        Open positions are left running on purpose. A stop by anyone but the runtime
+        cancels a pending renewal.
         """
+        if actor != ACTOR_RUNTIME:
+            self._renewal_due = False
         command = self._commands.request_cancel_pending(reason, now)
         current = await self.active()
         if current is None:
@@ -247,7 +266,21 @@ class SessionService:
             reason = STOP_REASON_DAY_CHANGED
         else:
             return None
-        return await self.stop(actor=ACTOR_RUNTIME, reason=reason, now=now)
+        outcome = await self.stop(actor=ACTOR_RUNTIME, reason=reason, now=now)
+        self._renewal_due = self._auto_renew
+        return outcome
+
+    async def renew_if_due(self, now: float) -> SessionStartOutcome | None:
+        """Watchdog hook: reopen (and arm) the session a rollover closed, once allowed."""
+        if not self._renewal_due or await self._start_refusal(int(now)) is not None:
+            return None
+        outcome = await self.start(backend=self._backend, mode=self._mode,
+                                   actor=ACTOR_RUNTIME, now=now)
+        if outcome.session is not None:
+            self._renewal_due = False
+            logger.warning("v6 session renewed after rollover: %s (armed %s)",
+                           outcome.session.session_id, outcome.session.armed)
+        return outcome
 
     async def _audit(self, actor: str, action: str, detail: Mapping[str, object]) -> None:
         try:
@@ -270,10 +303,12 @@ class ControlPlane:
 
 def build_control_plane(*, ledger: LedgerCycles, control_log: ControlLog, ea_state: EaState,
                         commands: CommandBoard | None = None,
-                        desk: SessionDesk | None = None) -> ControlPlane:
+                        desk: SessionDesk | None = None, auto_renew: bool = False,
+                        backend: str = "", mode: str = "") -> ControlPlane:
     """One per app; the CSRF nonce lives only in this process."""
     board = CommandBoard() if commands is None else commands
     service = SessionService(ledger=ledger, control_log=control_log, ea_state=ea_state,
-                             commands=board, desk=desk)
+                             commands=board, desk=desk, auto_renew=auto_renew,
+                             backend=backend, mode=mode)
     return ControlPlane(sessions=service, commands=board, ledger=ledger,
                         csrf_nonce=secrets.token_urlsafe(CSRF_NONCE_BYTES), desk=desk)

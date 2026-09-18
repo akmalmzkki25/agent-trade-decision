@@ -170,6 +170,7 @@ async def operator_wait(request: Request, ctx: Operator) -> JSONResponse:
         "pending": None if packet is None else packet.model_dump(mode="json"),
         "session": None if session is None else session_to_dict(session),
         "armed": bool(session is not None and session.armed),
+        "session_renewal_due": ctx.plane.sessions.renewal_due,
         "mode": settings.mode, "server_time_epoch": int(clock.now_epoch()),
     })
 

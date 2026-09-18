@@ -139,8 +139,10 @@ def describe(found: tuple[str, ...]) -> str:
 
 
 def session_gone(body: object) -> bool:
-    """The reply says there is no active session (its `session` is null or inactive)."""
-    if not isinstance(body, Mapping):
+    """The reply says there is no active session (its `session` is null or inactive) and
+    none is about to reopen (`session_renewal_due`: the rollover closed it and the
+    adapter reopens it when the block ends, so `wait` keeps waiting)."""
+    if not isinstance(body, Mapping) or body.get("session_renewal_due") is True:
         return False
     session = body.get("session", {})
     return (session is None or get_path(session, "active") is False

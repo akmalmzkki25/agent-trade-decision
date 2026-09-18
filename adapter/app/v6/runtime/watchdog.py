@@ -7,7 +7,8 @@ Every WATCHDOG_INTERVAL_S it
 - evaluates the drawdown breakers from the newest EA poll, the account marks and
   the realised V6 results, persisting new trips and queueing FLATTEN for the EA
   when one trips (plan section 6: HALTED + FLATTEN + CANCEL_PENDING);
-- closes a daily session that reached the rollover block or outlived its day;
+- closes a daily session that reached the rollover block or outlived its day, and
+  reopens it once a start is allowed again when V6_SESSION_AUTO_RENEW is on;
 - lets the execution desk expire undelivered intents and disarm an armed session
   whose arming checks fail (halt, breaker, stale or non-DEMO EA; never re-arms);
 - and, every LABEL_INTERVAL_S, labels the candidates whose barrier has resolved.
@@ -54,6 +55,7 @@ BREAKER_TRIP_REASON: Final[str] = "breaker_trip"
 STEP_HALT: Final[str] = "halt"
 STEP_BREAKERS: Final[str] = "breakers"
 STEP_SESSIONS: Final[str] = "sessions"
+STEP_RENEWAL: Final[str] = "renewal"
 STEP_SUPERVISE: Final[str] = "supervise"
 STEP_LABELER: Final[str] = "labeler"
 # Three ticks (15 s) of failed breaker evaluation: stop trusting the last summary.
@@ -200,9 +202,10 @@ class Watchdog:
                                    self._good_breaker, errors)
         self._streaks = next_streaks(self._streaks, (STEP_HALT, STEP_BREAKERS), errors)
         breaker = self._trusted(breaker)
-        later = [STEP_SESSIONS]
+        later = [STEP_SESSIONS, STEP_RENEWAL]
         await self._step(STEP_SESSIONS, lambda: deps.sessions.auto_close_if_rollover(now),
                          None, errors)
+        await self._step(STEP_RENEWAL, lambda: deps.sessions.renew_if_due(now), None, errors)
         desk = deps.desk
         if desk is not None:
             later.append(STEP_SUPERVISE)

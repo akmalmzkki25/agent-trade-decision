@@ -262,6 +262,7 @@ async def v6_status(container: ActiveContainer) -> dict[str, Any]:
         "runtime": view.runtime_status(container, ea, now, halted, ledger.breakers),
         "session": None if session is None else session_to_dict(session),
         "armed": bool(session is not None and session.armed),
+        "session_renewal_due": parts.control.sessions.renewal_due,
         "operator": view.operator_status(parts.operator_queue, now),
         "active_intent": None if ledger.active_intent is None
         else ledger.active_intent.to_dict(),

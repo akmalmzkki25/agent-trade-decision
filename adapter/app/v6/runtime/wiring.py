@@ -113,7 +113,8 @@ def build_runtime_parts(core: CoreParts, ledger_cycles: LedgerCycles, *,
     desk = _desk(core, ledger_cycles, breakers, queue, newest_day)
     control = build_control_plane(ledger=ledger_cycles, control_log=core.ledger_v6,
                                   ea_state=core.ea_state, commands=desk.deps.commands,
-                                  desk=desk)
+                                  desk=desk, auto_renew=settings.session_auto_renew,
+                                  backend=settings.backend, mode=settings.mode)
     engine = build_engine(settings, clock, core.bar_store, breakers.for_context,
                           operator=queue, publisher=IntentPublisher(desk),
                           plans=LedgerPlans(ledger_cycles))
