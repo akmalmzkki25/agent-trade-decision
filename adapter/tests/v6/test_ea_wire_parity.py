@@ -213,8 +213,12 @@ def test_self_test_intent_rows_match_the_golden_file() -> None:
 def test_self_test_runs_every_row_and_gates_execution() -> None:
     selftest = include("SelfTest.mqh")
     body = function_body(selftest, "bool HmacSelfTest(")
+    groups = ("bool HmacVectorsOk(", "bool RequestVectorsOk(", "bool IntentVectorsOk(")
 
-    assert body.count("&& ok;") >= sum(len(VECTORS[s]) for s in ("hmac", "requests", "intents"))
+    rows = sum(function_body(selftest, group).count("&& ok;") for group in groups)
+    assert rows >= sum(len(VECTORS[section]) for section in ("hmac", "requests", "intents"))
+    for group in groups:
+        assert group.removeprefix("bool ") in body
     assert "IntentTamperRejected()" in body and "FingerprintOk()" in body
     main = read(EA_MAIN)
     assert "HmacSelfTest()" in main

@@ -269,7 +269,7 @@ def test_poll_returns_no_intent_and_marks_the_account_once_per_minute(
     r = _post(client, "/v6/intent/poll", poll_payload())
     assert r.status_code == 200
     body = r.json()
-    assert body["schema_version"] == "v6.intent.1"
+    assert body["schema_version"] == "v6.intent.2"
     assert body["has_intent"] is False
     assert body["command"] == "NONE"
     assert body["server_time_epoch"] == int(RECEIVED_AT)

@@ -14,7 +14,7 @@
 #include "Json.mqh"
 #include "Hmac.mqh"
 
-#define INTENT_SCHEMA            "v6.intent.1"
+#define INTENT_SCHEMA            "v6.intent.2"
 #define INTENT_ID_CHARS          12
 #define CANONICAL_SEPARATOR      "|"
 #define LOTS_SCALE               100.0
@@ -26,12 +26,18 @@
 #define CMD_NONE                 "NONE"
 #define CMD_FLATTEN              "FLATTEN"
 #define CMD_CANCEL_PENDING       "CANCEL_PENDING"
+#define CMD_CLOSE_POSITION       "CLOSE_POSITION"
+#define CMD_MODIFY_POSITION      "MODIFY_POSITION"
+#define CMD_MODIFY_PENDING       "MODIFY_PENDING"
+#define ACTION_MAX_AGE_S         30
 #define INTENT_SOURCE_RULES      "rules"
 #define INTENT_SOURCE_OPERATOR   "operator"
 #define INTENT_SIDE_BUY          "buy"
 #define INTENT_SIDE_SELL         "sell"
 #define INTENT_BUY_LIMIT         "BUY_LIMIT"
 #define INTENT_SELL_LIMIT        "SELL_LIMIT"
+#define INTENT_BUY_STOP          "BUY_STOP"
+#define INTENT_SELL_STOP         "SELL_STOP"
 #define INTENT_BUY               "BUY"
 #define INTENT_SELL              "SELL"
 
@@ -58,6 +64,22 @@ struct PollReply
    long              pending_expiry_epoch;
    long              time_barrier_s;
    long              magic;
+   double            tp1;                     // SL+ trigger 1 (0 = none)
+   double            tp2;                     // SL+ trigger 2 (0 = none)
+   double            sl_after_tp1;            // stop after tp1
+   double            sl_after_tp2;            // stop after tp2
+   string            action_id;               // management action (spec 3.3)
+   long              action_ticket;
+   double            action_sl;
+   double            action_tp;
+   double            action_tp1;
+   double            action_tp2;
+   double            action_sl1;
+   double            action_sl2;
+   double            action_price;
+   long              action_expiry_epoch;
+   long              action_barrier_s;
+   long              action_issued_epoch;
    string            sig;
 };
 
@@ -112,6 +134,22 @@ bool ParsePollReply(const string json, PollReply &p)
           && JsonGetLong(json, "pending_expiry_epoch", p.pending_expiry_epoch)
           && JsonGetLong(json, "time_barrier_s", p.time_barrier_s)
           && JsonGetLong(json, "magic", p.magic)
+          && JsonGetNumber(json, "tp1", p.tp1)
+          && JsonGetNumber(json, "tp2", p.tp2)
+          && JsonGetNumber(json, "sl_after_tp1", p.sl_after_tp1)
+          && JsonGetNumber(json, "sl_after_tp2", p.sl_after_tp2)
+          && JsonGetString(json, "action_id", p.action_id)
+          && JsonGetLong(json, "action_ticket", p.action_ticket)
+          && JsonGetNumber(json, "action_sl", p.action_sl)
+          && JsonGetNumber(json, "action_tp", p.action_tp)
+          && JsonGetNumber(json, "action_tp1", p.action_tp1)
+          && JsonGetNumber(json, "action_tp2", p.action_tp2)
+          && JsonGetNumber(json, "action_sl1", p.action_sl1)
+          && JsonGetNumber(json, "action_sl2", p.action_sl2)
+          && JsonGetNumber(json, "action_price", p.action_price)
+          && JsonGetLong(json, "action_expiry_epoch", p.action_expiry_epoch)
+          && JsonGetLong(json, "action_barrier_s", p.action_barrier_s)
+          && JsonGetLong(json, "action_issued_epoch", p.action_issued_epoch)
           && JsonGetString(json, "sig", p.sig);
 }
 
@@ -135,9 +173,17 @@ bool IsIntentId(const string id)
    return true;
 }
 
+// A signed reply carries a management action instead of an intent (spec 3.3).
+bool IsActionCommand(const string command)
+{
+   return command == CMD_CLOSE_POSITION || command == CMD_MODIFY_POSITION
+          || command == CMD_MODIFY_PENDING;
+}
+
 bool IsKnownCommand(const string command)
 {
-   return command == CMD_NONE || command == CMD_FLATTEN || command == CMD_CANCEL_PENDING;
+   return command == CMD_NONE || command == CMD_FLATTEN || command == CMD_CANCEL_PENDING
+          || IsActionCommand(command);
 }
 
 bool IsLimitOrder(const string order_type)
@@ -145,12 +191,24 @@ bool IsLimitOrder(const string order_type)
    return order_type == INTENT_BUY_LIMIT || order_type == INTENT_SELL_LIMIT;
 }
 
+bool IsStopOrder(const string order_type)
+{
+   return order_type == INTENT_BUY_STOP || order_type == INTENT_SELL_STOP;
+}
+
+bool IsPendingOrder(const string order_type)
+{
+   return IsLimitOrder(order_type) || IsStopOrder(order_type);
+}
+
 bool OrderTypeMatchesSide(const string side, const string order_type)
 {
    if(side == INTENT_SIDE_BUY)
-      return order_type == INTENT_BUY_LIMIT || order_type == INTENT_BUY;
+      return order_type == INTENT_BUY_LIMIT || order_type == INTENT_BUY_STOP
+             || order_type == INTENT_BUY;
    if(side == INTENT_SIDE_SELL)
-      return order_type == INTENT_SELL_LIMIT || order_type == INTENT_SELL;
+      return order_type == INTENT_SELL_LIMIT || order_type == INTENT_SELL_STOP
+             || order_type == INTENT_SELL;
    return false;
 }
 
@@ -195,6 +253,22 @@ string IntentCanonical(const PollReply &p, const double point)
    s += CANONICAL_SEPARATOR + IntegerToString(p.pending_expiry_epoch);
    s += CANONICAL_SEPARATOR + IntegerToString(p.time_barrier_s);
    s += CANONICAL_SEPARATOR + IntegerToString(p.magic);
+   s += CANONICAL_SEPARATOR + IntegerToString(PriceToPoints(p.tp1, point));
+   s += CANONICAL_SEPARATOR + IntegerToString(PriceToPoints(p.tp2, point));
+   s += CANONICAL_SEPARATOR + IntegerToString(PriceToPoints(p.sl_after_tp1, point));
+   s += CANONICAL_SEPARATOR + IntegerToString(PriceToPoints(p.sl_after_tp2, point));
+   s += CANONICAL_SEPARATOR + p.action_id;
+   s += CANONICAL_SEPARATOR + IntegerToString(p.action_ticket);
+   s += CANONICAL_SEPARATOR + IntegerToString(PriceToPoints(p.action_sl, point));
+   s += CANONICAL_SEPARATOR + IntegerToString(PriceToPoints(p.action_tp, point));
+   s += CANONICAL_SEPARATOR + IntegerToString(PriceToPoints(p.action_tp1, point));
+   s += CANONICAL_SEPARATOR + IntegerToString(PriceToPoints(p.action_tp2, point));
+   s += CANONICAL_SEPARATOR + IntegerToString(PriceToPoints(p.action_sl1, point));
+   s += CANONICAL_SEPARATOR + IntegerToString(PriceToPoints(p.action_sl2, point));
+   s += CANONICAL_SEPARATOR + IntegerToString(PriceToPoints(p.action_price, point));
+   s += CANONICAL_SEPARATOR + IntegerToString(p.action_expiry_epoch);
+   s += CANONICAL_SEPARATOR + IntegerToString(p.action_barrier_s);
+   s += CANONICAL_SEPARATOR + IntegerToString(p.action_issued_epoch);
    return s;
 }
 
@@ -225,10 +299,30 @@ bool StopLossOnItsSide(const PollReply &reply)
 
 string PendingExpiryProblem(const PollReply &reply)
 {
-   if(!IsLimitOrder(reply.order_type))
+   if(!IsPendingOrder(reply.order_type))
       return (reply.pending_expiry_epoch == 0) ? "" : "a market order has no pending expiry";
    if(reply.pending_expiry_epoch < reply.valid_until_epoch + MIN_PENDING_LIFETIME_S)
-      return "a limit order must expire at least 60 s after valid_until";
+      return "a pending order must expire at least 60 s after valid_until";
+   return "";
+}
+
+// schemas.intent._ladder_checks: the SL+ ladder, when the intent carries one.
+string LadderProblem(const PollReply &p)
+{
+   if(p.tp1 == 0.0 && p.tp2 == 0.0 && p.sl_after_tp1 == 0.0 && p.sl_after_tp2 == 0.0)
+      return "";
+   double sign = (p.side == INTENT_SIDE_BUY) ? 1.0 : -1.0;
+   if(p.tp1 <= 0.0 || p.tp2 <= 0.0 || sign * (p.tp1 - p.entry) <= 0.0
+      || sign * (p.tp2 - p.tp1) <= 0.0 || sign * (p.tp - p.tp2) <= 0.0)
+      return "the TP ladder must advance: entry, tp1, tp2, tp";
+   if(p.sl_after_tp1 > 0.0 && (sign * (p.sl_after_tp1 - p.sl) <= 0.0
+                               || sign * (p.tp1 - p.sl_after_tp1) <= 0.0))
+      return "sl_after_tp1 must sit between sl and tp1";
+   double floor_sl = (p.sl_after_tp1 > 0.0) ? p.sl_after_tp1 : p.sl;
+   if(p.sl_after_tp2 > 0.0 && (sign * (p.sl_after_tp2 - floor_sl) < 0.0
+                               || sign * (p.sl_after_tp2 - p.sl) <= 0.0
+                               || sign * (p.tp2 - p.sl_after_tp2) <= 0.0))
+      return "sl_after_tp2 must sit between the stop before it and tp2";
    return "";
 }
 
@@ -253,6 +347,9 @@ string IntentFieldsProblem(const PollReply &reply)
       return "time barrier out of range";
    if(reply.valid_until_epoch <= reply.server_time_epoch)
       return "valid_until is not after the server time";
+   string ladder = LadderProblem(reply);
+   if(ladder != "")
+      return ladder;
    return PendingExpiryProblem(reply);
 }
 

@@ -219,15 +219,21 @@ def test_lots_to_hundredths_refuses_bad_values(lots: Any) -> None:
 def test_canonical_field_order_matches_the_contract() -> None:
     parts = wire.intent_canonical(_live(), POINT).split(wire.CANONICAL_SEPARATOR)
 
-    assert len(parts) == len(wire.CANONICAL_FIELDS) == 20
+    assert len(parts) == len(wire.CANONICAL_FIELDS) == 36
     assert dict(zip(wire.CANONICAL_FIELDS, parts)) == {
-        "schema_version": "v6.intent.1", "server_time_epoch": str(TS), "command": "NONE",
+        "schema_version": "v6.intent.2", "server_time_epoch": str(TS), "command": "NONE",
         "has_intent": "1", "intent_id": "k7w2m4pq3xza", "source": "operator",
         "require_demo": "1", "side": "buy", "order_type": "BUY_LIMIT",
         "entry_points": "453507", "sl_points": "452807", "tp_points": "454907",
         "lots_hundredths": "1", "ref_points": "453535", "max_drift_points": "200",
         "max_spread_points": "35", "valid_until_epoch": str(TS + 120),
-        "pending_expiry_epoch": str(TS + 1800), "time_barrier_s": "7200", "magic": "250570"}
+        "pending_expiry_epoch": str(TS + 1800), "time_barrier_s": "7200", "magic": "250570",
+        "tp1_points": "0", "tp2_points": "0", "sl_after_tp1_points": "0",
+        "sl_after_tp2_points": "0", "action_id": "", "action_ticket": "0",
+        "action_sl_points": "0", "action_tp_points": "0", "action_tp1_points": "0",
+        "action_tp2_points": "0", "action_sl1_points": "0", "action_sl2_points": "0",
+        "action_price_points": "0", "action_expiry_epoch": "0", "action_barrier_s": "0",
+        "action_issued_epoch": "0"}
 
 
 def test_sign_and_verify_round_trip() -> None:

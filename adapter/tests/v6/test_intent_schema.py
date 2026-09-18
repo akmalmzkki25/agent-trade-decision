@@ -27,7 +27,7 @@ def live(**changes: Any) -> dict[str, Any]:
         side="buy", order_type="BUY_LIMIT", entry=4535.07, sl=4528.07, tp=4549.07, lots=0.01,
         ref_price=4535.35, max_drift_points=200, max_spread_points=35,
         valid_until_epoch=NOW + 120, pending_expiry_epoch=NOW + 1800, time_barrier_s=7200,
-        magic=250570)
+        magic=250570, tp1=4540.07, tp2=4544.07, sl_after_tp1=4535.57, sl_after_tp2=4540.07)
     return {**fields, **changes}
 
 
@@ -79,7 +79,12 @@ def test_idle_and_command_responses() -> None:
 
 @pytest.mark.parametrize("payload", [live(), live(order_type="BUY", pending_expiry_epoch=0),
                                      live(side="sell", order_type="SELL_LIMIT", sl=4542.07,
-                                          tp=4521.07)])
+                                          tp=4521.07, tp1=4530.07, tp2=4526.07,
+                                          sl_after_tp1=4534.57, sl_after_tp2=4530.07),
+                                     live(order_type="BUY_STOP", entry=4540.07,
+                                          sl=4533.07, tp=4554.07, tp1=4544.07,
+                                          tp2=4548.07, sl_after_tp1=4540.57,
+                                          sl_after_tp2=4544.07)])
 def test_valid_intents(payload: dict[str, Any]) -> None:
     response = as_json(payload)
 

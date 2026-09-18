@@ -71,7 +71,7 @@ hashed with SHA-256 first, shorter keys are zero-padded. MQL5 has only
 ## 3. Request signatures (EA → adapter)
 
 Every V6 EA route (`/v6/bars/backfill`, `/v6/snapshot`, `/v6/intent/poll`,
-`/v6/execution`, `/v6/basket-result`) carries two headers:
+`/v6/execution`, `/v6/action`, `/v6/basket-result`) carries two headers:
 
 ```
 X-Qlip6-Ts:  <unix seconds, decimal, no sign, no leading zeros>
@@ -112,15 +112,15 @@ the following fields joined with `|` (`wire.CANONICAL_FIELDS`, `wire.intent_cano
 
 | # | Field | Text in the canonical string |
 |---|---|---|
-| 1 | `schema_version` | `v6.intent.1` |
+| 1 | `schema_version` | `v6.intent.2` |
 | 2 | `server_time_epoch` | decimal integer |
-| 3 | `command` | `NONE` / `FLATTEN` / `CANCEL_PENDING` |
+| 3 | `command` | `NONE` / `FLATTEN` / `CANCEL_PENDING` / `CLOSE_POSITION` / `MODIFY_POSITION` / `MODIFY_PENDING` |
 | 4 | `has_intent` | `1` or `0` |
 | 5 | `intent_id` | 12 chars or empty |
 | 6 | `source` | `rules` / `operator` or empty |
 | 7 | `require_demo` | always `1` |
 | 8 | `side` | `buy` / `sell` or empty |
-| 9 | `order_type` | `BUY_LIMIT` / `SELL_LIMIT` / `BUY` / `SELL` / `NONE` |
+| 9 | `order_type` | `BUY_LIMIT` / `SELL_LIMIT` / `BUY_STOP` / `SELL_STOP` / `BUY` / `SELL` / `NONE` |
 | 10 | `entry_points` | `round(entry / point)` as an integer |
 | 11 | `sl_points` | `round(sl / point)` |
 | 12 | `tp_points` | `round(tp / point)` |
@@ -132,6 +132,22 @@ the following fields joined with `|` (`wire.CANONICAL_FIELDS`, `wire.intent_cano
 | 18 | `pending_expiry_epoch` | integer |
 | 19 | `time_barrier_s` | integer |
 | 20 | `magic` | integer |
+| 21 | `tp1_points` | `round(tp1 / point)`; `0` without a ladder |
+| 22 | `tp2_points` | `round(tp2 / point)`; `0` without a ladder |
+| 23 | `sl_after_tp1_points` | `round(sl_after_tp1 / point)`; `0` for no step |
+| 24 | `sl_after_tp2_points` | `round(sl_after_tp2 / point)`; `0` for no step |
+| 25 | `action_id` | 12 chars or empty (management commands only) |
+| 26 | `action_ticket` | integer; `0` without an action |
+| 27 | `action_sl_points` | `round(action_sl / point)` |
+| 28 | `action_tp_points` | `round(action_tp / point)` |
+| 29 | `action_tp1_points` | `round(action_tp1 / point)` |
+| 30 | `action_tp2_points` | `round(action_tp2 / point)` |
+| 31 | `action_sl1_points` | `round(action_sl1 / point)` |
+| 32 | `action_sl2_points` | `round(action_sl2 / point)` |
+| 33 | `action_price_points` | `round(action_price / point)` (pending price) |
+| 34 | `action_expiry_epoch` | integer |
+| 35 | `action_barrier_s` | integer, the total holding time from the fill |
+| 36 | `action_issued_epoch` | integer; the EA refuses an action older than 30 s |
 
 - `point` is the symbol's `SYMBOL_POINT` (XAUUSD: 0.01). The adapter uses the newest
   snapshot's `symbol_spec.point` (`CarryOver.point`, default 0.01); the EA uses
@@ -217,15 +233,15 @@ Response `PollResponse` (always 200, always every field):
 
 | Field | Idle value | With an intent |
 |---|---|---|
-| `schema_version` | `v6.intent.1` | same |
+| `schema_version` | `v6.intent.2` | same |
 | `server_time_epoch` | adapter clock | same |
-| `command` | `NONE`/`FLATTEN`/`CANCEL_PENDING` | always `NONE` |
+| `command` | `NONE`/`FLATTEN`/`CANCEL_PENDING`/`CLOSE_POSITION`/`MODIFY_POSITION`/`MODIFY_PENDING` | always `NONE` |
 | `has_intent` | `false` | `true` |
 | `intent_id` | `""` | `^[a-z2-7]{12}$` (`schemas.intent.new_intent_id`) |
 | `source` | `""` | `operator` (execute mode requires the operator backend) |
 | `require_demo` | `1` | `1` — the adapter can never send anything else |
 | `side` | `""` | `buy`/`sell` |
-| `order_type` | `NONE` | `BUY_LIMIT`/`SELL_LIMIT` (preferred) or `BUY`/`SELL`, matching `side` |
+| `order_type` | `NONE` | `BUY_LIMIT`/`SELL_LIMIT` (preferred), `BUY_STOP`/`SELL_STOP` or `BUY`/`SELL`, matching `side` |
 | `entry`, `sl`, `tp` | `0.0` | > 0, on the tick grid; `sl`/`tp` on their own side of `entry` |
 | `lots` | `0.0` | `0 < lots ≤ 0.01` (0.01 grid) |
 | `ref_price` | `0.0` | side price at decision time (ask for buy, bid for sell) |
@@ -235,6 +251,16 @@ Response `PollResponse` (always 200, always every field):
 | `pending_expiry_epoch` | `0` | limit: decision bar close + `V6_PENDING_EXPIRY_BARS`×900, and ≥ `valid_until_epoch + 60`; market: `0` |
 | `time_barrier_s` | `0` | `V6_TIME_BARRIER_BARS`×900 (default 7 200, max 14 400) |
 | `magic` | `0` | `V6_MAGIC` (250570..250579; must equal the EA's `InpMagic`) |
+| `tp1`, `tp2` | `0.0` | the SL+ triggers of an agent plan, advancing entry → `tp1` → `tp2` → `tp`; `0.0` when the plan has no ladder |
+| `sl_after_tp1`, `sl_after_tp2` | `0.0` | the stop the EA moves to when that trigger is reached, between the stop before it and its trigger; `0.0` for no step |
+| `action_id` | `""` | management commands only: `^[a-z2-7]{12}$`, applied once by the EA |
+| `action_ticket` | `0` | the V6 ticket the command acts on |
+| `action_sl`, `action_tp` | `0.0` | `MODIFY_POSITION` and `MODIFY_PENDING`: the full values after the change |
+| `action_tp1`, `action_tp2`, `action_sl1`, `action_sl2` | `0.0` | the ladder after the change (`0.0` = no level); steps already executed are ignored by the EA |
+| `action_price` | `0.0` | `MODIFY_PENDING`: the new order price |
+| `action_expiry_epoch` | `0` | `MODIFY_PENDING`: the new expiry (UTC) |
+| `action_barrier_s` | `0` | the total holding time from the fill (≤ 14 400) |
+| `action_issued_epoch` | `0` | when the adapter issued the action; the EA refuses one older than 30 s |
 | `sig` | see §4 | see §4 |
 
 `PollResponse` enforces these rules itself (`schemas/intent.py`).
@@ -277,7 +303,31 @@ Rules: `placed`/`filled` need `reason_code=NONE` and `ticket>0`; `rejected_local
 and moves the intent (§7). A report for an unknown `intent_id` is stored and logged,
 never applied. Response 200 `{"ok": true}`.
 
-### 6.5 `POST /v6/basket-result` — `basket-result-event.v1`, `version: "v6"`
+### 6.5 `POST /v6/action` — `v6.action.1`
+
+What the EA did with a management command (`CLOSE_POSITION`, `MODIFY_POSITION`,
+`MODIFY_PENDING`), or an SL+ step it took by itself. Queued in the outbox and resent
+until the adapter answers, like an execution report.
+
+| Field | Type | Notes |
+|---|---|---|
+| `schema_version` | `"v6.action.1"` | |
+| `kind` | enum | `APPLIED`, `REJECTED`, `FAILED` (broker) or `PLAN_STEP` |
+| `action_id` | string | the command's id; empty for `PLAN_STEP` |
+| `command` | enum | the command applied; `NONE` for `PLAN_STEP` |
+| `intent_id` | string | the intent of the ticket, when the EA knows it |
+| `ticket` | integer | the V6 order or position the report is about |
+| `reason_code` | enum | `NONE` when applied; otherwise `UNKNOWN_TICKET`, `STALE`, `SL_WIDER`, `TOO_CLOSE`, `BARRIER`, `DEMO_REQUIRED`, `HALTED`, `MARKET_CLOSED`, `BROKER_ERROR`, `BAD_ACTION` |
+| `retcode` | integer | the broker return code (0 when there was no trade request) |
+| `step` | integer | `1` or `2` for `PLAN_STEP`, else `0` |
+| `old_sl`, `new_sl` | number | the stop before and after the step |
+| `price` | number | the price that triggered the step, or the order price |
+| `sent_at_epoch` | integer | when the report was built (UTC) |
+
+The adapter records the report in `v6_actions` (or `v6_plan_steps`), stores the new
+ladder on `APPLIED`, and stops repeating the command on the next poll.
+
+### 6.6 `POST /v6/basket-result` — `basket-result-event.v1`, `version: "v6"`
 
 Sent by the EA when a V6 position is closed (queued and resent like §6.4). Same body
 as `/v1/events/basket-result` (`app/models.py:BasketResultEvent`), which V2–V5 keep

@@ -9,6 +9,8 @@ constant time), then refuses a replay of the same (ts, sig) inside the window.
 Responses (adapter -> EA): `PollResponse.sig` is the hex HMAC-SHA256 of
 `intent_canonical`, which joins the fields with "|" and turns prices into
 integer points and lots into integer hundredths, so no float text is signed.
+Intent v2 signs the SL+ ladder and the management action as well, so a command
+that closes or modifies a trade is as tamper-evident as an entry.
 
 The key is V6_EA_HMAC_KEY (`config.ea_key_ok`), used as its ASCII bytes. Nothing
 here logs, prints or stores a key or a computed signature.
@@ -51,6 +53,10 @@ CANONICAL_FIELDS: Final[tuple[str, ...]] = (
     "require_demo", "side", "order_type", "entry_points", "sl_points", "tp_points",
     "lots_hundredths", "ref_points", "max_drift_points", "max_spread_points",
     "valid_until_epoch", "pending_expiry_epoch", "time_barrier_s", "magic",
+    "tp1_points", "tp2_points", "sl_after_tp1_points", "sl_after_tp2_points",
+    "action_id", "action_ticket", "action_sl_points", "action_tp_points",
+    "action_tp1_points", "action_tp2_points", "action_sl1_points", "action_sl2_points",
+    "action_price_points", "action_expiry_epoch", "action_barrier_s", "action_issued_epoch",
 )
 
 # RequestCheck.code values; every one but CHECK_OK means HTTP 401.
@@ -246,13 +252,21 @@ def lots_to_hundredths(lots: float) -> int:
 def intent_canonical(response: PollResponse, point: float) -> str:
     """The signed text of a poll response, fields in CANONICAL_FIELDS order."""
     r = response
+
+    def points(price: float) -> int:
+        return price_to_points(price, point)
+
     values = (
         r.schema_version, r.server_time_epoch, r.command, 1 if r.has_intent else 0,
         r.intent_id, r.source, r.require_demo, r.side, r.order_type,
-        price_to_points(r.entry, point), price_to_points(r.sl, point),
-        price_to_points(r.tp, point), lots_to_hundredths(r.lots),
-        price_to_points(r.ref_price, point), r.max_drift_points, r.max_spread_points,
+        points(r.entry), points(r.sl), points(r.tp), lots_to_hundredths(r.lots),
+        points(r.ref_price), r.max_drift_points, r.max_spread_points,
         r.valid_until_epoch, r.pending_expiry_epoch, r.time_barrier_s, r.magic,
+        points(r.tp1), points(r.tp2), points(r.sl_after_tp1), points(r.sl_after_tp2),
+        r.action_id, r.action_ticket, points(r.action_sl), points(r.action_tp),
+        points(r.action_tp1), points(r.action_tp2), points(r.action_sl1),
+        points(r.action_sl2), points(r.action_price), r.action_expiry_epoch,
+        r.action_barrier_s, r.action_issued_epoch,
     )
     return CANONICAL_SEPARATOR.join(str(value) for value in values)
 

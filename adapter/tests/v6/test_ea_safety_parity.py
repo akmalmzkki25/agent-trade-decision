@@ -27,7 +27,7 @@ def test_ea_routes_are_contract_routes() -> None:
     doc = read(CONTRACT_DOC)
     paths = set(re.findall(r'"(/v6/[a-z/_-]+)"', all_sources()))
 
-    assert paths == {"/v6/bars/backfill", "/v6/snapshot", "/v6/intent/poll",
+    assert paths == {"/v6/bars/backfill", "/v6/snapshot", "/v6/intent/poll", "/v6/action",
                      "/v6/execution", "/v6/basket-result"}
     for path in paths:
         assert f"`{path}`" in doc, path
@@ -133,7 +133,7 @@ def test_file_locations_match_the_contract() -> None:
 
 
 def test_intent_identity_matches_the_schema() -> None:
-    assert define_string("INTENT_SCHEMA") == "v6.intent.1"
+    assert define_string("INTENT_SCHEMA") == "v6.intent.2"
     assert define_string("ORDER_COMMENT_PREFIX") == "Q6:"
     assert int(ea_defines()["INTENT_ID_CHARS"]) == 12
     body = function_body(include("Intent.mqh"), "bool IsBase32Char(")

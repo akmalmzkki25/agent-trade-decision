@@ -28,9 +28,16 @@ INPUT: Final[re.Pattern[str]] = re.compile(r"^input[ \t]+\w+[ \t]+(\w+)[ \t]*=[ 
 # The poll-reply fields the canonical string turns into integers.
 CANONICAL_SOURCE: Final[dict[str, str]] = {
     "entry_points": "entry", "sl_points": "sl", "tp_points": "tp",
-    "lots_hundredths": "lots", "ref_points": "ref_price",
+    "lots_hundredths": "lots", "ref_points": "ref_price", "tp1_points": "tp1",
+    "tp2_points": "tp2", "sl_after_tp1_points": "sl_after_tp1",
+    "sl_after_tp2_points": "sl_after_tp2", "action_sl_points": "action_sl",
+    "action_tp_points": "action_tp", "action_tp1_points": "action_tp1",
+    "action_tp2_points": "action_tp2", "action_sl1_points": "action_sl1",
+    "action_sl2_points": "action_sl2", "action_price_points": "action_price",
 }
-PRICE_FIELDS: Final[tuple[str, ...]] = ("entry", "sl", "tp", "ref_price")
+PRICE_FIELDS: Final[tuple[str, ...]] = (
+    "entry", "sl", "tp", "ref_price", "tp1", "tp2", "sl_after_tp1", "sl_after_tp2",
+    "action_sl", "action_tp", "action_price")
 FORBIDDEN_TRADE_CALLS: Final[tuple[str, ...]] = (
     "TRADE_ACTION_SLTP", "TRADE_ACTION_MODIFY", "OrderModify", "PositionModify",
     "PositionClosePartial", "CTrade", "Trade.mqh", "OrderSendAsync",
