@@ -21,11 +21,12 @@ from ..ledger_intents import IntentRecord
 from ..market.levels import Pivot, confirmed_pivots, prior_day_levels
 from ..schemas.intent import intent_id_from_comment
 from ..schemas.operator_parts import (
-    MAX_PACKET_D1_BARS, MAX_PACKET_H1_BARS, MAX_PACKET_M1_BARS, MAX_PACKET_M5_BARS,
+    M15_PACKET_M1_BARS, MAX_PACKET_D1_BARS, MAX_PACKET_H1_BARS, MAX_PACKET_M5_BARS,
     MAX_PACKET_M15_BARS, MAX_PACKET_PIVOTS,
 )
 from ..setups.base import full_days
 from ..types import TIMEFRAME_SECONDS, Bar
+from .minute_packet import MINUTE_PACKET_M1_BARS, closed_minutes
 from .plan_rules import plan_bounds
 
 Document = dict[str, object]
@@ -36,7 +37,7 @@ R_DECIMALS: Final[int] = 3
 ROUND_STEP_SMALL: Final[float] = 10.0
 ROUND_STEP_LARGE: Final[float] = 50.0
 BAR_LIMITS: Final[tuple[tuple[str, int], ...]] = (
-    ("M1", MAX_PACKET_M1_BARS), ("M5", MAX_PACKET_M5_BARS), ("M15", MAX_PACKET_M15_BARS),
+    ("M1", M15_PACKET_M1_BARS), ("M5", MAX_PACKET_M5_BARS), ("M15", MAX_PACKET_M15_BARS),
     ("H1", MAX_PACKET_H1_BARS), ("D1", MAX_PACKET_D1_BARS))
 
 
@@ -50,7 +51,11 @@ def compact_bars(bars: Sequence[Bar], limit: int) -> list[list[int | float]]:
     return rows[-limit:]
 
 
-def bars_block(context: MarketContext) -> Document:
+def bars_block(context: MarketContext, kind: str = "m15") -> Document:
+    """An m15 packet shows every timeframe; an m1 packet only the last hour of M1 bars."""
+    if kind == "m1":
+        empty: Document = {tf: [] for tf, _ in BAR_LIMITS}
+        return {**empty, "M1": compact_bars(closed_minutes(context), MINUTE_PACKET_M1_BARS)}
     return {tf: compact_bars(context.bars.get(tf, ()), limit) for tf, limit in BAR_LIMITS}
 
 

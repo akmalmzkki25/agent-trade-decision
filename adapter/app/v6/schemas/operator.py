@@ -40,6 +40,7 @@ from .operator_parts import (
     PacketMarket, PacketSession, PacketState, RebuttalStance, allowed_values, canonical_json,
     equity_band,
 )
+from .operator_minute import MinuteState
 from .operator_plan import (
     M15Bias, ManageRequest, PacketAction, PacketPendingOrder, PacketPosition,
 )
@@ -73,6 +74,7 @@ DECISION_SCHEMAS: Final[tuple[str, ...]] = (
 DecisionSchema = Literal["v6.operator.decision.1", "v6.operator.decision.2"]
 HASH_EXCLUDED_KEYS: Final[frozenset[str]] = frozenset({"packet_hash", "decision_template"})
 M15_S: Final[int] = TIMEFRAME_SECONDS["M15"]
+M1_S: Final[int] = TIMEFRAME_SECONDS["M1"]
 MAX_NOTE_CHARS: Final[int] = 300
 # The agent's free note of a v3 decision: untrusted, cleaned of control characters.
 DecisionNote = Annotated[str, StringConstraints(max_length=MAX_NOTE_CHARS),
@@ -132,14 +134,20 @@ class OperatorPacketBody(Frozen):
     last_action: PacketAction | None = None
     last_bias: M15Bias | None = None
     last_bias_at_epoch: Epoch | None = None
+    # An m1 packet: what the closed M1 bars did and the distances to the managed trade.
+    m1_state: MinuteState | None = None
 
     @model_validator(mode="after")
     def _check_body(self) -> "OperatorPacketBody":
         ids = tuple(item.candidate_id for item in self.candidates) + (
             self.limits.agent_entry_id,)
         events = tuple(event.event_id for event in self.calendar.events)
+        bar_s = M15_S if self.packet_kind == "m15" else M1_S
         checks = (
-            (self.bar_close_epoch == self.bar_open_epoch + M15_S, "bar_close is not open + M15"),
+            (self.bar_close_epoch == self.bar_open_epoch + bar_s,
+             "bar_close is not the bar open plus the packet's bar"),
+            ((self.packet_kind == "m1") == (self.m1_state is not None),
+             "an m1 packet carries m1_state, an m15 packet does not"),
             (self.bar_close_epoch <= self.created_at_epoch < self.expires_at_epoch,
              "times must satisfy bar_close <= created_at < expires_at"),
             (ids == self.allowed.candidate_ids and len(set(ids)) == len(ids),
@@ -200,10 +208,10 @@ class DecisionTemplate(Frozen):
     packet_hash: Hash
     agent: OperatorAgent
     action: DecisionAction
-    views: OperatorViews
+    views: OperatorViews | None
     entry_plan: None = None
     manage: ManageRequest | None = None
-    m15_bias: M15Bias
+    m15_bias: M15Bias | None
     note: DecisionNote = ""
 
 
@@ -269,13 +277,16 @@ def _keep(body: OperatorPacketBody) -> ManageRequest | None:
 
 
 def decision_template(body: OperatorPacketBody, digest: str) -> DecisionTemplate:
-    """The rules views, HOLD (or KEEP when managing) and the last bias, for the first agent."""
+    """HOLD (or KEEP when managing) for the first agent; an m15 template carries the rules
+    views and the last bias, an m1 template neither (both may stay null, spec 2.1)."""
     manage = _keep(body)
+    m15 = body.packet_kind == "m15"
     return DecisionTemplate(
         schema_version=DECISION_SCHEMA, packet_kind=body.packet_kind, cycle_id=body.cycle_id,
         packet_hash=digest, agent=body.allowed.agents[0],
-        action="HOLD" if manage is None else "MANAGE", views=baseline_or_defaults(body),
-        manage=manage, m15_bias=body.last_bias or UNCLEAR_BIAS)
+        action="HOLD" if manage is None else "MANAGE",
+        views=baseline_or_defaults(body) if m15 else None, manage=manage,
+        m15_bias=(body.last_bias or UNCLEAR_BIAS) if m15 else None)
 
 
 def seal_packet(body: OperatorPacketBody) -> OperatorPacket:

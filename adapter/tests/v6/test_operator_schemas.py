@@ -128,7 +128,8 @@ def _without_events(document: dict[str, Any]) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(("mutate", "message"), [
-    (lambda d: d.update(bar_close_epoch=d["bar_close_epoch"] + 1), "open \\+ M15"),
+    (lambda d: d.update(bar_close_epoch=d["bar_close_epoch"] + 1),
+     "the bar open plus the packet's bar"),
     (lambda d: d.update(created_at_epoch=d["bar_close_epoch"] - 1), "bar_close <= created_at"),
     (lambda d: d.update(expires_at_epoch=d["created_at_epoch"]), "created_at < expires_at"),
     (lambda d: d.update(candidates=d["candidates"][::-1]), "allowed.candidate_ids"),

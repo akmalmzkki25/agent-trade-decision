@@ -47,6 +47,9 @@ StructureVetoMode = Literal["log", "enforce"]
 # an operator agent receives a `schemas.operator.OperatorPacket` instead.
 PACKET_INPUT_KEY: Final[str] = "deliberation_input"
 PUBLISHED_STATUS: Final[CycleStatus] = "ENTER"     # the intent went out to the EA
+# A context closes an M15 bar, or the M1 bar of an m1 cycle (phase B).
+CONTEXT_BAR_SECONDS: Final[frozenset[int]] = frozenset({
+    TIMEFRAME_SECONDS["M15"], TIMEFRAME_SECONDS["M1"]})
 
 
 @dataclass(frozen=True)
@@ -83,7 +86,8 @@ class CalendarAssessment:
 
 @dataclass(frozen=True)
 class MarketContext:
-    """Everything tier 0 knows at `as_of_epoch` (the M15 close). Only closed bars."""
+    """Everything tier 0 knows at `as_of_epoch` (the M15 close, or the M1 close of an m1
+    cycle). Only closed bars."""
 
     cycle_id: str
     snapshot_id: str
@@ -115,8 +119,9 @@ class MarketContext:
         bars = {tf: tuple(rows) for tf, rows in self.bars.items()}
         object.__setattr__(self, "bars", MappingProxyType(bars))
         object.__setattr__(self, "features", MappingProxyType(dict(self.features)))
-        if self.as_of_epoch != self.bar_open_epoch + TIMEFRAME_SECONDS["M15"]:
-            raise ValueError("as_of_epoch must be the M15 bar close")
+        if self.as_of_epoch - self.bar_open_epoch not in CONTEXT_BAR_SECONDS:
+            raise ValueError("as_of_epoch must be the M15 bar close "
+                             "(or the M1 bar close of an m1 cycle)")
         for tf, rows in self.bars.items():
             if rows and rows[-1].t + TIMEFRAME_SECONDS[tf] > self.as_of_epoch:
                 raise ValueError(f"{tf}: bar at {rows[-1].t} is not closed at as_of_epoch")

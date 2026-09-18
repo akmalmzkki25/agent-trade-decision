@@ -29,7 +29,8 @@ from .agents import (
 )
 
 MAX_DECISION_BYTES: Final[int] = 64 * 1024
-MAX_PACKET_M1_BARS: Final[int] = 30
+MAX_PACKET_M1_BARS: Final[int] = 60          # an m1 packet: the last hour of closed M1 bars
+M15_PACKET_M1_BARS: Final[int] = 30          # an m15 packet shows the last 30 of them
 MAX_PACKET_M5_BARS: Final[int] = 36
 MAX_PACKET_M15_BARS: Final[int] = 32
 MAX_PACKET_H1_BARS: Final[int] = 24
@@ -58,7 +59,7 @@ ManageTarget = Literal["position", "pending"]
 ManageOp = Literal["KEEP", "CLOSE", "CANCEL", "MODIFY"]
 BiasDirection = Literal["up", "down", "range", "unclear"]
 DecisionAction = Literal["HOLD", "ENTER", "MANAGE"]
-PacketKind = Literal["m15"]
+PacketKind = Literal["m15", "m1"]
 PacketState = Literal["flat", "pending", "position"]
 ActionStatus = Literal["PUBLISHED", "APPLIED", "REJECTED", "FAILED", "EXPIRED"]
 

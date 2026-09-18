@@ -20,7 +20,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from app.v6.schemas.intent import PollRequest
-from app.v6.schemas.operator_parts import MAX_PACKET_M1_BARS
+from app.v6.schemas.operator_parts import M15_PACKET_M1_BARS
 from app.v6.schemas.snapshot import BackfillRequest, V6Snapshot
 from app.v6.types import TIMEFRAME_SECONDS
 
@@ -170,8 +170,8 @@ def test_the_ea_sends_the_expected_bar_counts() -> None:
     counts = {tf: int(n) for tf, n in re.findall(r"#define SNAP_BARS_(\w+)\s+(\d+)", source)}
 
     assert counts == EXPECTED_BAR_COUNTS
-    # The packet's M1 window comes whole from the newest snapshot.
-    assert counts["M1"] >= MAX_PACKET_M1_BARS
+    # The m15 packet's M1 window comes whole from the newest snapshot.
+    assert counts["M1"] >= M15_PACKET_M1_BARS
 
 
 def test_snapshot_golden_ids_and_times_are_consistent() -> None:

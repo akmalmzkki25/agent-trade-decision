@@ -89,7 +89,8 @@ def test_hold_and_keep_templates_are_acceptable() -> None:
 
 
 @pytest.mark.parametrize(("changes", "code"), [
-    ({"packet_kind": "m1"}, op.DECISION_ERR_SCHEMA),
+    ({"packet_kind": "m1"}, op.DECISION_ERR_KIND),      # an answer to another packet kind
+    ({"packet_kind": "h1"}, op.DECISION_ERR_SCHEMA),
     ({"m15_bias": None}, op.DECISION_ERR_BIAS),
     ({"m15_bias": {"direction": "sideways"}}, op.DECISION_ERR_BIAS),
     ({"views": None}, op.DECISION_ERR_VIEW),

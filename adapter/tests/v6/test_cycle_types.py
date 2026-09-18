@@ -202,6 +202,12 @@ def test_market_context_requires_the_bar_close_as_of() -> None:
         replace(ctx, as_of_epoch=ctx.as_of_epoch + 1)
 
 
+def test_an_m1_cycle_context_closes_its_minute() -> None:
+    ctx = market_context()
+    minute = replace(ctx, bar_open_epoch=ctx.as_of_epoch - 60)
+    assert minute.as_of_epoch - minute.bar_open_epoch == 60
+
+
 def test_candidate_fixture_matches_the_assessment() -> None:
     item: CandidateAssessment = assessment()
 

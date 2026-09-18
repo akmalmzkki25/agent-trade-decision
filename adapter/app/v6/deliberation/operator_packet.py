@@ -12,7 +12,9 @@ V6 order rests or a V6 position is open the packet is a management packet
 (`state` pending or position): no suggestion and no entry, but the order or the
 position with its plan, the last management action and the agent's last M15
 bias. The rules views are trimmed to what is offered, so the decision template
-(HOLD, or KEEP when managing) is itself an acceptable decision.
+(HOLD, or KEEP when managing) is itself an acceptable decision. An m1 packet
+(`PacketRequest.kind`) is the same packet for a closed M1 bar: only the M1 bars,
+`m1_state`, no suggestions, and the M1 deadline.
 
 The agent sees an equity band, never the balance or the login, and never sets
 lots: an agent entry is validated and sized by `risk/`. Text is cleaned of
@@ -25,8 +27,7 @@ from __future__ import annotations
 
 import logging
 import math
-import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
@@ -48,14 +49,20 @@ from ..risk.policy import (
 )
 from ..schemas.agents import NewsRiskView, PriceActionView
 from ..schemas.operator import (
-    MAX_CODES, MAX_EVENTS, MAX_FEATURES, MAX_GATES, PACKET_SCHEMA, OperatorPacket,
+    MAX_EVENTS, MAX_FEATURES, MAX_GATES, PACKET_SCHEMA, OperatorPacket,
     OperatorPacketBody, allowed_values, canonical_json, equity_band, seal_packet,
 )
 from ..schemas.operator_parts import MAX_DETAIL_CHARS, MAX_SERVER_CHARS
+from ..schemas.operator_parts import PacketKind
 from ..schemas.operator_plan import MAX_ACTION_DETAIL_CHARS, M15Bias, PacketState
 from ..types import GateResult, Refusal
+from .minute_packet import minute_state
 from .packet_extras import (
     bars_block, levels_block, limits_block, pending_order_block, position_block,
+)
+from .packet_text import (
+    clean_text as _text, codes as _codes, features as _features, gate_value as _gate_value,
+    is_finite as _finite, number as _number, positive_number as _positive,
 )
 from .shadow import size_for
 
@@ -64,12 +71,7 @@ logger = logging.getLogger(__name__)
 Document = dict[str, object]
 
 STANDARD_MULTIPLIER: Final[float] = 1.0
-MAX_GATE_VALUE_CHARS: Final[int] = 64
 NO_EXIT_PLAN: Final[str] = "NO_EXIT_PLAN"
-# The same patterns as schemas.operator_parts.Code and FeatureName: values that do
-# not fit are dropped here instead of failing the whole packet.
-CODE_RE: Final[re.Pattern[str]] = re.compile(r"[A-Z0-9_:.-]{1,48}")
-FEATURE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"[a-z0-9_]{1,40}")
 
 REFUSE_POLICY: Final[str] = "PACKET_POLICY"
 REFUSE_NO_SESSION: Final[str] = "PACKET_NO_SESSION"
@@ -90,7 +92,8 @@ class PacketRequest:
     the engine stops waiting (the packet never outlives it). `state` pending or
     position makes a management packet about the resting order or open position;
     `record` is the intent behind it, `last_action` the session's newest management
-    action and `last_bias` / `last_bias_at` the agent's last M15 reading.
+    action and `last_bias` / `last_bias_at` the agent's last M15 reading. `kind` m1 builds
+    the packet of a closed M1 bar: M1 bars only, `m1_state`, the M1 deadline.
     """
 
     context: MarketContext
@@ -107,6 +110,7 @@ class PacketRequest:
     last_action: ActionRow | None = None
     last_bias: M15Bias | None = None
     last_bias_at: int | None = None
+    kind: PacketKind = "m15"
 
 
 @dataclass(frozen=True)
@@ -172,7 +176,8 @@ def _policy_refusal(request: PacketRequest, settings: V6Settings) -> PacketRefus
 def _window(request: PacketRequest, settings: V6Settings) -> tuple[int, int] | PacketRefusal:
     """(created_at, expires_at): expiry at bar close + V6_OPERATOR_DEADLINE_S at most."""
     close = request.context.as_of_epoch
-    expires = close + settings.operator_deadline_s
+    budget = settings.operator_deadline_s if request.kind == "m15" else settings.m1_deadline_s
+    expires = close + budget
     deadline, now = request.deadline_epoch, request.now
     if not (_finite(now) and (deadline is None or _finite(deadline))):
         return PacketRefusal(REFUSE_DEADLINE, "the clock or the deadline is not finite")
@@ -225,6 +230,7 @@ def _candidate(request: PacketRequest, item: CandidateAssessment,
 def _body(request: PacketRequest, settings: V6Settings, window: tuple[int, int],
           candidates: tuple[Document, ...]) -> OperatorPacketBody:
     context = request.context
+    managed = _managed(request, settings.time_barrier_s)
     events = context.calendar.events[:MAX_EVENTS]
     ids = tuple(str(document["candidate_id"]) for document in candidates)
     event_ids = tuple(event.event_id for event in events)
@@ -233,7 +239,7 @@ def _body(request: PacketRequest, settings: V6Settings, window: tuple[int, int],
                              candidate_ids=ids + (str(limits["agent_entry_id"]),),
                              event_ids=event_ids, pa_min_conviction=settings.pa_min_conviction)
     document: Document = {
-        "schema_version": PACKET_SCHEMA, "packet_kind": "m15", "state": request.state,
+        "schema_version": PACKET_SCHEMA, "packet_kind": request.kind, "state": request.state,
         "cycle_id": context.cycle_id,
         "created_at_epoch": window[0], "expires_at_epoch": window[1],
         "bar_open_epoch": context.bar_open_epoch, "bar_close_epoch": context.as_of_epoch,
@@ -243,7 +249,7 @@ def _body(request: PacketRequest, settings: V6Settings, window: tuple[int, int],
                     "equity_band": equity_band(context.account.equity)},
         "market": _market(context),
         "session": _session(context, request.armed, settings),
-        "bars": bars_block(context),
+        "bars": bars_block(context, request.kind),
         "levels": levels_block(context),
         "limits": limits,
         "gates": [_gate(gate) for gate in request.gates[:MAX_GATES]],
@@ -251,7 +257,8 @@ def _body(request: PacketRequest, settings: V6Settings, window: tuple[int, int],
         "candidates": list(candidates),
         "baseline_views": _baseline(request.baseline, frozenset(ids), frozenset(event_ids)),
         "allowed": allowed.model_dump(mode="json"),
-        **_managed(request, settings.time_barrier_s),
+        "m1_state": _minute_block(request, managed),
+        **managed,
     }
     return OperatorPacketBody.model_validate_json(canonical_json(document))
 
@@ -268,6 +275,15 @@ def _managed(request: PacketRequest, default_barrier_s: int) -> Document:
         "last_bias": None if bias is None else bias.model_dump(mode="json"),
         "last_bias_at_epoch": request.last_bias_at,
     }
+
+
+def _minute_block(request: PacketRequest, managed: Document) -> Document | None:
+    """`m1_state` of an m1 packet (None for m15), measured against its managed trade."""
+    if request.kind != "m1":
+        return None
+    trade = managed["position"] or managed["pending_order"]
+    state = minute_state(request.context, trade if isinstance(trade, dict) else None)
+    return state.model_dump(mode="json")
 
 
 def _action(row: ActionRow | None) -> Document | None:
@@ -345,51 +361,3 @@ def _news(view: NewsRiskView | None, event_ids: frozenset[str]) -> Document | No
 
 def _dump(view: BaseModel | None) -> Document | None:
     return None if view is None else view.model_dump(mode="json")
-
-
-# --- scalar helpers ------------------------------------------------------------------------------
-def _finite(value: object) -> bool:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    try:
-        return math.isfinite(value)
-    except OverflowError:  # an int beyond float range
-        return False
-
-
-def _number(value: object) -> float | None:
-    return float(value) if _finite(value) else None  # type: ignore[arg-type]
-
-
-def _positive(value: object) -> float | None:
-    number = _number(value)
-    return number if number is not None and number > 0 else None
-
-
-def _text(value: object, limit: int) -> str:
-    """Untrusted text: printable characters only, cut to `limit`."""
-    return "".join(ch for ch in str(value) if ch.isprintable())[:limit]
-
-
-def _gate_value(value: object) -> float | str | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return str(value).upper()
-    if isinstance(value, (int, float)):
-        return _number(value)
-    return _text(value, MAX_GATE_VALUE_CHARS)
-
-
-def _codes(values: Iterable[object], limit: int = MAX_CODES) -> list[str]:
-    valid = (value for value in values if isinstance(value, str) and CODE_RE.fullmatch(value))
-    return list(dict.fromkeys(valid))[:limit]
-
-
-def _features(values: Mapping[str, object], limit: int,
-              allowed: frozenset[str] | None = None) -> dict[str, float]:
-    usable = [(key, float(value))  # type: ignore[arg-type]
-              for key, value in sorted(values.items(), key=lambda item: str(item[0]))
-              if isinstance(key, str) and FEATURE_NAME_RE.fullmatch(key)
-              and (allowed is None or key in allowed) and _finite(value)]
-    return dict(usable[:limit])
