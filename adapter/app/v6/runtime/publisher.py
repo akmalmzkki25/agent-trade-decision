@@ -40,6 +40,7 @@ HOLD_FOR_CODE: Final[Mapping[str, HoldReason]] = MappingProxyType({
     ib.QUOTE_STALE: HoldReason.STALE, ib.BAD_GEOMETRY: HoldReason.EXIT,
     ib.OFF_GRID: HoldReason.EXIT, ib.LIMIT_NOT_PASSIVE: HoldReason.EXIT,
     ib.MARKET_STOP_BELOW_FLOOR: HoldReason.EXIT, ib.MARKET_REWARD_BELOW_1R: HoldReason.EXIT,
+    ib.STOP_NOT_BEYOND: HoldReason.EXIT, ib.MARKET_MOVED: HoldReason.EXIT,
     ib.LOT_LIMIT: HoldReason.SIZE, ib.RISK_OVER_BUDGET: HoldReason.SIZE,
     ib.TOO_LATE: HoldReason.LATE, book.BOOK_OCCUPANCY_UNKNOWN: HoldReason.STALE,
     book.BOOK_OCCUPIED: HoldReason.GATE, book.BOOK_ACTIVE_INTENT: HoldReason.GATE,

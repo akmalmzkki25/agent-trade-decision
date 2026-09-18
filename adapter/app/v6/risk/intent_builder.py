@@ -8,11 +8,10 @@ inputs, the candidate, the quote, the geometry, the grids, the lots and the loss
 stop. The first failure is the refusal (a POLICY_* code when a policy refused); nothing
 is rounded, widened or defaulted into shape.
 
-Order type (limits preferred, kn/15): BUY_LIMIT when entry <= ask - gap, SELL_LIMIT when
-entry >= bid + gap (gap = stops_level x point + one tick, as EA check 13). Otherwise a
-market order at the reference price, only for a MARKET or EITHER style with |entry - ref|
-<= the drift limit; from ref it keeps the exits floor and MIN_REWARD_R, and its drift is
-cut so a fill at ref + drift still fits the sizing budget. Else LIMIT_NOT_PASSIVE.
+`risk.order_choice` picks the order type: without an agent plan the quote decides (limits
+preferred, kn/15), with one the agent has chosen already (LIMIT, STOP or MARKET) and the
+quote only says whether it still fits. An agent plan also brings its SL+ ladder, its
+holding time and how long a pending order may rest; they travel to the EA in intent v2.
 
 EA limits: ref_price = ask (buy) / bid (sell); max_drift_points = DRIFT_STOP_FRACTION
 (20%) of the stop in points, within [MIN_DRIFT_POINTS, V6_MAX_DRIFT_POINTS];
@@ -25,10 +24,9 @@ min(V6_TIME_BARRIER_BARS x 900, the plan's, 4 h); magic = V6_MAGIC; require_demo
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
-from types import MappingProxyType
+from decimal import ROUND_CEILING, Decimal
 from typing import Final, Literal
 
 from pydantic import SecretStr
@@ -38,21 +36,17 @@ from ..config import V6Settings
 from ..cycle_types import MarketContext, ProtocolDecision
 from ..ledger_cycles_schema import SessionRecord
 from ..ledger_intents import NewIntent
-from ..market.feature_map import effective_friction
-from ..schemas.intent import (MIN_PENDING_LIFETIME_S, OrderType, PollRequest, PollResponse,
-                              new_intent_id)
-from ..types import Candidate, ExitPlan, Refusal, SizingResult
+from ..schemas.intent import MIN_PENDING_LIFETIME_S, PollResponse, new_intent_id
+from ..types import Candidate, ExitPlan, Refusal, SizingResult, TradePlan
 from . import limits, policy
-from .exits import MIN_REWARD_R
+# The order-choice refusals are re-exported: the publisher maps them by this module's names.
+from .order_choice import (  # noqa: F401
+    LIMIT_NOT_PASSIVE, MARKET_MOVED, MARKET_REWARD_BELOW_1R, MARKET_STOP_BELOW_FLOOR,
+    RISK_OVER_BUDGET, SIDE_SIGN, STOP_NOT_BEYOND, ChosenOrder, OrderInputs, ReferenceQuote,
+    choose_order, dec, loss_usd, stop_distance,
+)
 
-SIDE_SIGN: Final[Mapping[str, int]] = MappingProxyType({"buy": 1, "sell": -1})
-LIMIT_ORDERS: Final[Mapping[str, OrderType]] = MappingProxyType(
-    {"buy": "BUY_LIMIT", "sell": "SELL_LIMIT"})
-MARKET_ORDERS: Final[Mapping[str, OrderType]] = MappingProxyType({"buy": "BUY", "sell": "SELL"})
-MARKET_STYLES: Final[frozenset[str]] = frozenset({"MARKET", "EITHER"})
 ENTER_ACTION: Final[str] = "ENTER"
-DRIFT_STOP_FRACTION: Final[Decimal] = Decimal("0.2")
-MIN_DRIFT_POINTS: Final[int] = 10          # V6_MAX_DRIFT_POINTS cannot go below it either
 MIN_VALIDITY_S: Final[int] = 10            # five EA polls
 LOT_GRID: Final[float] = 0.01              # signed lots are integer hundredths
 _CENT: Final[Decimal] = Decimal("0.01")
@@ -70,35 +64,7 @@ QUOTE_STALE: Final[str] = "QUOTE_STALE"
 BAD_GEOMETRY: Final[str] = "BAD_GEOMETRY"
 OFF_GRID: Final[str] = "OFF_GRID"
 LOT_LIMIT: Final[str] = "LOT_LIMIT"
-RISK_OVER_BUDGET: Final[str] = "RISK_OVER_BUDGET"
-LIMIT_NOT_PASSIVE: Final[str] = "LIMIT_NOT_PASSIVE"
-MARKET_STOP_BELOW_FLOOR: Final[str] = "MARKET_STOP_BELOW_FLOOR"
-MARKET_REWARD_BELOW_1R: Final[str] = "MARKET_REWARD_BELOW_1R"
 TOO_LATE: Final[str] = "INTENT_TOO_LATE"
-
-
-@dataclass(frozen=True)
-class ReferenceQuote:
-    """The quote an order is judged against, with the account that reported it."""
-
-    bid: float
-    ask: float
-    observed_at: float        # adapter clock when the quote arrived
-    login: str
-    trade_mode: str
-    server: str
-
-    @classmethod
-    def from_context(cls, context: MarketContext) -> "ReferenceQuote":
-        return cls(context.quote.bid, context.quote.ask, context.received_at,
-                   context.account.login, context.trade_mode, context.server)
-
-    @classmethod
-    def from_poll(cls, poll: PollRequest, received_at: float) -> "ReferenceQuote":
-        return cls(poll.bid, poll.ask, received_at, poll.login, poll.trade_mode, poll.server)
-
-    def side_price(self, side: str) -> float:
-        return self.ask if side == "buy" else self.bid
 
 
 @dataclass(frozen=True)
@@ -129,12 +95,13 @@ def _response(intent: IntentDraft, server_time: int) -> PollResponse:
         lots=row.lots, ref_price=intent.ref_price, max_drift_points=intent.max_drift_points,
         max_spread_points=intent.max_spread_points, valid_until_epoch=row.valid_until_epoch,
         pending_expiry_epoch=row.pending_expiry_epoch, time_barrier_s=row.time_barrier_s,
-        magic=intent.magic)
+        magic=intent.magic, tp1=row.tp1, tp2=row.tp2, sl_after_tp1=row.sl_after_tp1,
+        sl_after_tp2=row.sl_after_tp2)
 
 
 def to_poll_response(intent: IntentDraft, server_time: int, key: SecretStr | None,
                      point: float) -> PollResponse:
-    """The flat v6.intent.1 answer for `intent`, signed when `key` is a valid EA key.
+    """The flat v6.intent.2 answer for `intent`, signed when `key` is a valid EA key.
 
     `point` is the newest snapshot's SYMBOL_POINT (`CarryOver.point`). ValueError when the
     intent is no longer valid at `server_time` or a number is off its grid (unsignable).
@@ -147,10 +114,6 @@ def to_poll_response(intent: IntentDraft, server_time: int, key: SecretStr | Non
 def _positive(value: object) -> bool:
     return (isinstance(value, (int, float)) and not isinstance(value, bool)
             and math.isfinite(value) and value > 0)
-
-
-def _dec(value: float) -> Decimal:
-    return Decimal(repr(float(value)))
 
 
 def _on_grid(value: float, step: float) -> bool:
@@ -173,33 +136,7 @@ def _first(checks: Iterable[Callable[[], Refusal | None]]) -> Refusal | None:
     return next((found for found in (check() for check in checks) if found is not None), None)
 
 
-@dataclass(frozen=True)
-class _Inputs:
-    resolution: ProtocolDecision
-    candidate: Candidate
-    plan: ExitPlan
-    sizing: SizingResult
-    context: MarketContext
-    settings: V6Settings
-    session: SessionRecord | None
-    now: float
-    agent: str
-    quote: ReferenceQuote
-
-    @property
-    def sign(self) -> int:
-        return SIDE_SIGN[self.plan.side]
-
-    @property
-    def spread(self) -> float:
-        return max(self.context.spread_price, self.quote.ask - self.quote.bid)
-
-    @property
-    def friction(self) -> Decimal:
-        return _dec(effective_friction(self.settings.friction_price, self.spread))
-
-
-def _authority_refusal(i: _Inputs) -> Refusal | None:
+def _authority_refusal(i: OrderInputs) -> Refusal | None:
     settings, context, quote, session = i.settings, i.context, i.quote, i.session
     account = (context.account.login, context.server, context.trade_mode)
     return _first((
@@ -220,12 +157,12 @@ def _authority_refusal(i: _Inputs) -> Refusal | None:
     ))
 
 
-def _order_refusal(i: _Inputs) -> Refusal | None:
+def _order_refusal(i: OrderInputs) -> Refusal | None:
     plan, spec, quote, sign = i.plan, i.context.spec, i.quote, i.sign
     grids, quoted = (spec.tick_size, spec.point), (quote.bid, quote.ask)
     return _first((
         lambda: _unless(i.resolution.action == ENTER_ACTION, NOT_ENTER, "no approved entry"),
-        lambda: _unless(abs(_dec(plan.entry) - _dec(i.candidate.entry)) * 2 < _dec(spec.point)
+        lambda: _unless(abs(dec(plan.entry) - dec(i.candidate.entry)) * 2 < dec(spec.point)
                         and (plan.side, i.resolution.candidate_id) == (
                             i.candidate.side, i.candidate.candidate_id),
                         CANDIDATE_MISMATCH, "decision, candidate and exit plan disagree"),
@@ -243,7 +180,7 @@ def _order_refusal(i: _Inputs) -> Refusal | None:
     ))
 
 
-def _input_refusal(i: _Inputs) -> Refusal | None:
+def _input_refusal(i: OrderInputs) -> Refusal | None:
     plan, sizing, spec = i.plan, i.sizing, i.context.spec
     numbers = {
         "entry": plan.entry, "sl": plan.sl, "tp": plan.tp, "stop": plan.stop_distance,
@@ -259,98 +196,45 @@ def _input_refusal(i: _Inputs) -> Refusal | None:
     return _unless(not bad, BAD_INPUT, "unusable: " + ", ".join(bad))
 
 
-def _lots_ok(i: _Inputs) -> bool:
+def _lots_ok(i: OrderInputs) -> bool:
     lots, spec = i.sizing.lots, i.context.spec
-    cap = min(_dec(i.settings.max_lots), _dec(limits.MAX_EXECUTE_LOTS))
-    return (_dec(spec.volume_min) <= _dec(lots) <= cap and _on_grid(lots, spec.volume_step)
+    cap = min(dec(i.settings.max_lots), dec(limits.MAX_EXECUTE_LOTS))
+    return (dec(spec.volume_min) <= dec(lots) <= cap and _on_grid(lots, spec.volume_step)
             and _on_grid(lots, LOT_GRID))
 
 
-def _stop(i: _Inputs, entry: Decimal) -> Decimal:
-    return i.sign * (entry - _dec(i.plan.sl))
+def _within_budget(i: OrderInputs) -> bool:
+    budget = dec(i.sizing.risk_budget_usd)
+    distance = max(dec(i.plan.stop_distance), stop_distance(i, dec(i.plan.entry)))
+    return dec(i.sizing.risk_usd) <= budget and loss_usd(i, distance) <= budget
 
 
-def _loss_usd(i: _Inputs, distance: Decimal) -> Decimal:
-    spec = i.context.spec
-    return (_dec(i.sizing.lots) * (distance + i.friction) / _dec(spec.tick_size)
-            * _dec(spec.tick_value_loss))
-
-
-def _within_budget(i: _Inputs) -> bool:
-    budget = _dec(i.sizing.risk_budget_usd)
-    distance = max(_dec(i.plan.stop_distance), _stop(i, _dec(i.plan.entry)))
-    return _dec(i.sizing.risk_usd) <= budget and _loss_usd(i, distance) <= budget
-
-
-@dataclass(frozen=True)
-class _Order:
-    order_type: OrderType
-    entry: float
-    drift_points: int
-    loss_usd: Decimal
-    is_limit: bool
-
-
-def _drift_points(i: _Inputs) -> int:
-    points = _dec(i.plan.stop_distance) / _dec(i.context.spec.point) * DRIFT_STOP_FRACTION
-    return min(i.settings.max_drift_points,
-               max(MIN_DRIFT_POINTS, int(points.to_integral_value(rounding=ROUND_FLOOR))))
-
-
-def _stop_floor(i: _Inputs) -> Decimal:
-    """The risk.exits floor: configured points, 10x spread, friction / 10%, stops level."""
-    point = _dec(i.context.spec.point)
-    return max(i.settings.stop_floor_points * point,
-               _dec(limits.MIN_STOP_SPREAD_MULTIPLE) * _dec(i.spread),
-               i.friction / _dec(limits.MAX_FRICTION_TO_STOP),
-               i.context.spec.stops_level * point)
-
-
-def _choose_order(i: _Inputs) -> _Order | Refusal:
-    side, spec = i.plan.side, i.context.spec
-    ref, entry = _dec(i.quote.side_price(side)), _dec(i.plan.entry)
-    drift = _drift_points(i)
-    if i.sign * (ref - entry) >= spec.stops_level * _dec(spec.point) + _dec(spec.tick_size):
-        return _Order(LIMIT_ORDERS[side], i.plan.entry, drift, _loss_usd(i, _stop(i, entry)),
-                      is_limit=True)
-    if i.resolution.order_style in MARKET_STYLES and abs(ref - entry) <= drift * _dec(spec.point):
-        return _market_order(i, ref, drift)
-    return Refusal((LIMIT_NOT_PASSIVE,),
-                   f"entry {i.plan.entry} is not passive to the quote and no market order fits")
-
-
-def _market_order(i: _Inputs, ref: Decimal, drift: int) -> _Order | Refusal:
-    spec, point = i.context.spec, _dec(i.context.spec.point)
-    stop = _stop(i, ref)
-    if stop < _stop_floor(i):
-        return Refusal((MARKET_STOP_BELOW_FLOOR,), f"stop {stop} from {ref} is under the floor")
-    if i.sign * (_dec(i.plan.tp) - ref) < _dec(MIN_REWARD_R) * stop:
-        return Refusal((MARKET_REWARD_BELOW_1R,), f"target from {ref} is under {MIN_REWARD_R}R")
-    per_price = _dec(i.sizing.lots) / _dec(spec.tick_size) * _dec(spec.tick_value_loss)
-    slack = _dec(i.sizing.risk_budget_usd) / per_price - i.friction - stop
-    fitted = min(drift, int((slack / point).to_integral_value(rounding=ROUND_FLOOR)))
-    if fitted < MIN_DRIFT_POINTS:
-        return Refusal((RISK_OVER_BUDGET,), f"the budget leaves {slack} of drift at {ref}")
-    return _Order(MARKET_ORDERS[i.plan.side], float(ref), fitted,
-                  _loss_usd(i, stop + fitted * point), is_limit=False)
-
-
-def _timing(i: _Inputs, order: _Order) -> tuple[int, int] | Refusal:
+def _timing(i: OrderInputs, order: ChosenOrder) -> tuple[int, int] | Refusal:
     """(valid_until_epoch, pending_expiry_epoch), or TOO_LATE."""
     settings, close = i.settings, i.context.as_of_epoch
+    lifetime = settings.pending_expiry_s if i.trade is None else i.trade.pending_expiry_s
     valid_until = math.floor(i.now) + settings.intent_ttl_s
-    pending_expiry = close + settings.pending_expiry_s if order.is_limit else 0
-    if order.is_limit:
+    pending_expiry = close + lifetime if order.pending else 0
+    if order.pending:
         valid_until = min(valid_until, pending_expiry - MIN_PENDING_LIFETIME_S)
     if i.now - close <= settings.operator_deadline_s and valid_until - i.now >= MIN_VALIDITY_S:
         return valid_until, pending_expiry
     return Refusal((TOO_LATE,), f"a decision {i.now - close:.0f} s after the close is too late")
 
 
-def _draft(i: _Inputs, order: _Order, valid_until: int, pending_expiry: int,
+def _barrier(i: OrderInputs) -> int:
+    """The holding time: the agent plan's, or the shortest of the configured limits."""
+    if i.trade is not None:
+        return min(i.trade.time_limit_s, limits.MAX_TIME_BARRIER_S)
+    return min(i.settings.time_barrier_s, i.plan.time_barrier_s, limits.MAX_TIME_BARRIER_S)
+
+
+def _draft(i: OrderInputs, order: ChosenOrder, valid_until: int, pending_expiry: int,
            new_id: Callable[[], str]) -> IntentDraft | Refusal:
     settings, plan = i.settings, i.plan
-    risk = max(order.loss_usd, _dec(i.sizing.risk_usd)).quantize(_CENT, rounding=ROUND_CEILING)
+    trade = i.trade or TradePlan(order_type="", tp1=0.0, tp2=0.0, sl_after_tp1=0.0,
+                                 sl_after_tp2=0.0, time_limit_s=0, pending_expiry_s=0)
+    risk = max(order.loss_usd, dec(i.sizing.risk_usd)).quantize(_CENT, rounding=ROUND_CEILING)
     try:
         row = NewIntent(
             intent_id=new_id(), cycle_id=i.context.cycle_id,
@@ -358,8 +242,9 @@ def _draft(i: _Inputs, order: _Order, valid_until: int, pending_expiry: int,
             source=policy.OPERATOR_SOURCE, side=plan.side, order_type=order.order_type,
             entry=order.entry, sl=plan.sl, tp=plan.tp, lots=i.sizing.lots, risk_usd=float(risk),
             valid_until_epoch=valid_until, pending_expiry_epoch=pending_expiry,
-            time_barrier_s=min(settings.time_barrier_s, plan.time_barrier_s,
-                               limits.MAX_TIME_BARRIER_S), created_at=i.now)
+            time_barrier_s=_barrier(i), created_at=i.now,
+            tp1=trade.tp1, tp2=trade.tp2, sl_after_tp1=trade.sl_after_tp1,
+            sl_after_tp2=trade.sl_after_tp2)
         return IntentDraft(
             row=row, candidate_id=i.candidate.candidate_id,
             ref_price=i.quote.side_price(plan.side), max_drift_points=order.drift_points,
@@ -373,7 +258,7 @@ def _draft(i: _Inputs, order: _Order, valid_until: int, pending_expiry: int,
 def build_intent(resolution: ProtocolDecision, candidate: Candidate, exit_plan: ExitPlan,
                  sizing: SizingResult, context: MarketContext, settings: V6Settings,
                  session: SessionRecord | None, now: float, *, agent: str,
-                 quote: ReferenceQuote | None = None,
+                 quote: ReferenceQuote | None = None, trade: TradePlan | None = None,
                  new_id: Callable[[], str] = new_intent_id) -> IntentDraft | Refusal:
     """The intent for an approved operator ENTER (a `Resolution` passes `.to_decision()`).
 
@@ -383,14 +268,15 @@ def build_intent(resolution: ProtocolDecision, candidate: Candidate, exit_plan: 
     """
     own = ReferenceQuote.from_context(context)
     fresher = quote is not None and quote.observed_at >= own.observed_at
-    i = _Inputs(resolution=resolution, candidate=candidate, plan=exit_plan, sizing=sizing,
-                context=context, settings=settings, session=session, now=now, agent=agent,
-                quote=quote if fresher and quote is not None else own)
+    i = OrderInputs(resolution=resolution, candidate=candidate, plan=exit_plan,
+                    sizing=sizing, context=context, settings=settings, session=session,
+                    now=now, agent=agent,
+                    quote=quote if fresher and quote is not None else own, trade=trade)
     refusal = _first((lambda: _authority_refusal(i), lambda: _input_refusal(i),
                       lambda: _order_refusal(i)))
     if refusal is not None:
         return refusal
-    order = _choose_order(i)
+    order = choose_order(i)
     if isinstance(order, Refusal):
         return order
     timing = _timing(i, order)
