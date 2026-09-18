@@ -1,0 +1,16 @@
+{
+  "schema_version": "v6.minute.1",
+  "snapshot_id": "Q6M-10000001-1789565400",
+  "symbol": "XAUUSD",
+  "sent_at_epoch": 1789565461,
+  "server_gmt_offset_s": 10800,
+  "bar_open_epoch": 1789565400,
+  "bar": [1789565400, 4535.20, 4536.05, 4534.90, 4535.84, 212, 18],
+  "account": {"login":"10000001","trade_mode":"DEMO","server":"MetaQuotes-Demo","currency":"USD","leverage":200,"balance":92429.34,"equity":92429.34,"margin":0.00,"free_margin":92429.34,"margin_level":0.00},
+  "quote": {"bid":4535.84,"ask":4536.02,"spread_points":18,"time_msc":1789565460812},
+  "ticks": {"window_s":60,"quote_count":264,"max_gap_ms":1450,"spread_p50_points":18.0,"spread_p95_points":22.0,"mid_rv":0.000000211733},
+  "positions": [],
+  "pending_orders": [],
+  "day": {"day_start_equity":92429.34,"realized_today":0.00,"trades_today":0},
+  "ea_state": {"ea_version":"6.3.0","execute_enabled":true,"halted":false,"local_breaker":"none","outbox_pending":0,"last_intent_id":""}
+}
