@@ -144,6 +144,21 @@ berbeda dari teks tugas di bawah (tugas berikutnya mengikuti catatan ini):
 
 ---
 
+## Catatan pelaksanaan Task 18 (2026-09-18)
+
+- Penomoran bagian di `docs/v6-operator.md` mengikuti urutan dokumen, bukan teks tugas:
+  - 5.6 aksi v3 (menggantikan Chief);
+  - 5.8 `entry_plan`;
+  - 5.9 `manage`;
+  - 5.10 SL+;
+  - 5.11 bias M15.
+- Runbook mendapat bagian 6 (drill tahap A dan pengukuran jam kuotasi broker). Kunci tahap
+  A ditambahkan ke contoh `.env`.
+- Wire contract memuat contoh kanonik idle, buy-limit dan `MODIFY_POSITION`. Ketiganya
+  sudah dicocokkan dengan `intent_canonical`.
+- Penyimpangan dari spec dicatat di kepala spec, di bagian "Status dan penyimpangan saat
+  implementasi".
+
 ## Peta file
 
 | File | Status | Tanggung jawab |

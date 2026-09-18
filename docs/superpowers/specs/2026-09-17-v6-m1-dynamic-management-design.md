@@ -1,7 +1,56 @@
 # V6 Manajemen Dinamis M1: Desain
 
 Tanggal 2026-09-17, cabang `layering`. Keempat bagian desain disetujui pengguna di chat
-pada hari yang sama; dokumen ini menunggu review sebelum rencana implementasi ditulis.
+pada hari yang sama. Rencana implementasi tahap A ada di
+`docs/superpowers/plans/2026-09-17-v6-phase-a-plan-management.md`.
+
+## Status dan penyimpangan saat implementasi (2026-09-18)
+
+Tahap A sudah dikerjakan (adapter dan EA 6.2.0). Tahap B belum: snapshot menit (§3.1),
+`MinuteInbox` (§4.2), paket `m1` (§2.5, §2.6) dan `v6_minute_cycles` (§4.6). Desain di
+bawah tetap berlaku, kecuali hal berikut.
+
+- **Tenggat paket M15** (§4.2, §4.5): tidak ada `V6_M15_DEADLINE_S`;
+  `V6_OPERATOR_DEADLINE_S` tetap dipakai, dengan default baru 180 detik.
+- **Nama kunci jendela rencana** (§4.5): `V6_TIME_LIMIT_MIN_MINUTES`,
+  `V6_TIME_LIMIT_MAX_MINUTES`, `V6_PENDING_EXPIRY_MIN_MINUTES` dan
+  `V6_PENDING_EXPIRY_MAX_MINUTES`. Keempatnya hanya boleh mempersempit 60–240 dan 15–60
+  menit.
+- **Laporan EA** (§3.6): laporan aksi (APPLIED, REJECTED, FAILED) dan langkah SL+
+  (`PLAN_STEP`) dikirim ke rute baru `POST /v6/action` (`v6.action.1`), bukan ke
+  `/v6/execution`, supaya `ExecutionReport` tetap satu bentuk. Outbox dan kirim ulangnya
+  sama.
+- **Sesi 24 jam** (§4.7): sesi harian tetap ditutup di blok rollover, sehingga ringkasan
+  tetap per hari. Begitu blok selesai, runtime membuka dan meng-arm sesi hari berikutnya
+  (`V6_SESSION_AUTO_RENEW=true`; `session_renewal_due` di status). Selama pembaruan
+  ditunggu, `wait` keluar dengan kode 3, bukan 4.
+- **Ledger** (§4.6): `v6_outcomes` tidak diubah. MAE dan MFE sudah ada di snapshot dan di
+  record EA. Setiap langkah SL+ dicatat di tabel baru `v6_plan_steps` (kunci tiket), yang
+  digabung dengan hasil basket untuk mengukur dampak SL+.
+- **Jam sesi EA:** `InTradeSession` sudah memakai jam trading simbol dari broker, jadi
+  tidak diubah.
+- **ENTER v3** (§2.1) mewajibkan view Price Action TAKE `limits.agent_entry_id` dengan
+  conviction ≥ 0,60 (`DECISION_VIEW`). Tanpa aturan ini, keputusan diterima lalu menjadi
+  HOLD di protokol.
+- **MODIFY posisi** (§2.3) memeriksa tangga yang tersisa: SL, TP yang langkahnya belum
+  tereksekusi, dan TP3 harus maju searah trade. Langkah SL+ yang sudah tereksekusi tidak
+  lagi membatasi SL, jadi stop boleh digeser lagi setelah TP2. Posisi tanpa TP butuh
+  `tp3` (`LADDER_MISSING`).
+- **EA** (§3.3) menganggap `TRADE_RETCODE_NO_CHANGES` sebagai selesai. SL dan TP posisi
+  hanya diperiksa (`SL_WIDER`, `TOO_CLOSE`) bila nilainya berubah. Penolakan broker karena
+  pasar tutup dilaporkan `REJECTED`/`MARKET_CLOSED`.
+- **Snapshot posisi** membawa `plan_step` dan `time_limit_epoch` dari EA. Paket memakai
+  langkah terjauh dari EA atau dari laporan.
+- **Nama modul** (§4.3):
+  - model v3 ada di `schemas/operator_plan.py`, bukan `operator_v3.py`;
+  - aturan rencana ada di `deliberation/plan_rules.py` dan `agent_entry.py`;
+  - bagian bersama keputusan ada di `deliberation/decision_parts.py`, aturan v3 di
+    `decision_v3.py`;
+  - `pending_review.py` dihapus.
+- **Belum selesai** (§9):
+  - drill 1–8 (runbook §6) menunggu izin pengguna;
+  - jam kuotasi Monex (§10) belum diisi. `V6_BROKER_QUOTE_GAP_UTC` masih memakai nilai
+    MetaQuotes sampai pengguna mengisinya dari hasil pengukuran.
 
 ## Konteks
 

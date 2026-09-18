@@ -7,8 +7,8 @@
 > Berhenti: "Sudah cukup hari ini". Darurat: tombol HALT di dashboard, file `adapter/V6_HALT`, `v6_operator.py
 > halt`, GlobalVariable `QlipV6_HALT=1`, atau tombol AutoTrading.
 
-Scope: one Windows machine, MT5 on the **MetaQuotes-Demo** account, the adapter on
-`127.0.0.1:8765`, and the operator agent in Claude Code, Codex or Antigravity (one
+Scope: one Windows machine, MT5 on a **DEMO** account (since 2026-09-17 **Monex-Demo**,
+symbol `XAUUSD.m`; earlier MetaQuotes-Demo), the adapter on `127.0.0.1:8765`, and the operator agent in Claude Code, Codex or Antigravity (one
 identical procedure; per-tool setup in the appendix). The operator rules are in
 [v6-operator.md](v6-operator.md); the EA contract is in
 [v6-wire-contract.md](v6-wire-contract.md).
@@ -32,22 +32,30 @@ V6_BACKEND=operator             # rules (shadow only) | operator (an agent in a 
 V6_OPERATOR_AGENTS=claude_code,codex,antigravity
 V6_OPERATOR_TOKEN=<32+ random characters>
 V6_EA_HMAC_KEY=<32-256 printable ASCII characters, no spaces>
-V6_MAX_LOTS=0.01                # execute refuses anything larger
+V6_MAX_LOTS=0.03                # the agent picks 0.01-0.03; execute refuses more
 V6_ACCOUNT_TYPE=standard
 V6_MAGIC=250570                 # must equal the EA input InpMagic
 V6_ALLOW_REAL_ACCOUNT=false     # true is refused at startup
-V6_BROKER_QUOTE_GAP_UTC=20:00-22:00
+V6_BROKER_QUOTE_GAP_UTC=20:00-22:00   # measure it per broker (section 6)
+V6_ENTRY_HOURS=all_day          # phase A: 24 h entries, only cost and safety blocks
+V6_SESSION_AUTO_RENEW=true      # reopen and re-arm the session after the rollover
+V6_TIME_LIMIT_MIN_MINUTES=60    # the holding-time window of an agent plan
+V6_TIME_LIMIT_MAX_MINUTES=240
+V6_PENDING_EXPIRY_MIN_MINUTES=15   # how long a LIMIT or STOP may rest
+V6_PENDING_EXPIRY_MAX_MINUTES=60
 ```
 
 The timing keys may only tighten:
-- `V6_OPERATOR_DEADLINE_S` (300), `V6_INTENT_TTL_S` (120) and
-  `V6_PENDING_EXPIRY_BARS` (2) must satisfy deadline + TTL + 60 ≤ bars × 900.
-- The risk keys (`V6_RISK_PCT` 0.5, `V6_SIZING_EQUITY_BASIS_USD` 2000, the loss
-  breakers 3/6/10 %) keep their defaults.
+- `V6_OPERATOR_DEADLINE_S` (180), `V6_INTENT_TTL_S` (120) and the shortest pending
+  expiry must satisfy deadline + TTL + 60 ≤ `V6_PENDING_EXPIRY_MIN_MINUTES` × 60 (and ≤
+  `V6_PENDING_EXPIRY_BARS` × 900).
+- The risk keys keep their defaults (`V6_RISK_PCT` 0.5, at most 1.0;
+  `V6_SIZING_EQUITY_BASIS_USD` 5000; the loss breakers 3/6/10 %) unless the user
+  decides otherwise (the Monex demo runs `V6_RISK_PCT=1.0` since 2026-09-17).
 
 The adapter refuses to start when:
 - `execute` is set without `operator`, without a valid key, or with `V6_MAX_LOTS` above
-  0.01;
+  0.03;
 - the backend is `operator` without a valid token;
 - the old value `V6_BACKEND=claude_code` is used.
 
@@ -90,6 +98,11 @@ re-sync the key (section 2).
       ```
 
    4. Require `Result: 0 errors, 0 warnings`; the exit code means nothing.
+   5. The Experts log shows `V6 EA 6.2.0 started`. EA 6.2.0 (phase A) places LIMIT,
+      STOP and market orders, runs the SL+ ladder itself (`Plan.mqh`) and applies
+      signed management actions (`Actions.mqh`). Deploy it together with the adapter of
+      the same commit: an older adapter cannot parse its snapshots, and an older EA
+      cannot parse the adapter's `v6.intent.2` answers.
 4. **Attach the EA** `QlipV6_XAUUSD` to one XAUUSD chart (M15). These inputs are the
    current build's names, so check the Inputs tab:
 
@@ -145,9 +158,10 @@ re-sync the key (section 2).
 5. **Check.** **"status trading"** (or `session status` and `status`) shows the session,
    cycles, holds, intents and the EA age.
 6. **Stop.** **"Sudah cukup hari ini"** (or `session stop`) disarms the session, cancels
-   pending V6 orders and reports the day. **Open positions keep running** to SL, TP, the
-   time barrier (2 h) or the daily flatten. A session left open is closed automatically
-   at rollover.
+   pending V6 orders and reports the day. **Open positions keep running** to SL, TP3,
+   their SL+ steps, their time limit (60-240 min) or the daily flatten. A session left
+   open is closed at the rollover block and, with `V6_SESSION_AUTO_RENEW=true`, reopened
+   and re-armed as soon as the block ends; `wait` keeps waiting meanwhile.
 7. **Shut down.** Stop the adapter with Ctrl+C after the session. MT5 can stay up for
    open positions.
 
@@ -162,7 +176,7 @@ Any one of these stops new entries:
 | CLI | `v6_operator.py halt --reason <why>` | same as HALT, audited |
 | EA global variable | MT5 → Tools → Global Variables (F3) → add `QlipV6_HALT` = 1 | the EA refuses every intent (`HALTED`), even with the adapter down |
 | AutoTrading | toolbar button (Ctrl+E) | MT5 refuses all automated orders |
-| Stop the adapter | Ctrl+C | no new entries; SL/TP and the EA's time barrier and flatten keep working. After a crash (no clean stop) the session comes back disarmed (`UNCLEAN_RESTART`) |
+| Stop the adapter | Ctrl+C | no new entries and no management actions; SL/TP, the EA's SL+ steps, time barrier and flatten keep working. After a crash (no clean stop) the session comes back disarmed (`UNCLEAN_RESTART`) |
 
 None of these closes an open position. To close one now, close it by hand in MT5 (the
 EA reports it as `MANUAL`).
@@ -212,14 +226,41 @@ survives restarts. To reset one, only after the loss has been reviewed:
 | holds `APP-V6-STALE`, `preflight` `EA_STALE` | EA silent (terminal frozen, disconnected, sleep) | check MT5, network, sleep settings |
 | `preflight` `EA_SIGNING_NOT_REQUIRED` | execute mode without required signing | check `V6_MODE` and `V6_EA_HMAC_KEY`, restart |
 | EA intent rejected `DRIFT` / `SPREAD` / `EXPIRED` | a slow decision or a fast market | decide faster; these are protective refusals |
-| `OCCUPIED` | a V6 position or order is already open | by design: one position, no layering |
+| `OCCUPIED` | a V6 position or order is already open | by design: one position, no layering; the agent manages it through management packets |
+| holds `APP-V6-MANAGE-REFUSED` | the adapter could not queue a management action (session not armed, arming check failed, `ACTION_INVALID`) | read `hold_detail`; re-arm with "Mulai trading skrg" if the session was disarmed |
+| a management action shows `REJECTED` or `EXPIRED` (dashboard "Plan & actions") | the EA refused it against its live quote (`SL_WIDER`, `TOO_CLOSE`, `BARRIER`, `STALE`, `UNKNOWN_TICKET`, `BAD_ACTION`), or it never reached the EA within 30 s | expected protection; the next packet shows `last_action` and the agent decides again |
+| `wait` answers 3 after the rollover with no session | the adapter is reopening the session (`session_renewal_due` in `status`) | keep waiting; it reopens when the block ends and the arming checks pass |
 | `wait` keeps timing out | nothing passed the gates (normal), halted, breaker, outside the main window | read `runtime_status` and `last_cycle.hold_reason` in `status` |
 
 Where to look:
 - adapter console log;
+- tables `v6_actions` (management actions) and `v6_plan_steps` (SL+ steps);
 - `http://127.0.0.1:8765/v6` (last cycles, hold histogram, sizing floor);
 - `<data folder>\MQL5\Logs\YYYYMMDD.log` (EA);
 - `adapter\.v6_operator\` (last packet and decision).
+
+## 6. Phase A: drills and broker measurements
+
+Run the drills after deploying the adapter and EA 6.2.0 of the same commit, **with the
+user's approval**, on the demo account, one at a time. Record for each: the time, the
+command or decision, the EA log lines and the `v6_actions` / `v6_plan_steps` rows.
+
+| # | Drill | Expected |
+|---|---|---|
+| 1 | an entry with TP1/TP2 close (about 0.6R and 1R) | `V6 plan <ticket>: step 1 ...`, a `v6_plan_steps` row, then step 2; the stop in the terminal moves to the plan's level |
+| 2 | a position packet answered `manage` CLOSE | the position closes, `v6_actions` APPLIED, basket `close_reason` `AGENT` |
+| 3 | a wider stop sent to the EA (only with a temporary debug adapter the user approves; the operator API refuses it first) | `REJECTED`/`SL_WIDER`, the stop unchanged; otherwise record that `SL_WIDER` in the EA is covered by code review only |
+| 4 | a resting LIMIT modified (price and stop) | the order changes in the terminal, APPLIED, the new ladder and levels on the intent |
+| 5 | a BUY STOP and a SELL STOP | placed with the expiry of `pending_expiry_min` |
+| 6 | a MODIFY that extends `time_limit_min` | the position is not closed at the old limit |
+| 7 | the EA removed and attached again with a planned position open | the state log lists the record; the SL+ steps keep working |
+| 8 | the adapter stopped with a position open | SL+ steps, SL/TP and the time limit keep working; queued reports arrive once the adapter is back |
+
+**Broker quote hours.** `V6_BROKER_QUOTE_GAP_UTC` must match the daily window in which
+the broker sends no quotes (MetaQuotes-Demo: 20:00-22:00 UTC). For a new broker, find
+the weekday UTC minutes that never have an M1 bar in `v6_bars` over the last seven days
+(a read-only query on the adapter database) and set the key to that window; only the
+user edits `adapter/.env`, then the adapter is restarted.
 
 ## Appendix: per-tool setup
 

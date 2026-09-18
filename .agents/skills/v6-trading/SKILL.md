@@ -69,47 +69,54 @@ command the same way. This is the only step that differs between the agents:
 | `wait` exit | Meaning | Do |
 |---|---|---|
 | 0 | a packet arrived | decide it (see "Deciding a packet" in the skill), then run `wait` again |
-| 3 | timeout, no packet yet (normal) | run `wait` again; mention `runtime_status` once if it is `HALTED`, `BREAKER` or `STALE` |
+| 3 | timeout, no packet yet (normal; also while the adapter reopens the session after the rollover) | run `wait` again; mention `runtime_status` once if it is `HALTED`, `BREAKER` or `STALE` |
 | 4 | no active session | stop the loop and report |
 | 5 | the account is not DEMO | run `OP session stop --reason not_demo`, refuse, stop |
 | 1 | error | run `OP status` and report; retry once after a transient failure, otherwise stop and ask the user |
 
 ### Deciding a packet
 
-Aim to submit within 2 minutes; the hard limit is `expires_at_epoch`. A packet that
-arrives while you are busy stays open until its deadline, and the next `wait` gets it.
+Aim to submit within 2 minutes; the hard limit is `expires_at_epoch` (bar close +
+180 s). A packet that arrives while you are busy stays open until its deadline, and the
+next `wait` gets it.
 
 - If the summary says `mode execute` and `armed no`, the adapter disarmed the session
   (halt, breaker, stale EA, not DEMO, restart after a crash): do not decide. Run
   `OP session status`, report `disarm_reason` and stop the loop. The user re-arms by
   saying "Mulai trading skrg" again.
-- If the summary shows a `REVIEW` line, a V6 order rests: answer with a HOLD Chief and
-  `pending_action` KEEP or CANCEL (section 5.9), no `entry_plan`, no `lots`. CANCEL when
-  price has run past the target or through the invalidation, or the setup changed.
 - Otherwise:
-  1. Read the printed summary. Read `adapter/.v6_operator/packet.json` when you need
-     bars, gates, features or the allowed enums.
+  1. Read the printed summary: its `state` line tells a flat packet from a pending or
+     position packet. Read `adapter/.v6_operator/packet.json` when you need the bars
+     (M15 first, M1 to time the entry), gates, features, the plan or the allowed enums.
   2. Run `OP template`.
   3. Analyse the market yourself (bars, `levels`, ATRs, session quality, calendar,
-     costs) and decide with the rubric (section 5): HOLD, enter a suggestion, or
-     design your own entry. For your own entry, rank `limits.agent_entry_id` TAKE, set
-     the Chief to ENTER that id with `order_style` equal to the plan's `order_type`,
-     and fill `entry_plan` (side, LIMIT or MARKET, entry, stop, target or null,
-     thesis) inside `limits` (section 5.8). Set `lots` (0.01-0.03, section 5.6); the
-     budget may reduce it. Write the full decision to
-     `adapter/.v6_operator/decision.json` with your file tool. Keep `cycle_id`,
-     `packet_hash` and `schema_version`; use only ids and enum values from `allowed`;
-     leave `agent` as `null` (`submit` fills it in).
+     costs, your `last_bias`) and decide with the rubric (section 5). Edit
+     `adapter/.v6_operator/decision.json` with your file tool:
+     - **flat packet:** `action` HOLD, or ENTER with an `entry_plan` inside `limits`
+       (section 5.8): `side`, `order_type` MARKET, LIMIT or STOP, `entry` (null for
+       MARKET), `sl`, `tp1`, `tp2`, `tp3`, the optional SL+ steps `sl_after_tp1` and
+       `sl_after_tp2` (section 5.10), `time_limit_min`, `pending_expiry_min` (null for
+       MARKET), `lots` 0.01-0.03 and a `thesis`. For ENTER your Price Action view must
+       TAKE `limits.agent_entry_id` with conviction >= 0.60; the code derives the Chief.
+     - **pending or position packet:** `action` MANAGE with `manage` (section 5.9):
+       KEEP, CANCEL (pending), CLOSE (position), or MODIFY with only the fields that
+       change.
+     - **always:** the four `views`, `m15_bias` (direction, levels, invalidation,
+       scenario; section 5.11) and a short `note`.
+
+     Keep `cycle_id`, `packet_hash`, `packet_kind` and `schema_version`; use only ids
+     and enum values from `allowed`; leave `agent` as `null` (`submit` fills it in).
   4. Run `OP submit --agent <AGENT>`.
   5. Report one line:
-     - exit 0 (accepted): the cycle, `chief_action` and `result.status`, with
-       `hold_reason`, or "pending" when `result` is null;
+     - exit 0 (accepted): the cycle, `decision_action` (with `plan_order_type` or
+       `manage_op`) and `result.status`, with `hold_reason` (a MANAGE records
+       `APP-V6-MANAGE-KEPT`, `-SENT` or `-REFUSED`), or "pending" when `result` is null;
      - exit 1 with `code` `EXPIRED`: the packet is closed (expired, or withdrawn by a
        stop, halt or disarm). Do not resubmit; run `wait` (it exits 4 if the session
        ended);
      - exit 1 with another `code`: report `code` and `error` (for `DECISION_ENTRY_PLAN`
-       the detail names the broken limit). The packet stays open, so fix the decision
-       and submit again while time remains;
+       and `DECISION_MANAGE` the detail names the broken rule). The packet stays open,
+       so fix the decision and submit again while time remains;
      - exit 4 (the packet is closed and the session has ended) or 5: act as the table
        above says for `wait`.
   6. Run `wait` again (step 4).
@@ -124,7 +131,7 @@ arrives while you are busy stays open until its deadline, and the next `wait` ge
    - `intents`, and `intent_statuses` (fills) when present;
    - `open_v6_positions`, `pending_v6_orders` and `floating_pnl_v6`.
 4. Say clearly that pending V6 orders are cancelled and open positions keep running to
-   SL, TP or the time barrier. Do not flatten or halt.
+   SL, TP3, their SL+ steps or their time limit. Do not flatten or halt.
 
 ## "status trading"
 
@@ -147,4 +154,6 @@ Start nothing.
   `wait` runs. If that made a packet miss its deadline, say that the cycle timed out as
   HOLD.
 
-Start a new chat each trading day to keep the context small.
+The session runs 24 hours (the adapter reopens it after the daily rollover). Start a
+new chat when the context gets heavy, then say "Mulai trading skrg": the open session
+continues.

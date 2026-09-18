@@ -32,7 +32,7 @@ User decisions (2026-09-16) this contract implements:
 | Browser guards | `Origin` / `Sec-Fetch-Site` that look cross-site → 403 (the EA sends neither) |
 | Times | UTC epoch **seconds** as JSON integers (`TimeGMT()`), never server time |
 | Number kinds | integers are written as integers, prices/money as decimals; strict parsing never coerces `17.0` ↔ `17` |
-| Shape | flat where the EA parses (`v6.intent.1`); every field always present; no unknown fields (400) |
+| Shape | flat where the EA parses (`v6.intent.2`); every field always present; no unknown fields (400) |
 | V6 off | every `/v6/*` route answers **404** `{"detail": "V6 disabled"}` |
 | Storage down | 503 `{"detail": "V6 storage unavailable"}` — retryable |
 | Validation | 400 with a list of `{type, loc, msg}` (no input echo) — not retryable |
@@ -158,8 +158,9 @@ the following fields joined with `|` (`wire.CANONICAL_FIELDS`, `wire.intent_cano
   computes `(long)MathRound(value / point)` and `(long)MathRound(lots * 100)` from the
   **parsed** numbers — no float text is ever signed.
 - Zero-valued fields (idle response) contribute `0` or an empty string. Example (idle):
-  `v6.intent.1|1789565408|NONE|0|||1||NONE|0|0|0|0|0|0|0|0|0|0|0`.
-- Buy-limit example: `v6.intent.1|1789565408|NONE|1|k7w2m4pq3xza|operator|1|buy|BUY_LIMIT|453507|452807|454907|1|453535|200|35|1789565528|1789567200|7200|250570`.
+  `v6.intent.2|1789565408|NONE|0|||1||NONE|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0||0|0|0|0|0|0|0|0|0|0|0`.
+- Buy-limit example: `v6.intent.2|1789565408|NONE|1|k7w2m4pq3xza|operator|1|buy|BUY_LIMIT|453507|452807|454907|1|453535|200|35|1789565528|1789567200|7200|250570|0|0|0|0||0|0|0|0|0|0|0|0|0|0|0`.
+- `MODIFY_POSITION` example: `v6.intent.2|1789565408|MODIFY_POSITION|0|||1||NONE|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|m3a7q2z5k6pw|5012345702|453600|455200|0|454800|0|454400|0|0|10800|1789565408`.
 - **Every** poll response is signed when a key is configured (the command is covered
   too). `sig` is `""` only when no key is configured (shadow without a key).
   `wire.sign_intent(key, response, point)` returns the signed copy;
@@ -212,7 +213,9 @@ free_margin, margin_level), `symbol_spec` (… `calc_profit_per_price`,
 `calc_loss_per_price` from `OrderCalcProfit` — sizing uses these because the server
 reports `tick_value` 0.1 on XAUUSD), `quote`, `bars` (M1×12, M5×48, M15×16, H1×8, D1×3,
 closed only), `ticks`, `positions` and `pending_orders` (V6 magic only, comment
-`Q6:<intent_id>`), `day`, `calendar`, `probe` (first snapshot of an EA session, else
+`Q6:<intent_id>`; since EA 6.2.0 each position also carries `plan_step`, the last SL+
+step the EA took (0-2), and `time_limit_epoch`, when its time limit closes it (UTC); both
+0 when the EA does not track the position), `day`, `calendar`, `probe` (first snapshot of an EA session, else
 `null`), `ea_state` (`ea_version`, `execute_enabled`, `halted`, `local_breaker`
 `none|daily`, `outbox_pending`, `last_intent_id`). Field list: `schemas/snapshot.py`;
 EA ↔ schema sync: `tests/v6/test_golden_contract.py`.
@@ -221,7 +224,7 @@ EA ↔ schema sync: `tests/v6/test_golden_contract.py`.
 `{"accepted": true, "cycle_id", "server_time_epoch"}`; a repeat is 200
 `{"accepted": false, "duplicate": true, "cycle_id"}`.
 
-### 6.3 `POST /v6/intent/poll` — `v6.poll.1` → `v6.intent.1`
+### 6.3 `POST /v6/intent/poll` — `v6.poll.1` → `v6.intent.2`
 
 Every `InpPollIntervalMs` (2 000 ms), timeout 600 ms. Request fields: `login`,
 `trade_mode` (`DEMO|CONTEST|REAL`; anything not demo/contest is reported as REAL),
@@ -243,13 +246,13 @@ Response `PollResponse` (always 200, always every field):
 | `side` | `""` | `buy`/`sell` |
 | `order_type` | `NONE` | `BUY_LIMIT`/`SELL_LIMIT` (preferred), `BUY_STOP`/`SELL_STOP` or `BUY`/`SELL`, matching `side` |
 | `entry`, `sl`, `tp` | `0.0` | > 0, on the tick grid; `sl`/`tp` on their own side of `entry` |
-| `lots` | `0.0` | `0 < lots ≤ 0.01` (0.01 grid) |
+| `lots` | `0.0` | `0 < lots ≤ 0.03` (0.01 grid; `V6_MAX_LOTS`) |
 | `ref_price` | `0.0` | side price at decision time (ask for buy, bid for sell) |
 | `max_drift_points` | `0` | 20 % of the stop distance in points, within [10, `V6_MAX_DRIFT_POINTS`] (default cap 200); a market order may get less, so a fill at `ref_price` ± drift still fits the risk budget |
 | `max_spread_points` | `0` | effective spread gate (35 standard / 20 raw) |
 | `valid_until_epoch` | `0` | EA must not act at or after it: `published_at + V6_INTENT_TTL_S` (limit orders: at most `pending_expiry − 60`); > `server_time_epoch` |
-| `pending_expiry_epoch` | `0` | limit: decision bar close + `V6_PENDING_EXPIRY_BARS`×900, and ≥ `valid_until_epoch + 60`; market: `0` |
-| `time_barrier_s` | `0` | `V6_TIME_BARRIER_BARS`×900 (default 7 200, max 14 400) |
+| `pending_expiry_epoch` | `0` | LIMIT/STOP: decision bar close + the plan's `pending_expiry_min` (a suggestion: `V6_PENDING_EXPIRY_BARS`×900), and ≥ `valid_until_epoch + 60`; market: `0` |
+| `time_barrier_s` | `0` | the plan's `time_limit_min` × 60 (a suggestion: `V6_TIME_BARRIER_BARS`×900; max 14 400) |
 | `magic` | `0` | `V6_MAGIC` (250570..250579; must equal the EA's `InpMagic`) |
 | `tp1`, `tp2` | `0.0` | the SL+ triggers of an agent plan, advancing entry → `tp1` → `tp2` → `tp`; `0.0` when the plan has no ladder |
 | `sl_after_tp1`, `sl_after_tp2` | `0.0` | the stop the EA moves to when that trigger is reached, between the stop before it and its trigger; `0.0` for no step |
@@ -278,6 +281,11 @@ Serving rules (adapter):
   poll after its first delivery shows it done (`pending_v6_orders == 0`; for `FLATTEN`
   also `open_v6_positions == 0`) or its TTL (600 s) passes
   (`runtime/commands.py`, `runtime/poll_reply.py`). A session stop never flattens.
+- A management action (`CLOSE_POSITION`, `MODIFY_POSITION`, `MODIFY_PENDING`) is served
+  only when no command is due: at most one waits (`runtime/actions.py`), it rides on
+  every poll until the EA reports it to `/v6/action` or it is 30 s old (then the
+  adapter marks it `EXPIRED`), and it outranks a new intent. It is queued only for an
+  armed execute session whose arming checks pass (`IntentPublisher.manage`).
 
 ### 6.4 `POST /v6/execution` — `v6.execution.1`
 
@@ -429,7 +437,7 @@ disarm cancels undelivered intents, withdraws a pending operator packet and queu
 | 10 | no V6 position and no V6 pending order (magic) | `rejected_local`/`OCCUPIED` |
 | 11 | `lots ≤ InpMaxLots` (default and hard cap 0.03) | `rejected_local`/`LOT_CAP` |
 | 12 | current spread ≤ `max_spread_points` | `rejected_local`/`SPREAD` |
-| 13 | `|side price − ref_price| / point ≤ max_drift_points` (a market order: `<`, since the rest is its deviation); a limit price still passive (`BUY_LIMIT entry < ask − stops_level·point`, `SELL_LIMIT entry > bid + stops_level·point`) | `rejected_local`/`DRIFT` |
+| 13 | `|side price − ref_price| / point ≤ max_drift_points` (a market order: `<`, since the rest is its deviation); a pending price still on its side (`BUY_LIMIT entry < ask − stops_level·point`, `SELL_LIMIT entry > bid + stops_level·point`, `BUY_STOP entry > ask + stops_level·point`, `SELL_STOP entry < bid − stops_level·point`) | `rejected_local`/`DRIFT` |
 | 14 | symbol trade mode full and session open | `rejected_local`/`MARKET_CLOSED` |
 | 15 | loss at `sl` for `lots` (`OrderCalcProfit`) ≤ `InpMaxRiskUsd` (default 50.0: twice the adapter's $25 budget, so a 10× spec error cannot pass) | `rejected_local`/`RISK_CAP` |
 | 16 | `OrderCheck` passes | `rejected_local`/`ORDER_CHECK` (with `retcode`) |
@@ -437,15 +445,29 @@ disarm cancels undelivered intents, withdraws a pending operator packet and queu
 
 ### 8.2 Order and position rules
 
-- Limit orders: `ORDER_TIME_SPECIFIED`, expiration = `pending_expiry_epoch` converted to
-  server time. Market orders: filling mode from `SYMBOL_FILLING_MODE` (IOC or FOK).
+- LIMIT and STOP orders: `ORDER_TIME_SPECIFIED`, expiration = `pending_expiry_epoch`
+  converted to server time. Market orders: filling mode from `SYMBOL_FILLING_MODE` (IOC
+  or FOK).
 - `sl` and `tp` are always sent with the order (broker-side). Comment `Q6:<intent_id>`,
   magic `InpMagic`; a market order's deviation is the drift limit minus the drift the
   quote already used, and a fill beyond the drift limit is logged as a risk breach.
-- The EA manages, without HTTP and before any poll: the time barrier (close when
-  `TimeGMT() − fill time ≥ time_barrier_s`), flatten before the daily rollover, the
-  local 3 % daily breaker, `FLATTEN` and `CANCEL_PENDING`. No break-even, no trailing,
-  no partial close.
+- The EA manages, without HTTP and before any poll: the SL+ ladder (`Plan.mqh`: when
+  the bid (buy) or the ask (sell) reaches `tp1` or `tp2`, the stop moves to
+  `sl_after_tp1` or `sl_after_tp2`, only toward safety and outside the modify distance
+  max(stops, freeze) × point + spread + 0.10; the step is saved and reported as
+  `PLAN_STEP`), the time barrier (close when `TimeGMT() − fill time ≥ time_barrier_s`),
+  flatten before the daily rollover, the local 3 % daily breaker, `FLATTEN` and
+  `CANCEL_PENDING`. No partial close; no stop moves other than the plan's steps and the
+  agent's actions.
+- Management actions (`Actions.mqh`), once per `action_id`: refused (`REJECTED`) when
+  the account is not DEMO (`DEMO_REQUIRED`), the action is more than 30 s old (`STALE`),
+  a local halt is active (`HALTED`), the ticket is not a tracked order or position in the right state
+  (`UNKNOWN_TICKET`), a new stop is wider (`SL_WIDER`) or a new stop, target or pending
+  price is too close (`TOO_CLOSE`), the holding time is out of range or not beyond the
+  time already open (`BARRIER`), or a pending order's levels, expiry or risk (≤
+  `InpMaxRiskUsd`) are wrong (`BAD_ACTION`); `FAILED`/`BROKER_ERROR` when the broker
+  refuses (`REJECTED`/`MARKET_CLOSED` when the market is closed). `CLOSE_POSITION` marks
+  the record (`close_reason: AGENT`) and closes it like any other exit.
 - `CANCEL_PENDING`: delete every V6 pending order; report `cancelled`/`COMMAND` per
   intent (id from the comment). `FLATTEN`: also close every V6 position (basket result
   `close_reason: FLATTEN`).

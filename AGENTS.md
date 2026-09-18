@@ -95,11 +95,13 @@ print it and never open `adapter/.env`.
 2. Run `OP session start`. Stop on a `refusal`, or when `mode` is `execute` and `armed`
    is false.
 3. Repeat: run `OP wait --agent <AGENT> --timeout 240` as a blocking command. A packet
-   comes on every M15 bar that passes the hard gates while V6 is flat. On a packet,
-   analyse the market yourself, run `OP template`, write
-   `adapter/.v6_operator/decision.json` by the rubric (HOLD, a suggestion, or your own
-   `entry_plan` inside the packet's `limits`, with `lots` 0.01-0.03; while a V6 order
-   rests, a review packet asks `pending_action` KEEP or CANCEL), run
+   comes on every M15 bar that passes the hard gates while V6 is flat, and a management
+   packet on every bar while a V6 order rests or a position is open. On a packet,
+   analyse the market yourself (M15 first, M1 for timing), run `OP template`, write
+   `adapter/.v6_operator/decision.json` by the rubric (flat: HOLD, or ENTER with your own
+   `entry_plan` inside the packet's `limits`: MARKET, LIMIT or STOP, TP1-TP3, SL+
+   steps, time limit, `lots` 0.01-0.03; management: `action` MANAGE with `manage` KEEP,
+   CANCEL, CLOSE or MODIFY; always `m15_bias`), run
    `OP submit --agent <AGENT>`, then wait again.
 4. On "Sudah cukup hari ini", run `OP session stop --reason sudah_cukup` and report the
    day. Open positions keep running.
@@ -107,7 +109,7 @@ print it and never open `adapter/.env`.
 | `wait` exit | Meaning | Do |
 |---|---|---|
 | 0 | a packet arrived | decide it (see "Deciding a packet" in the skill), then run `wait` again |
-| 3 | timeout, no packet yet (normal) | run `wait` again; mention `runtime_status` once if it is `HALTED`, `BREAKER` or `STALE` |
+| 3 | timeout, no packet yet (normal; also while the adapter reopens the session after the rollover) | run `wait` again; mention `runtime_status` once if it is `HALTED`, `BREAKER` or `STALE` |
 | 4 | no active session | stop the loop and report |
 | 5 | the account is not DEMO | run `OP session stop --reason not_demo`, refuse, stop |
 | 1 | error | run `OP status` and report; retry once after a transient failure, otherwise stop and ask the user |
@@ -137,4 +139,6 @@ such event yet), so all three run the loop in the foreground.
 - Keep one loop: no subagents and no second `wait`. Keep replies short.
 
 Tool setup (Claude Code permissions, Codex network and sandbox, Antigravity terminal
-modes) is in the appendix of `docs/v6-runbook.md`. Start a new chat each trading day.
+modes) is in the appendix of `docs/v6-runbook.md`. The session runs 24 hours (the
+adapter reopens it after the daily rollover); start a new chat when the context gets
+heavy and say "Mulai trading skrg" again.
