@@ -39,9 +39,11 @@ PRICE_FIELDS: Final[tuple[str, ...]] = (
     "entry", "sl", "tp", "ref_price", "tp1", "tp2", "sl_after_tp1", "sl_after_tp2",
     "action_sl", "action_tp", "action_price")
 FORBIDDEN_TRADE_CALLS: Final[tuple[str, ...]] = (
-    "TRADE_ACTION_SLTP", "TRADE_ACTION_MODIFY", "OrderModify", "PositionModify",
-    "PositionClosePartial", "CTrade", "Trade.mqh", "OrderSendAsync",
+    "OrderModify", "PositionModify", "PositionClosePartial", "CTrade", "Trade.mqh",
+    "OrderSendAsync",
 )
+# Phase A modifies stops and pending levels (SL+ steps, agent actions), only in Orders.mqh.
+MODIFY_ACTIONS: Final[tuple[str, ...]] = ("TRADE_ACTION_SLTP", "TRADE_ACTION_MODIFY")
 PRINTERS: Final[tuple[str, ...]] = ("Print", "PrintFormat", "Comment", "Alert", "SendNotification")
 
 

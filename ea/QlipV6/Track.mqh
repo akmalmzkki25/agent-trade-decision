@@ -4,7 +4,8 @@
 //| ticket, which MT5 also uses as the identifier of the position    |
 //| the order opens. Records live in memory and in global variables |
 //| QlipV6_<login>_P<key>_<field>, so a restart keeps the time       |
-//| barrier, requested exits and the entry facts of every trade.     |
+//| barrier, requested exits, the SL+ plan (triggers, stops, the     |
+//| last step taken) and the entry facts of every trade.             |
 //+------------------------------------------------------------------+
 #ifndef QLIPV6_TRACK_MQH
 #define QLIPV6_TRACK_MQH
@@ -53,6 +54,12 @@ struct TrackRecord
    int               cancel_reason;    // CANCEL_BY_*, set means "delete it"
    double            exit_requested;
    double            exit_spread;
+   double            tp1;              // SL+ trigger 1 (0 = none)
+   double            tp2;              // SL+ trigger 2 (0 = none)
+   double            step_sl1;         // the stop after tp1 (0 = none)
+   double            step_sl2;         // the stop after tp2 (0 = none)
+   int               plan_step;        // 0, 1 or 2: the last step taken
+   ulong             plan_next_ms;     // memory only: SL+ retry throttle
    long              missing_since;    // memory only: UTC time first not found
    ulong             next_try_ms;      // memory only: exit retry throttle
    datetime          last_log;         // memory only: log throttle
@@ -86,6 +93,11 @@ void TrackSave(const TrackRecord &r)
    PersistSet(TrackName(r.key, "CXR"), (double)r.cancel_reason);
    PersistSet(TrackName(r.key, "XRQ"), r.exit_requested);
    PersistSet(TrackName(r.key, "XSP"), r.exit_spread);
+   PersistSet(TrackName(r.key, "T1"), r.tp1);
+   PersistSet(TrackName(r.key, "T2"), r.tp2);
+   PersistSet(TrackName(r.key, "S1"), r.step_sl1);
+   PersistSet(TrackName(r.key, "S2"), r.step_sl2);
+   PersistSet(TrackName(r.key, "PS"), (double)r.plan_step);
 }
 
 bool TrackLoad(const ulong key, TrackRecord &r)
@@ -110,6 +122,11 @@ bool TrackLoad(const ulong key, TrackRecord &r)
    r.cancel_reason = (int)PersistGet(TrackName(key, "CXR"), 0.0);
    r.exit_requested = PersistGet(TrackName(key, "XRQ"), 0.0);
    r.exit_spread = PersistGet(TrackName(key, "XSP"), 0.0);
+   r.tp1 = PersistGet(TrackName(key, "T1"), 0.0);
+   r.tp2 = PersistGet(TrackName(key, "T2"), 0.0);
+   r.step_sl1 = PersistGet(TrackName(key, "S1"), 0.0);
+   r.step_sl2 = PersistGet(TrackName(key, "S2"), 0.0);
+   r.plan_step = (int)PersistGet(TrackName(key, "PS"), 0.0);
    return r.state == TRACK_STATE_PENDING || r.state == TRACK_STATE_OPEN;
 }
 
@@ -197,6 +214,21 @@ void TrackLoadAll(void)
       if(TrackKeyFromName(GlobalVariableName(i), prefix, suffix, key))
          TrackRestore(key);
    }
+}
+
+// The last SL+ step taken and the time-limit epoch (UTC) of the record keyed by
+// `key`; false (0 and 0) when V6 does not track it.
+bool TrackPlanFacts(const ulong key, const long open_utc, int &step, long &limit_epoch)
+{
+   int i = TrackFind(key);
+   step = 0;
+   limit_epoch = 0;
+   if(i < 0)
+      return false;
+   step = g_track[i].plan_step;
+   long barrier = (g_track[i].barrier_s > 0) ? g_track[i].barrier_s : DEFAULT_TIME_BARRIER_S;
+   limit_epoch = open_utc + MathMin(barrier, (long)MAX_TIME_BARRIER_S);
+   return true;
 }
 
 string TrackIntentId(const TrackRecord &r)

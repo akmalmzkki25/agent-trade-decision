@@ -1,6 +1,6 @@
 {
   "positions": [
-    {"ticket":5012345678,"magic":250570,"side":"buy","volume":0.01000000,"price_open":4528.40,"sl":4521.40,"tp":4542.40,"profit":0.68,"swap":0.00,"open_epoch":1789562690,"comment":"Q6:k7w2m4pq3xza","mae_points":212.0,"mfe_points":731.0}
+    {"ticket":5012345678,"magic":250570,"side":"buy","volume":0.01000000,"price_open":4528.40,"sl":4521.40,"tp":4542.40,"profit":0.68,"swap":0.00,"open_epoch":1789562690,"comment":"Q6:k7w2m4pq3xza","mae_points":212.0,"mfe_points":731.0,"plan_step":1,"time_limit_epoch":1789571690}
   ],
   "pending_orders": [
     {"ticket":5012345702,"magic":250570,"order_type":"SELL_LIMIT","price":4541.10,"sl":4548.10,"tp":4527.10,"volume":0.01000000,"expiration_epoch":1789567200,"comment":"Q6:b5n6r7t2vw3y"}

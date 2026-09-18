@@ -112,6 +112,19 @@ berbeda dari teks tugas di bawah (tugas berikutnya mengikuti catatan ini):
 - `/v6/action` masuk daftar rute di tes keamanan, rute EA dan batas body; paritas path EA
   (`test_ea_safety_parity.py`) menunggu Task 15, saat EA mulai mengirim ke rute ini.
 
+## Catatan pelaksanaan Task 14 (2026-09-18)
+
+- Parser intent v2, kanonik, `LadderProblem` dan vektor SelfTest sudah selesai di Task 5;
+  Task 14 menambah sisi eksekusi: order STOP (`OrderTypeFor`, `PendingStillValid`,
+  `IsPendingOrder` di drift, risiko, filling), grid tangga (`LadderOnGrid`), rencana di
+  record Track (T1, T2, S1, S2, PS) dan helper modifikasi di `Orders.mqh`
+  (`ModifyPositionStops`, `ModifyPendingOrder`, keduanya dengan penjaga DEMO).
+- `PositionBlock.plan_step` dan `time_limit_epoch` masuk di sini (bukan Task 15), bersama
+  emisinya di `Exposure.mqh`; blok posisi memakai langkah terjauh (EA atau laporan) dan batas
+  waktu EA bila ada.
+- Tes keamanan: `TRADE_ACTION_SLTP`/`TRADE_ACTION_MODIFY` kini boleh, tapi hanya di
+  `Orders.mqh`; partial close, `CTrade`, `OrderModify`, `PositionModify` tetap dilarang.
+
 ---
 
 ## Peta file

@@ -9,6 +9,7 @@
 
 #include "Json.mqh"
 #include "Market.mqh"
+#include "Track.mqh"
 
 #define COMMENT_TEXT_MAX  31
 #define V6_MAX_ROWS       20   // contract cap on positions and pending orders
@@ -58,6 +59,10 @@ string PositionJson(const int offset_s)
    datetime opened = (datetime)PositionGetInteger(POSITION_TIME);
    double mae = 0.0, mfe = 0.0;
    PositionExcursions(is_buy, open_price, opened, mae, mfe);
+   long open_utc = MathMax(ServerToUtc(opened, offset_s), (long)0);
+   int step = 0;
+   long limit_epoch = 0;
+   TrackPlanFacts((ulong)PositionGetInteger(POSITION_IDENTIFIER), open_utc, step, limit_epoch);
    CJsonObject o;
    o.AddInt("ticket", PositionGetInteger(POSITION_TICKET));
    o.AddInt("magic", PositionGetInteger(POSITION_MAGIC));
@@ -68,10 +73,12 @@ string PositionJson(const int offset_s)
    o.AddNum("tp", PositionGetDouble(POSITION_TP), _Digits);
    o.AddNum("profit", PositionGetDouble(POSITION_PROFIT), MoneyDigits());
    o.AddNum("swap", PositionGetDouble(POSITION_SWAP), MoneyDigits());
-   o.AddInt("open_epoch", MathMax(ServerToUtc(opened, offset_s), (long)0));
+   o.AddInt("open_epoch", open_utc);
    o.AddStr("comment", SanitizeAscii(PositionGetString(POSITION_COMMENT), COMMENT_TEXT_MAX));
    o.AddNum("mae_points", mae, POINTS_DIGITS);
    o.AddNum("mfe_points", mfe, POINTS_DIGITS);
+   o.AddInt("plan_step", step);
+   o.AddInt("time_limit_epoch", limit_epoch);
    return o.Text();
 }
 

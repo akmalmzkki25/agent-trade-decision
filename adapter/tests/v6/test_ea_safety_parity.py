@@ -16,7 +16,7 @@ from app.v6.risk import limits
 from app.v6.schemas.intent import ExecutionReport
 
 from .ea_source_fixtures_v6 import (
-    CONTRACT_DOC, EA_DIR, EA_MAIN, FORBIDDEN_TRADE_CALLS, MAX_FUNCTION_LINES,
+    CONTRACT_DOC, EA_DIR, EA_MAIN, FORBIDDEN_TRADE_CALLS, MAX_FUNCTION_LINES, MODIFY_ACTIONS,
     MAX_INCLUDE_LINES, MAX_MAIN_LINES, PRINTERS, all_files, all_sources, define_string,
     ea_defines, function_body, include, ea_inputs, read,
 )
@@ -87,11 +87,18 @@ def test_demo_only_is_compiled_in() -> None:
     assert not [name for name in ea_inputs() if re.search("demo|real|contest", name, re.I)]
 
 
-def test_no_break_even_trailing_or_partial_close() -> None:
+def test_no_partial_close_and_modifications_only_in_orders() -> None:
     offenders = [(path.name, call) for path in all_files() for call in FORBIDDEN_TRADE_CALLS
                  if re.search(rf"\b{re.escape(call)}\b", read(path))]
+    modifiers = sorted({path.name for path in all_files() for action in MODIFY_ACTIONS
+                        if re.search(rf"\b{action}\b", read(path))})
 
     assert offenders == []
+    assert modifiers == ["Orders.mqh"]
+    orders = include("Orders.mqh")
+    for name in ("bool ModifyPositionStops(", "bool ModifyPendingOrder("):
+        body = function_body(orders, name)
+        assert "!AccountIsDemo()" in body and "req.volume" not in body
     close = function_body(include("Orders.mqh"), "bool ClosePositionByTicket(")
     assert "req.volume = PositionGetDouble(POSITION_VOLUME);" in close
     assert "req.position = ticket;" in close
@@ -197,7 +204,7 @@ def test_a_market_order_cannot_slip_past_its_drift_budget() -> None:
     assert "p.max_drift_points - QuoteDriftPoints(p, q)" in deviation
     assert "return MarketDeviationPoints(p, q) > 0;" in within
     request = function_body(execute, "void BuildEntryRequest(")
-    assert ("req.deviation = (ulong)(limit ? p.max_drift_points : "
+    assert ("req.deviation = (ulong)(pending ? p.max_drift_points : "
             "MarketDeviationPoints(p, q));") in request
     assert "FillDriftBreach(p, r, q.point)" in function_body(execute, "void AcceptEntry(")
     breach = function_body(execute, "string FillDriftBreach(")

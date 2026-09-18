@@ -30,7 +30,7 @@ string MarketRefusal(const PollReply &p, const EntryQuote &q)
 {
    if(q.valid && q.spread_points > p.max_spread_points)
       return REASON_SPREAD;
-   if(q.valid && (!WithinDrift(p, q) || !LimitStillPassive(p, q)))
+   if(q.valid && (!WithinDrift(p, q) || !PendingStillValid(p, q)))
       return REASON_DRIFT;
    if(!q.valid || !MarketOpenForEntry(q))
       return REASON_MARKET_CLOSED;
@@ -67,53 +67,40 @@ string EntryRefusal(const PollReply &p, const EntryQuote &q)
 
 //--- the order ----------------------------------------------------------
 
-double NormalizePrice(const double price)
-{
-   double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   if(tick_size <= 0.0)
-      return NormalizeDouble(price, _Digits);
-   return NormalizeDouble(MathRound(price / tick_size) * tick_size, _Digits);
-}
-
-double NormalizeLots(const double lots)
-{
-   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   if(step <= 0.0)
-      return lots;
-   int digits = (int)MathMax(0.0, MathCeil(-MathLog10(step) - GRID_EPSILON));
-   return NormalizeDouble(MathRound(lots / step) * step, digits);
-}
-
 ENUM_ORDER_TYPE OrderTypeFor(const string order_type)
 {
    if(order_type == INTENT_BUY_LIMIT)
       return ORDER_TYPE_BUY_LIMIT;
    if(order_type == INTENT_SELL_LIMIT)
       return ORDER_TYPE_SELL_LIMIT;
+   if(order_type == INTENT_BUY_STOP)
+      return ORDER_TYPE_BUY_STOP;
+   if(order_type == INTENT_SELL_STOP)
+      return ORDER_TYPE_SELL_STOP;
    if(order_type == INTENT_BUY)
       return ORDER_TYPE_BUY;
    return ORDER_TYPE_SELL;
 }
 
-// SL and TP travel with the order. A limit order expires at
+// SL and TP travel with the order. A LIMIT or STOP order expires at
 // pending_expiry_epoch (UTC) converted to server time.
 void BuildEntryRequest(const PollReply &p, const EntryQuote &q, MqlTradeRequest &req)
 {
-   bool limit = IsLimitOrder(p.order_type);
+   bool pending = IsPendingOrder(p.order_type);
    bool is_buy = p.side == INTENT_SIDE_BUY;
    ZeroMemory(req);
-   req.action = limit ? TRADE_ACTION_PENDING : TRADE_ACTION_DEAL;
+   req.action = pending ? TRADE_ACTION_PENDING : TRADE_ACTION_DEAL;
    req.symbol = _Symbol;
    req.magic = (ulong)g_cfg.magic;
    req.volume = NormalizeLots(p.lots);
    req.type = OrderTypeFor(p.order_type);
-   req.price = limit ? NormalizePrice(p.entry) : (is_buy ? q.ask : q.bid);
+   req.price = pending ? NormalizePrice(p.entry) : (is_buy ? q.ask : q.bid);
    req.sl = NormalizePrice(p.sl);
    req.tp = NormalizePrice(p.tp);
-   req.deviation = (ulong)(limit ? p.max_drift_points : MarketDeviationPoints(p, q));
+   req.deviation = (ulong)(pending ? p.max_drift_points : MarketDeviationPoints(p, q));
    req.comment = ORDER_COMMENT_PREFIX + p.intent_id;
-   req.type_time = limit ? ORDER_TIME_SPECIFIED : ORDER_TIME_GTC;
-   req.expiration = limit ? (datetime)(p.pending_expiry_epoch + ServerGmtOffsetSeconds()) : (datetime)0;
+   req.type_time = pending ? ORDER_TIME_SPECIFIED : ORDER_TIME_GTC;
+   req.expiration = pending ? (datetime)(p.pending_expiry_epoch + ServerGmtOffsetSeconds()) : (datetime)0;
 }
 
 // The order ticket, which is also the identifier of the position it opens.
@@ -141,10 +128,15 @@ void TrackEntry(const PollReply &p, const EntryQuote &q, const MqlTradeRequest &
    TrackRecord t;
    ZeroMemory(t);
    t.key = key;
-   t.state = IsLimitOrder(p.order_type) ? TRACK_STATE_PENDING : TRACK_STATE_OPEN;
+   t.state = IsPendingOrder(p.order_type) ? TRACK_STATE_PENDING : TRACK_STATE_OPEN;
    t.side = (p.side == INTENT_SIDE_BUY) ? TRACK_SIDE_BUY : TRACK_SIDE_SELL;
    TrackSetIntentId(t, p.intent_id);
    t.barrier_s = p.time_barrier_s;
+   t.tp1 = NormalizePrice(p.tp1);
+   t.tp2 = NormalizePrice(p.tp2);
+   t.step_sl1 = NormalizePrice(p.sl_after_tp1);
+   t.step_sl2 = NormalizePrice(p.sl_after_tp2);
+   t.plan_step = 0;
    t.requested = req.price;
    t.sl = req.sl;
    t.tp = req.tp;
@@ -170,7 +162,7 @@ void FinishReport(ExecReport &r, const EntryQuote &q, const string detail)
 // adapter sized the order to (market-execution symbols ignore the deviation).
 string FillDriftBreach(const PollReply &p, const ExecReport &r, const double point)
 {
-   if(IsLimitOrder(p.order_type) || r.fill_price <= 0.0)
+   if(IsPendingOrder(p.order_type) || r.fill_price <= 0.0)
       return "";
    long drift = DriftPoints(p, r.fill_price, point);
    if(drift <= p.max_drift_points)
@@ -182,12 +174,12 @@ string FillDriftBreach(const PollReply &p, const ExecReport &r, const double poi
 void AcceptEntry(const PollReply &p, const EntryQuote &q, const MqlTradeRequest &req,
                  const MqlTradeResult &res, ExecReport &r)
 {
-   bool limit = IsLimitOrder(p.order_type);
+   bool pending = IsPendingOrder(p.order_type);
    ulong key = EntryKey(res);
    r.ticket = (long)key;
    r.reason_code = REASON_NONE;
-   r.status = limit ? STATUS_PLACED : STATUS_FILLED;
-   if(!limit)
+   r.status = pending ? STATUS_PLACED : STATUS_FILLED;
+   if(!pending)
    {
       r.fill_price = MarketFillPrice(res, key);
       r.slippage_points = AdverseSlippagePoints(p.side == INTENT_SIDE_BUY, req.price, r.fill_price, q.point);
@@ -219,7 +211,7 @@ void SendEntry(const PollReply &p, const EntryQuote &q)
    r.spread_points = q.spread_points;
    MqlTradeCheckResult check;
    ZeroMemory(check);
-   if(!CheckWithFilling(req, check, !IsLimitOrder(p.order_type)))
+   if(!CheckWithFilling(req, check, !IsPendingOrder(p.order_type)))
    {
       r.retcode = (long)check.retcode;
       FinishReport(r, q, "OrderCheck refused: " + check.comment);

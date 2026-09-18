@@ -128,9 +128,9 @@ def position_block(context: MarketContext, record: IntentRecord | None,
                    default_barrier_s: int = 0) -> Document | None:
     """The first open V6 position with its initial risk and plan (None when flat).
 
-    The executed SL+ step and the holding time come from the stored intent (the EA's
-    step reports update it); without one the step is 0 and the time limit is the
-    default barrier.
+    The SL+ step is the furthest one the EA (snapshot) or its step reports (the stored
+    intent) know of; the time limit is the EA's, else the open time plus the stored
+    holding time, else plus the default barrier.
     """
     if not context.positions:
         return None
@@ -151,8 +151,8 @@ def position_block(context: MarketContext, record: IntentRecord | None,
             if risk > 0 else 0.0,
             "mae_points": position.mae_points, "mfe_points": position.mfe_points,
             "minutes_open": round(minutes, 2),
-            "time_limit_epoch": position.open_epoch + barrier,
-            "plan": _record_plan(record, 0)}
+            "time_limit_epoch": position.time_limit_epoch or position.open_epoch + barrier,
+            "plan": _record_plan(record, position.plan_step)}
 
 
 def limits_block(context: MarketContext, settings: V6Settings,

@@ -165,6 +165,10 @@ class PositionBlock(_Strict):
     comment: OrderComment
     mae_points: float = Field(ge=0)
     mfe_points: float = Field(ge=0)
+    # EA 6.2.0: the last SL+ step it took and when its time limit closes the position
+    # (0 when the EA does not track the position); an older EA leaves both out.
+    plan_step: int = Field(default=0, ge=0, le=2)
+    time_limit_epoch: int = Field(default=0, ge=0)
 
 
 class PendingOrderBlock(_Strict):

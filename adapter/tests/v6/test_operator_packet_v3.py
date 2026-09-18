@@ -97,6 +97,12 @@ def test_position_block_without_a_record() -> None:
         0, POSITION["open_epoch"] + 7200)
 
 
+def test_the_ea_step_and_time_limit_win() -> None:
+    reported = {**POSITION, "plan_step": 2, "time_limit_epoch": ef.AS_OF + 600}
+    block = position_block(context_with(positions=[reported]), record(plan_step=1))
+    assert (block["plan"]["step"], block["time_limit_epoch"]) == (2, ef.AS_OF + 600)
+
+
 def test_a_rewritten_comment_keeps_the_stored_intent_id() -> None:
     renamed = {**POSITION, "comment": "[sl 4297.00]"}
     block = position_block(context_with(positions=[renamed]), record())

@@ -1,9 +1,10 @@
 //+------------------------------------------------------------------+
 //| QlipV6/Orders.mqh                                                |
 //| The only module that sends trade requests: new entries, full     |
-//| closes and pending deletions, plus the guards every entry passes |
-//| (demo account, trading permitted, execution ready). There is no  |
-//| modify path at all: no break-even, no trailing, no partial close.|
+//| closes, pending deletions and the two modifications phase A      |
+//| allows (the stops of a position, the levels of a pending order), |
+//| plus the guards every request passes (demo account, trading      |
+//| permitted, execution ready). A partial close does not exist.     |
 //+------------------------------------------------------------------+
 #ifndef QLIPV6_ORDERS_MQH
 #define QLIPV6_ORDERS_MQH
@@ -14,6 +15,7 @@
 
 #define FILLING_CANDIDATES      3
 #define CLOSE_DEVIATION_POINTS  100
+#define LOTS_STEP_EPSILON       1e-6
 
 // Compiled rule, no input can change it: V6 trades DEMO accounts only.
 // ACCOUNT_TRADE_MODE_DEMO is 0, the value of account data that is not loaded
@@ -44,6 +46,25 @@ bool LocalHaltActive(void)
 bool ExecutionReady(void)
 {
    return g_cfg.execute_input && g_hmac_key_loaded && g_cfg.selftest_ok && AccountIsDemo();
+}
+
+// A price on the symbol's tick grid, at its digits.
+double NormalizePrice(const double price)
+{
+   double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tick_size <= 0.0)
+      return NormalizeDouble(price, _Digits);
+   return NormalizeDouble(MathRound(price / tick_size) * tick_size, _Digits);
+}
+
+// Lots on the symbol's volume step.
+double NormalizeLots(const double lots)
+{
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0)
+      return lots;
+   int digits = (int)MathMax(0.0, MathCeil(-MathLog10(step) - LOTS_STEP_EPSILON));
+   return NormalizeDouble(MathRound(lots / step) * step, digits);
 }
 
 bool RetcodeIs(const uint retcode, const int code)
@@ -141,6 +162,61 @@ bool ClosePositionByTicket(const ulong ticket, const string comment, double &req
    bool ok = SendRequest(req, res);
    retcode = res.retcode;
    return ok;
+}
+
+// A modification the server applied, or found already in place.
+bool ModifyDone(const MqlTradeResult &res)
+{
+   return RetcodeIs(res.retcode, TRADE_RETCODE_DONE)
+          || RetcodeIs(res.retcode, TRADE_RETCODE_NO_CHANGES)
+          || RetcodeIs(res.retcode, TRADE_RETCODE_PLACED);
+}
+
+// TRADE_ACTION_SLTP: the new stop and target of an open V6 position (never its size).
+bool ModifyPositionStops(const ulong ticket, const double sl, const double tp, uint &retcode)
+{
+   MqlTradeRequest req;
+   MqlTradeResult res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+   retcode = 0;
+   if(!AccountIsDemo() || TerminalInfoInteger(TERMINAL_CONNECTED) == 0)
+      return false;
+   req.action = TRADE_ACTION_SLTP;
+   req.position = ticket;
+   req.symbol = _Symbol;
+   req.magic = (ulong)g_cfg.magic;
+   req.sl = NormalizePrice(sl);
+   req.tp = NormalizePrice(tp);
+   ResetLastError();
+   bool sent = OrderSend(req, res);
+   retcode = res.retcode;
+   return sent && ModifyDone(res);
+}
+
+// TRADE_ACTION_MODIFY: the new price, stop, target and expiry of a V6 pending order.
+bool ModifyPendingOrder(const ulong ticket, const double price, const double sl,
+                        const double tp, const datetime expiration, uint &retcode)
+{
+   MqlTradeRequest req;
+   MqlTradeResult res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+   retcode = 0;
+   if(!AccountIsDemo() || TerminalInfoInteger(TERMINAL_CONNECTED) == 0)
+      return false;
+   req.action = TRADE_ACTION_MODIFY;
+   req.order = ticket;
+   req.symbol = _Symbol;
+   req.price = NormalizePrice(price);
+   req.sl = NormalizePrice(sl);
+   req.tp = NormalizePrice(tp);
+   req.type_time = ORDER_TIME_SPECIFIED;
+   req.expiration = expiration;
+   ResetLastError();
+   bool sent = OrderSend(req, res);
+   retcode = res.retcode;
+   return sent && ModifyDone(res);
 }
 
 bool DeletePendingOrder(const ulong ticket, uint &retcode)

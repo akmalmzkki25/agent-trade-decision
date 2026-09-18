@@ -1,9 +1,11 @@
 //+------------------------------------------------------------------+
 //| QlipV6/Checks.mqh                                                |
 //| The symbol and market facts an intent is judged against before   |
-//| it reaches OrderCheck: tick grid, volume step, occupancy, price  |
-//| drift, a still-passive limit price, an open session with a live  |
-//| quote, and the loss at the stop priced by the terminal.          |
+//| it reaches OrderCheck: tick grid (the SL+ ladder included),      |
+//| volume step, occupancy, price drift, a pending price still on    |
+//| its side (a passive LIMIT, a STOP beyond the quote), an open     |
+//| session with a live quote, and the loss at the stop priced by    |
+//| the terminal.                                                    |
 //+------------------------------------------------------------------+
 #ifndef QLIPV6_CHECKS_MQH
 #define QLIPV6_CHECKS_MQH
@@ -16,6 +18,7 @@
 
 #define QUOTE_STALE_S    60
 #define GRID_EPSILON     1e-6
+#define LADDER_LEVELS    4
 
 struct EntryQuote
 {
@@ -67,12 +70,30 @@ bool LotsOnStep(const double lots)
    return MathAbs(steps - MathRound(steps)) < GRID_EPSILON;
 }
 
+// Every ladder level the intent sets (0 = none) sits on the tick grid.
+bool LadderOnGrid(const PollReply &p)
+{
+   double levels[LADDER_LEVELS];
+   levels[0] = p.tp1;
+   levels[1] = p.tp2;
+   levels[2] = p.sl_after_tp1;
+   levels[3] = p.sl_after_tp2;
+   for(int i = 0; i < LADDER_LEVELS; i++)
+   {
+      if(levels[i] > 0.0 && !OnPriceGrid(levels[i]))
+         return false;
+   }
+   return true;
+}
+
 string SymbolShapeProblem(const PollReply &p)
 {
    if(p.magic != g_cfg.magic)
       return "magic does not match InpMagic";
    if(!OnPriceGrid(p.entry) || !OnPriceGrid(p.tp) || !OnPriceGrid(p.ref_price))
       return "a price is off the tick grid";
+   if(!LadderOnGrid(p))
+      return "a ladder level is off the tick grid";
    if(!LotsOnStep(p.lots))
       return "lots are off the volume step or outside the symbol limits";
    return "";
@@ -120,24 +141,31 @@ long MarketDeviationPoints(const PollReply &p, const EntryQuote &q)
    return p.max_drift_points - QuoteDriftPoints(p, q);
 }
 
-// A market order needs some deviation left; a limit order only the drift limit.
+// A market order needs some deviation left; a pending order only the drift limit.
 bool WithinDrift(const PollReply &p, const EntryQuote &q)
 {
-   if(IsLimitOrder(p.order_type))
+   if(IsPendingOrder(p.order_type))
       return QuoteDriftPoints(p, q) <= p.max_drift_points;
    return MarketDeviationPoints(p, q) > 0;
 }
 
-// A limit price must still rest on the passive side of the market.
-bool LimitStillPassive(const PollReply &p, const EntryQuote &q)
+// A limit price still rests on the passive side; a stop price still sits beyond the
+// quote, both at least the broker's stops level away.
+bool PendingStillValid(const PollReply &p, const EntryQuote &q)
 {
-   if(!IsLimitOrder(p.order_type))
+   if(!IsPendingOrder(p.order_type))
       return true;
    long stops = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    long entry = PriceToPoints(p.entry, q.point);
+   long ask = PriceToPoints(q.ask, q.point);
+   long bid = PriceToPoints(q.bid, q.point);
    if(p.order_type == INTENT_BUY_LIMIT)
-      return entry < PriceToPoints(q.ask, q.point) - stops;
-   return entry > PriceToPoints(q.bid, q.point) + stops;
+      return entry < ask - stops;
+   if(p.order_type == INTENT_SELL_LIMIT)
+      return entry > bid + stops;
+   if(p.order_type == INTENT_BUY_STOP)
+      return entry > ask + stops;
+   return entry < bid - stops;
 }
 
 // Contract §8.1 check 14, plus a broker connection, a live quote and the
@@ -158,7 +186,7 @@ bool MarketOpenForEntry(const EntryQuote &q)
 bool RiskWithinCap(const PollReply &p, const EntryQuote &q)
 {
    bool is_buy = p.side == INTENT_SIDE_BUY;
-   double entry = IsLimitOrder(p.order_type) ? p.entry : (is_buy ? q.ask : q.bid);
+   double entry = IsPendingOrder(p.order_type) ? p.entry : (is_buy ? q.ask : q.bid);
    double pnl = 0.0;
    ENUM_ORDER_TYPE type = is_buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    ResetLastError();
