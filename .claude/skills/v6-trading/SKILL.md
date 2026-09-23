@@ -87,8 +87,9 @@ an m15 packet replaces an open m1 packet.
 2. Nothing to do (no entry to time at your M15 levels, the trade still on plan): run
    `OP submit --agent <AGENT> --quick` at once, and report nothing.
 3. Otherwise, within 45 s of the minute close: run `OP template`, edit
-   `adapter/.v6_operator/decision.json` (flat: ENTER with an `entry_plan`, section 5.8;
-   a trade: MANAGE, section 5.9; `views` and `m15_bias` may stay `null`, section 5.12),
+   `adapter/.v6_operator/decision.json` (flat: ENTER with an `entry_plan`, its stop
+   behind the M15 swing that invalidates it, section 5.8, else `--quick`; a trade:
+   MANAGE, section 5.9; `views` and `m15_bias` may stay `null`, section 5.12),
    run `OP submit --agent <AGENT>` and report one line as in step 5 below. An M1 signal
    against your M15 bias is a reason to wait, not to reverse.
 
@@ -112,6 +113,10 @@ an m15 packet replaces an open m1 packet.
        `sl_after_tp2` (section 5.10), `time_limit_min`, `pending_expiry_min` (null for
        MARKET), `lots` 0.01-0.03 and a `thesis`. For ENTER your Price Action view must
        TAKE `limits.agent_entry_id` with conviction >= 0.60; the code derives the Chief.
+       Put `sl` just beyond the swing or level that proves the idea wrong and name it in
+       `thesis`. If that stop does not fit the `stop` range of the summary, HOLD: never
+       tighten the stop to fit, and never enter in the middle of a range (section 5.8,
+       "Structure or skip").
      - **pending or position packet:** `action` MANAGE with `manage` (section 5.9):
        KEEP, CANCEL (pending), CLOSE (position), or MODIFY with only the fields that
        change.

@@ -81,6 +81,7 @@ def test_limits_bias_and_last_action_lines() -> None:
     limits = next(line for line in lines if line.startswith("agent entry id"))
     assert "BUY STOP >= 4535.72 SELL STOP <= 4534.81" in limits
     assert "tp1 >= 0.5R, tp3 1.0-5.0R" in limits and "time 60-240 min, pending 15-60 min" in limits
+    assert "stop 6.00...22.50 behind the swing, else HOLD" in limits
     assert lines[-1].startswith("agents ") and "(action HOLD or ENTER)" in lines[-1]
 
 

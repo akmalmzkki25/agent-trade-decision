@@ -102,8 +102,9 @@ print it and never open `adapter/.env`.
    On an m15 packet, analyse the market yourself (M15 first, M1 for timing), run
    `OP template`, write `adapter/.v6_operator/decision.json` by the rubric (flat: HOLD,
    or ENTER with your own `entry_plan` inside the packet's `limits`: MARKET, LIMIT or
-   STOP, TP1-TP3, SL+ steps, time limit, `lots` 0.01-0.03; management: `action` MANAGE
-   with `manage` KEEP, CANCEL, CLOSE or MODIFY; always `m15_bias`), run
+   STOP, TP1-TP3, SL+ steps, time limit, `lots` 0.01-0.03; the SL just beyond the swing
+   that proves the idea wrong, and HOLD when that SL does not fit `limits`; management:
+   `action` MANAGE with `manage` KEEP, CANCEL, CLOSE or MODIFY; always `m15_bias`), run
    `OP submit --agent <AGENT>`, then wait again.
 4. On "Sudah cukup hari ini", run `OP session stop --reason sudah_cukup` and report the
    day. Open positions keep running.

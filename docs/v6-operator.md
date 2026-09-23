@@ -24,6 +24,9 @@
 > Paket `m15` tetap prioritas (menggantikan paket `m1` yang terbuka); paket `m1` memakai
 > view dan bias M15 terakhir, dan veto M15 berlaku sampai paket `m15` berikutnya. Paket
 > `m1` dijeda saat rollover dan saat sesi tidak armed. Keputusan v1/v2 sudah pensiun.
+> **SL wajib di balik swing atau level yang membatalkan ide.** Kalau SL itu tidak muat di
+> `limits` (rentang `stop` di ringkasan), jawabannya HOLD; jangan pernah menyempitkan SL
+> supaya muat, dan jangan entry di tengah range (5.8, "Structure or skip").
 > Akun **REAL/CONTEST selalu ditolak**: berhenti dan lapor. Selama sesi: jangan edit file
 > (kecuali `decision.json`), jangan browsing untuk keputusan trading, jangan ubah setting.
 
@@ -250,8 +253,9 @@ false` requires at least one ranked id.
 **Your own read comes first.** Read the M15/H1 bars, `levels` (prior-day high/low,
 confirmed pivots, $10/$50 levels), ATRs, `session.quality` and the structure features.
 When you see a trade, rank `limits.agent_entry_id` TAKE and describe it in
-`entry_plan`: the level you buy or sell at, the structural invalidation behind a swing or
-level (not an arbitrary distance), and a target in front of the next obstacle. Session
+`entry_plan`: the level you buy or sell at, the stop behind the swing or level that
+invalidates the idea (5.8, "Structure or skip"; when it does not fit `limits`, HOLD), and
+a target in front of the next obstacle. Session
 quality (`prime`, `active`, `thin`), the main-window third and `continuation_allowed`
 are information for this judgement, not blocks.
 
@@ -359,6 +363,8 @@ the level logic, the vetoes you weighed and the m you expect.
   `allowed.pa_min_conviction` (0.60), else `DECISION_VIEW`;
 - no enforced veto (news BLOCK, liquidity NO_TRADE, enforced counter-structure);
 - m ≥ 0.25 (5.7);
+- `sl` sits just beyond the invalidation you named and inside `limits` (5.8, "Structure
+  or skip"): a structural stop that does not fit means HOLD;
 - `m15_bias` states a direction (the CLI warns on `unclear`).
 
 **How to choose:**
@@ -370,7 +376,8 @@ the level logic, the vetoes you weighed and the m you expect.
 - **Size (`entry_plan.lots`).** 0.01 for an ordinary setup, 0.02 for a clean one with a
   tight stop, 0.03 only for your best read with a stop the budget still pays at 0.03
   (0.03 × (stop + $0.40) × 100 ≤ B × m, about a $7.9 stop at m = 1). The sizer reduces an
-  unaffordable request and never goes below 0.01 while B pays for it.
+  unaffordable request and never goes below 0.01 while B pays for it; on a small account
+  it keeps 0.01 whatever you ask (5.8).
 
 To trade a detector suggestion, design your plan from its levels.
 
@@ -427,13 +434,50 @@ Fields (decision v3):
 | `side` | `buy` or `sell` |
 | `order_type` | `MARKET`, `LIMIT` or `STOP` |
 | `entry` | the LIMIT or STOP price; `null` for MARKET (the current quote) |
-| `sl` | the initial stop, behind structure (a swing or a level), not an arbitrary distance |
+| `sl` | the initial stop, just beyond the swing or level that proves the idea wrong ("Structure or skip" below), never an arbitrary distance |
 | `tp1`, `tp2`, `tp3` | the target ladder: TP3 is the take profit at the broker, TP1 and TP2 trigger the SL+ steps |
 | `sl_after_tp1`, `sl_after_tp2` | the SL+ steps (5.10), or `null` |
 | `time_limit_min` | how long the trade may stay open: `limits.time_limit_min_minutes`-`time_limit_max_minutes` (60-240) |
 | `pending_expiry_min` | how long a LIMIT or STOP rests: `limits.pending_expiry_min_minutes`-`pending_expiry_max_minutes` (15-60); `null` for MARKET |
 | `lots` | 0.01-0.03 on the 0.01 grid (`limits.volume_min`..`max_lots`) |
-| `thesis` | ≤ 300 characters: why this level, this stop and these targets |
+| `thesis` | ≤ 300 characters: why this level, which invalidation the stop sits behind, and these targets |
+
+**Structure or skip (binding).** The stop goes where the idea is proven wrong, not where
+the budget happens to allow it. For every ENTER, in this order:
+
+1. **Name the invalidation**: the one price whose break proves this trade wrong. For a
+   range fade it is the edge you buy or sell against; for a retest, the base the breakout
+   left; for a pullback in a trend, the last higher low (buy) or lower high (sell). Take it
+   from the M15 bars or `levels` (M15/H1 pivots, prior-day high/low). An M1 swing only
+   times the entry (5.12); it is never the invalidation.
+2. **Put `sl` just beyond it**: a buy stop below the low (the bid triggers it), a sell
+   stop above the high plus the spread (the ask triggers it), with about a spread of
+   margin. A stop that would sit closer than `limits.stop_floor` goes to the floor: it is
+   then still behind the structure.
+3. **If that stop is farther than `limits.max_stop_distance`, HOLD.** Never move the stop
+   inside the swing, never call a nearer wiggle "the swing", and never move the entry
+   away from its level just to make the distance fit. A stop inside the swing is taken by
+   the market's ordinary back-and-forth.
+4. **Write it down**: `thesis` names the invalidation and the stop behind it (for example
+   "SL 4523.9 below the 4526.9-4527.4 shelf the breakout left").
+
+The stop can only be structural and inside `limits` when the entry sits next to its
+invalidation:
+- **In a range**, buy only in the lower third, next to the support that invalidates the
+  idea, and sell only in the upper third. The middle is where both edges are too far
+  away for the stop.
+- **In a trend**, buy the pullback to the last higher low or the retest of the broken
+  level (sell the rally to the last lower high), never the extended bar.
+- **After a stop-out or a scratch**, do not re-enter the same idea at the same level in
+  the same M15 swing; wait for an M15 close that restores it.
+
+**Small accounts.** The stop window is `limits.stop_floor` to `limits.max_stop_distance`
+(the `stop ...` range in the `wait` summary). With about $1,000 equity and `V6_RISK_PCT`
+1.0, B is about $10 and the window about **$6.00-8.20** at 0.01 lot ($6.00-7.39 at
+$920), while an active London or New York hour often swings $15-25 (the afternoon of
+2026-09-22 averaged $19 per hour). Most structural stops then do not fit, so HOLD is the
+correct and common answer, and the trades that remain sit right at their level. Lots
+stay 0.01 whatever you ask: 0.02 would need a stop under about $4.60, below the floor.
 
 Prices are snapped to the tick grid. `submit` refuses a plan outside `limits` with
 `DECISION_ENTRY_PLAN` (`DECISION_LOTS` for the size) and one of these codes, which you
@@ -466,14 +510,16 @@ quote, a MARKET order within its drift budget). The EA places it with SL and TP3
 broker and keeps the ladder itself (5.10).
 
 **Example: a buy LIMIT** (bid 4536.12, ask 4536.41, `modify_distance` 0.39). Buy the
-retest of the broken H1 pivot 4531.1 at 4531.40 with the stop at 4523.90 (7.50); TP1
+retest of the broken H1 pivot 4531.1 at 4531.40 with the stop at 4523.90 (7.50), below
+the 4526.9-4527.4 M15 shelf the breakout left (its invalidation); TP1
 4536.40 (0.67R) with SL+ 4531.90, TP2 4541.40 under the prior day high with SL+ 4536.40,
 TP3 4546.40 (2R) in front of 4550; `time_limit_min` 120, `pending_expiry_min` 30, `lots`
 0.02. This is the example decision of section 6.
 
 **Example: a sell STOP** (same quote, `sell_stop_max` 4535.73). The M15 range floor is
-4531.0 and the H1 swings turned down: sell the break at 4530.60 with the stop at 4537.60
-(7.00) above the range middle; TP1 4527.00 (0.51R) with SL+ 4530.20 (the entry minus
+4531.0, the last M15 lower high is 4536.9 and the H1 swings turned down: sell the break at
+4530.60 with the stop at 4537.60 (7.00), above that lower high plus the spread (a stop
+under 4536.9 would sit inside the swing); TP1 4527.00 (0.51R) with SL+ 4530.20 (the entry minus
 costs, no structure yet), TP2 4523.60 with SL+ 4527.00, TP3 4516.60 (2R);
 `time_limit_min` 90, `pending_expiry_min` 20, `lots` 0.01.
 
@@ -481,7 +527,7 @@ costs, no structure yet), TP2 4523.60 with SL+ 4527.00, TP3 4516.60 (2R);
 {"side": "sell", "order_type": "STOP", "entry": 4530.6, "sl": 4537.6, "tp1": 4527.0,
  "tp2": 4523.6, "tp3": 4516.6, "sl_after_tp1": 4530.2, "sl_after_tp2": 4527.0,
  "time_limit_min": 90, "pending_expiry_min": 20, "lots": 0.01,
- "thesis": "break of the M15 range floor with the H1 swings turning down"}
+ "thesis": "break of the M15 range floor, H1 swings turning down; SL above the 4536.9 lower high"}
 ```
 
 ### 5.9 Managing a resting order or an open position (`manage`)
@@ -588,7 +634,9 @@ an enforced counter-structure) blocks every m1 ENTER until the next m15 packet
 **Act on an m1 packet only for a reason the minute gives:**
 - **Time an entry** at a level your M15 bias names: the retest holds and the M1 bars turn
   (a higher low for a buy, a lower high for a sell). Do not chase a strong 15-bar move
-  away from your level.
+  away from your level. The stop still follows "Structure or skip" (5.8): the M1 turn
+  times the entry, the M15 level or swing is the invalidation; if that stop does not fit
+  `limits`, answer `--quick`.
 - **Cut** (CLOSE) a position when the M1 structure breaks against it at a level that
   matters to the M15 reading, and **cancel** a resting order whose level broke before the
   fill.
@@ -1319,7 +1367,8 @@ with the adapter's own parser. The prices are illustrative.
 In this example the decision below ENTERs the agent's own plan instead of a suggestion:
 
 - PA reads the chart itself: the displacement close is extended, so it buys the retest of
-  the broken H1 pivot (4531.1) with a LIMIT at 4531.40 and a stop 7.50 below (inside
+  the broken H1 pivot (4531.1) with a LIMIT at 4531.40 and a stop 7.50 below, under the
+  4526.9-4527.4 M15 shelf the breakout left (inside
   6.00-22.02); Price Action TAKEs `agent-1789644600` at 0.70, the code derives the Chief.
 - The ladder: TP1 4536.40 (0.67R) moves the stop to 4531.90 (entry plus costs, no new
   structure yet), TP2 4541.40 under the prior day high moves it to 4536.40, TP3 4546.40
@@ -1413,7 +1462,7 @@ In this example the decision below ENTERs the agent's own plan instead of a sugg
     "time_limit_min": 120,
     "pending_expiry_min": 30,
     "lots": 0.02,
-    "thesis": "trend up; buy the retest of the broken H1 pivot 4531.1 instead of the extended displacement close"
+    "thesis": "trend up; buy the retest of the broken H1 pivot 4531.1, not the extended displacement close; SL 4523.9 below the 4526.9-4527.4 M15 shelf the breakout left"
   },
   "manage": null,
   "m15_bias": {
