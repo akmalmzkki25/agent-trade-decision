@@ -30,3 +30,7 @@ ex5/
 
 # Research papers (large, local reference only; indexed in pdf/README.md)
 pdf/
+
+# MCP configs hold bearer tokens: never commit them
+.mcp.json
+.codex/
