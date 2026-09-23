@@ -308,12 +308,13 @@ LIMIT|MARKET|EITHER, `reason_codes`, `note`.
 
 - **NO_TRADE (0)** when any of these holds:
   - spread above the ceiling (35 points standard, 20 raw);
-  - `friction_atr_m5` ≥ 0.08;
+  - `friction_atr_m5` ≥ 0.15 (the hard cost gate: at the standard account's $0.40
+    friction this is kn/15's 0.08 line, which was drawn at the raw account's $0.22);
   - a quote gap ≥ 60 s;
   - the rollover block.
 - **CAUTION (rules: 0.5)** when any of these holds:
   - `spread_pctl_hour` ≥ 0.80;
-  - `friction_atr_m5` ≥ 0.06;
+  - `friction_atr_m5` from 0.06 up to the gate (a quiet market: trade smaller, not never);
   - a quote gap ≥ 10 s, or thin quotes;
   - `tick_volume_z` ≤ -1.0 or ≥ 2.5;
   - rollover within 60 min;

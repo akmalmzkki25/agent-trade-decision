@@ -6,12 +6,12 @@ volume is zero, so this desk only reads cost and activity proxies and never has
 a directional voice. It always prefers LIMIT orders (kn/15 §2).
 
 - NO_TRADE (multiplier 0) on a hard breach: spread above the account ceiling,
-  friction / ATR(M5) at or above PREFERRED_FRICTION_TO_ATR_M5, a quote gap of
+  friction / ATR(M5) at or above MAX_FRICTION_TO_ATR_M5 (the hard cost gate), a quote gap of
   QUOTE_GAP_NO_TRADE_MS or more, no quotes at all in the tick window, or the
   rollover block itself.
 - CAUTION (multiplier CAUTION_MULTIPLIER) on a soft warning: spread in the top
-  of its same-hour distribution, friction within FRICTION_CAUTION_SHARE of the
-  ceiling, a quote gap of QUOTE_GAP_CAUTION_MS or more, a thin quote rate,
+  of its same-hour distribution, friction from FRICTION_CAUTION_SHARE of kn/15's
+  0.08 line (PREFERRED_FRICTION_TO_ATR_M5) up to the gate, a quote gap of QUOTE_GAP_CAUTION_MS or more, a thin quote rate,
   unusually low or high tick activity (unsigned), rollover starting within
   ROLLOVER_LOOKAHEAD_S, or missing cost data.
 - OK (multiplier 1) otherwise.
@@ -31,14 +31,19 @@ from ..cycle_types import (
     MarketContext,
 )
 from ..market.sessions import session_state
-from ..risk.limits import PREFERRED_FRICTION_TO_ATR_M5, PREFERRED_SPREAD_POINTS
+from ..risk.limits import (
+    MAX_FRICTION_TO_ATR_M5, PREFERRED_FRICTION_TO_ATR_M5, PREFERRED_SPREAD_POINTS,
+)
 from ..schemas.agents import (
     MAX_NOTE_CHARS, MAX_REASON_CODES, LiquidityReason, LiquidityStance, LiquidityView,
 )
 from .structure import finite_feature
 
-# The rules desk keeps kn/15's original cost lines (the hard gates are wider since
-# 2026-09-17): it is the conservative shadow baseline, not the gate.
+# kn/15's 0.08 friction line was drawn at the raw account's $0.22 friction; at the
+# standard account's $0.40 the same market sits at 0.145, the hard gate (risk.limits).
+# The desk therefore shrinks (CAUTION) between the two lines and vetoes only at the
+# gate: a veto at 0.08 blocked every entry on quiet standard-account days. The spread
+# line stays kn/15's.
 DEFAULT_MAX_SPREAD_POINTS: Final[int] = PREFERRED_SPREAD_POINTS["standard"]
 SPREAD_WIDE_PERCENTILE: Final[float] = 0.80
 FRICTION_CAUTION_SHARE: Final[float] = 0.75
@@ -90,7 +95,7 @@ def hard_breaches(context: MarketContext, max_spread_points: int) -> Codes:
     quotes_missing = context.ticks.window_s > 0 and context.ticks.quote_count == 0
     checks: tuple[tuple[bool, LiquidityReason], ...] = (
         (spread_points(context) > max_spread_points, "SPREAD_WIDE"),
-        (friction is not None and friction >= PREFERRED_FRICTION_TO_ATR_M5, "FRICTION_HIGH"),
+        (friction is not None and friction >= MAX_FRICTION_TO_ATR_M5, "FRICTION_HIGH"),
         (quote_gap_ms(context) >= QUOTE_GAP_NO_TRADE_MS, "QUOTE_GAP"),
         (quotes_missing, "QUOTES_THIN"),
         (context.session.rollover_block, "ROLLOVER_NEAR"),

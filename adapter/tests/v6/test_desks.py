@@ -254,7 +254,9 @@ WIDE = ("SPREAD_WIDE", "DOM_SYNTHETIC")
 @pytest.mark.parametrize(("features", "kwargs", "stance", "codes"), [
     (CALM, {}, "OK", DOM), ({**CALM, "spread_points": 36.0}, {}, "NO_TRADE", WIDE),
     ({**CALM, "spread_points": 25.0}, {"max_spread_points": 20}, "NO_TRADE", WIDE),
-    ({**CALM, "friction_atr_m5": 0.08}, {}, "NO_TRADE", ("FRICTION_HIGH", *DOM)),
+    ({**CALM, "friction_atr_m5": 0.15}, {}, "NO_TRADE", ("FRICTION_HIGH", *DOM)),
+    ({**CALM, "friction_atr_m5": 0.138}, {}, "CAUTION", ("FRICTION_HIGH", *DOM)),
+    ({**CALM, "friction_atr_m5": 0.08}, {}, "CAUTION", ("FRICTION_HIGH", *DOM)),
     ({**CALM, "friction_atr_m5": 0.065}, {}, "CAUTION", ("FRICTION_HIGH", *DOM)),
     ({**CALM, "max_quote_gap_ms": 60_000.0}, {}, "NO_TRADE", ("QUOTE_GAP", *DOM)),
     ({**CALM, "max_quote_gap_ms": 15_000.0}, {}, "CAUTION", ("QUOTE_GAP", *DOM)),
